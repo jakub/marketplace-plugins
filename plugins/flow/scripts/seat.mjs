@@ -165,7 +165,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../delegate/codex-app-server.mjs'
@@ -190,6 +190,7 @@ const SEAT_ID = /^[0-9a-f]{32}$/
 const DIGEST = /^[0-9a-f]{64}$/
 const SCHEMA_BYTES = 16 * 1024
 const TASK_STATUS_BYTES = 64 * 1024
+const TASK_STATUS_STDIN_BYTES = 256 * 1024
 const GIT_MS = 60_000
 const RUNTIME_MODE = 'auto'
 
@@ -772,6 +773,75 @@ function taskOf(status, id) {
   return [status.taskId, decoded].some((text) => text.includes(clientRequestIdOf(id)))
 }
 
+// stdin's bytes, or null once there are more than cap of them. It reads synchronously, so close
+// stays one synchronous pass, and it never reads more than cap + 1 bytes.
+function readStdin(cap) {
+  const buffer = Buffer.alloc(cap + 1)
+  const nap = new Int32Array(new SharedArrayBuffer(4))
+  let length = 0
+  while (length <= cap) {
+    let read
+    try { read = readSync(0, buffer, length, buffer.length - length, null) } catch (error) {
+      if (error.code === 'EAGAIN') { Atomics.wait(nap, 0, 0, 10); continue }
+      if (error.code === 'EOF') break
+      fail('BAD_REQUEST', `--task-status - could not read stdin (${String(error.code ?? 'error').slice(0, 32)}).`)
+    }
+    if (read === 0) break
+    length += read
+  }
+  return length > cap ? null : buffer.subarray(0, length)
+}
+
+// The task status close was given: one argument of up to 64 KiB, or, for `-`, up to 256 KiB of
+// UTF-8 on stdin, counted in raw bytes, so a parent never has to build a long argv.
+function readTaskStatus(value) {
+  let text = value
+  if (value === '-') {
+    const bytes = readStdin(TASK_STATUS_STDIN_BYTES)
+    if (bytes === null) fail('BAD_REQUEST', '--task-status - is over 256 KiB on stdin.')
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) } catch { fail('BAD_REQUEST', '--task-status - is not UTF-8.') }
+  } else if (Buffer.byteLength(value) > TASK_STATUS_BYTES) {
+    fail('BAD_REQUEST', '--task-status is over 64 KiB; pass the task status on stdin with --task-status - instead.')
+  }
+  try { return JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
+}
+
+// The keys a task status must carry for close to tell which run's answer it would certify.
+const RUN_KEYS = ['childRunId', 'latestTerminalRunId', 'latestTerminalStatus', 'summary', 'latestTerminalSummary']
+const RUN_PREFIX = 'run:thread:'
+const RUN_ORDINAL = ':ordinal:'
+
+// A T3 run id's ordinal, when the id is run:thread:<encodeURIComponent(thread)>:ordinal:<n> with n
+// a positive safe integer in canonical digits; null for anything else, another thread's included.
+function runOrdinal(runId, thread) {
+  if (typeof runId !== 'string' || typeof thread !== 'string' || thread === '' || !runId.startsWith(RUN_PREFIX)) return null
+  let segment
+  try { segment = encodeURIComponent(thread) } catch { return null }
+  const at = runId.lastIndexOf(RUN_ORDINAL)
+  if (at < RUN_PREFIX.length || runId.slice(RUN_PREFIX.length, at) !== segment) return null
+  const digits = runId.slice(at + RUN_ORDINAL.length)
+  const ordinal = /^[1-9][0-9]*$/.test(digits) ? Number(digits) : NaN
+  return Number.isSafeInteger(ordinal) ? ordinal : null
+}
+
+// The task's runs as close judges them: the ordinal of the child's run and of its latest finished
+// run, and the latest one's id. Refuses TASK_INCOMPLETE a status missing a run key (a key present
+// with a null value is not missing) and TASK_MISMATCH run ids that are not the status's own thread's
+// or that put the latest run first, both before anything is written.
+function runsOf(status) {
+  const missing = RUN_KEYS.filter((key) => !Object.hasOwn(status, key))
+  if (missing.length > 0) {
+    fail('TASK_INCOMPLETE', `The task status lacks ${missing.join(', ')}, so close cannot tell which run's answer it would certify. Pass the whole task_status answer, unedited, with --task-status - on stdin.`, { missing })
+  }
+  const childOrdinal = runOrdinal(status.childRunId, status.childThreadId)
+  const latestOrdinal = runOrdinal(status.latestTerminalRunId, status.childThreadId)
+  if (childOrdinal === null || latestOrdinal === null) {
+    fail('TASK_MISMATCH', 'The task status\'s childRunId and latestTerminalRunId must each read run:thread:<childThreadId, URL-encoded>:ordinal:<n>, with n a positive integer, for the status\'s own childThreadId. Pass the task_status answer as T3 gave it.')
+  }
+  if (latestOrdinal < childOrdinal) fail('TASK_MISMATCH', 'The task status\'s latest finished run comes before its child run, so it is not one task\'s status. Pass the task_status answer as T3 gave it.')
+  return { childOrdinal, latestOrdinal, latestRunId: status.latestTerminalRunId }
+}
+
 function close(argv) {
   const [id, ...rest] = argv
   if (typeof id !== 'string' || !SEAT_ID.test(id)) fail('BAD_REQUEST', 'close takes a seat id, 32 lowercase hex characters.')
@@ -781,16 +851,15 @@ function close(argv) {
   }
   const opts = flags(rest, ['--task-status'])
   const text = opts['--task-status']
-  if (text === undefined) fail('BAD_REQUEST', 'close needs --task-status, the task_status answer for the seat\'s task, as JSON.')
-  if (Buffer.byteLength(text) > TASK_STATUS_BYTES) fail('BAD_REQUEST', '--task-status is over 64 KiB.')
-  let taskStatus
-  try { taskStatus = JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
+  if (text === undefined) fail('BAD_REQUEST', 'close needs --task-status, the task_status answer for the seat\'s task, as JSON, or - to read it from stdin.')
+  const taskStatus = readTaskStatus(text)
   if (!terminalTask(taskStatus)) {
     fail('TASK_NOT_TERMINAL', 'close records a seat whose task T3 reports finished: a task_status answer whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs. Wait for the task to finish, then close it.')
   }
   if (store.readStamp(id, 'admitted') !== null && !taskOf(taskStatus, id)) {
     fail('TASK_MISMATCH', `The task status is not this seat's task: its taskId does not carry ${clientRequestIdOf(id)}, the clientRequestId the seat's delegate_task call was admitted with. Pass the task_status answer for this seat's own task.`)
   }
+  runsOf(taskStatus)
 
   const loaded = store.readRecord(id)
   const { verdict, reasons, facts } = judge(id, loaded)
@@ -834,7 +903,7 @@ function abandon(id) {
 
 // ----- main
 
-const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
+const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json|-> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
 const [verb, ...argv] = process.argv.slice(2)
 let answer
 try {

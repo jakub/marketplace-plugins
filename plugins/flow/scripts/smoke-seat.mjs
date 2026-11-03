@@ -213,8 +213,9 @@ const median = (values) => {
 // otherwise, against the same state directory as the store.
 const SEAT_SCRIPT = join(PLUGIN, 'scripts', 'seat.mjs')
 const jobs = await import(pathToFileURL(join(PLUGIN, 'delegate', 'jobs.mjs')).href)
-function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT } = {}) {
-  const run = spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...trustedCodex.env, ...env } })
+// input, a string or a Buffer, goes to its stdin.
+function seatCli(args, { cwd = canon, env = {}, script = SEAT_SCRIPT, input = undefined, nodeArgs = [] } = {}) {
+  const run = spawnSync(process.execPath, [...nodeArgs, script, ...args], { cwd, input, encoding: 'utf8', maxBuffer: 1 << 24, env: { ...process.env, ...trustedCodex.env, ...env } })
   const lines = run.stdout.split('\n').filter(Boolean)
   assert.equal(lines.length, 1, `seat.mjs ${args[0]} printed ${JSON.stringify(run.stdout)} ${run.stderr}`)
   const out = JSON.parse(lines[0])
@@ -312,10 +313,26 @@ const flowDigest = (entries) => sha256(JSON.stringify(entries.map(({ key, curren
 // names another state.
 const trustedCodex = codexState([...flowEntries({ trusted: true }), ...FOREIGN])
 
-// A finished task_status answer for the seat's own task: T3 builds the task id from the call's
-// clientRequestId, URL-encoded.
-const taskStatusOf = (id, fields = {}) => ({ status: 'completed', taskId: `thread-1:delegate-task%3Aflow-seat-${id}`, ...fields })
-const closeSeat = (id, taskStatus = taskStatusOf(id)) => seatCli(['close', id, '--task-status', JSON.stringify(taskStatus)])
+// A finished task_status answer for the seat's own task, in the shape T3 0.1.6 answered with live.
+// T3 builds the task id from the call's clientRequestId, URL-encoded, and each run id from the
+// child thread id, URL-encoded once more (so its `%` reads `%25`), and the run's ordinal. By
+// default the task ran once and that run completed with MESSAGE_OK as its final message, which is
+// the summary; T3 nulls latestTerminalSummary when it repeats the summary. A case's fields replace
+// these as given: nothing here makes a summary match the seat.
+const MESSAGE_OK = JSON.stringify(ENVELOPE_OK)
+const childThreadOf = (id) => `thread:delegated-task:command%3Amcp%3A0b6c2f1e-7200-4f3f-b16b-3d1e5a9c8f20%3Adelegate-task%3Aflow-seat-${id}`
+const runIdOf = (thread, ordinal) => `run:thread:${encodeURIComponent(thread)}:ordinal:${ordinal}`
+const taskStatusOf = (id, fields = {}) => {
+  const thread = childThreadOf(id)
+  return {
+    taskId: `thread-1:delegate-task%3Aflow-seat-${id}`, childThreadId: thread, childRunId: runIdOf(thread, 1), status: 'completed', workState: 'result_available',
+    hasPendingChildRuns: false, latestTerminalRunId: runIdOf(thread, 1), latestTerminalStatus: 'completed', latestTerminalSummary: null, summary: MESSAGE_OK, ...fields,
+  }
+}
+// close as the delegate skill tells a parent to run it: the whole task status on stdin.
+const closeSeat = (id, taskStatus = taskStatusOf(id)) => seatCli(['close', id, '--task-status', '-'], { input: JSON.stringify(taskStatus) })
+// The five run keys close requires of a task status.
+const RUN_KEYS = ['childRunId', 'latestTerminalRunId', 'latestTerminalStatus', 'summary', 'latestTerminalSummary']
 
 // The executor's repositories: a canonical checkout with two commits (base adds a.txt, b.txt and
 // sub/x.txt; head changes a.txt and adds c.txt), which keeps .flow-worktrees/ in its exclude file
@@ -363,10 +380,12 @@ function jobRecord(worktree, status) {
 // admitted stamp pinning admittedDigest and the bound stamp digest (each the record's own by
 // default), the bound session's index entry naming the seat (index 'own'; 'none' writes none),
 // and turn 1 ending as outcome with models as the models seen serving it, the record's expected
-// served model by default, with a result for a valid turn unless result is false.
+// served model by default, with a result for a valid turn unless result is false. The turn's final
+// message is message, the envelope as JSON by default, and its sha256 goes into the turn state and
+// the result as Stop writes it; the returned message is what a task status's summary would carry.
 function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], record = {}, stamps = ['admitted', 'bound', 'receipt'], digest = null, admittedDigest = null,
   boundModel = null, outcome = 'valid', blocks = 0, errors = [], served = [record.expectedServedModel ?? model], models = served, envelope = ENVELOPE_OK, result = true,
-  index = 'own' } = {}) {
+  index = 'own', message = JSON.stringify(envelope) } = {}) {
   const seatId = id ?? store.writeRecord(RECORD({ provider, model, worktree: canon, repoRoot: canon, ...record }), null).id
   const loaded = store.readRecord(seatId)
   const bound = { sessionId: `s-${seatId}`, host: provider, permissionMode: PERMISSION[provider], cwd: canon, recordDigest: digest ?? loaded.digest }
@@ -376,10 +395,11 @@ function hookedSeat({ id = null, provider = 'claude', model = MODELS[provider], 
   for (const name of stamps) assert.equal(store.stamp(seatId, name, bodies[name]), true)
   if (index === 'own') assert.equal(store.indexSession(provider, bound.sessionId, { id: seatId }), true)
   if (outcome !== null) {
-    store.writeState(seatId, { turn: 1, turnKey: 'k1', blocks, outcome, errors, stops: blocks + 1, messageSha256: 'c'.repeat(64), models })
-    if (outcome === 'valid' && result) store.writeResult(seatId, 1, { envelope, servedModels: served, messageSha256: 'c'.repeat(64), at: new Date().toISOString() })
+    const messageSha256 = sha256(message)
+    store.writeState(seatId, { turn: 1, turnKey: 'k1', blocks, outcome, errors, stops: blocks + 1, messageSha256, models })
+    if (outcome === 'valid' && result) store.writeResult(seatId, 1, { envelope, servedModels: served, messageSha256, at: new Date().toISOString() })
   }
-  return { id: seatId }
+  return { id: seatId, message }
 }
 // Preloaded into a seat process: it holds the process at the write of its lease holder file, or
 // with SEAT_GATE_AT=record at the write of its record's temp file, until <SEAT_GATE>.go exists,
@@ -3305,10 +3325,156 @@ const cases = {
       assert.equal(closeSeat(each.id, taskStatusOf(each.id, { taskId: taskId.replace(seat.id, each.id) })).verdict, 'valid', taskId)
     }
     assert.equal(closeSeat(seat.id).verdict, 'valid')
+    // A seat that was never admitted has no clientRequestId to match, but its status still carries
+    // the five run keys: no seat is exempt from them.
     const unadmitted = hookedSeat({ stamps: [], index: 'none', outcome: null })
-    const closed = closeSeat(unadmitted.id, { status: 'cancelled', taskId: 'whatever' })
+    const closed = closeSeat(unadmitted.id, taskStatusOf(unadmitted.id, { status: 'cancelled', taskId: 'whatever', latestTerminalStatus: 'cancelled', summary: null }))
     assert.deepEqual([closed.ok, closed.verdict], [true, 'unknown'], JSON.stringify(closed))
-    ok('close accepts the seat\'s own task id, plain or URL-encoded, and closes a seat that was never admitted on any finished task status, as unknown')
+    ok('close accepts the seat\'s own task id, plain or URL-encoded, and closes a seat that was never admitted on any finished task status with its run keys, as unknown')
+  },
+
+  'close-trimmed-status': () => {
+    const writerWt = gitWorktree('close-trimmed-status')
+    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const seat = hookedSeat({ id: opened.id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
+    const without = (keys, fields = {}) => {
+      const status = taskStatusOf(seat.id, fields)
+      for (const key of keys) delete status[key]
+      return status
+    }
+    const unchanged = (what) => {
+      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
+    }
+    // The incident's trimmed status: what the parent kept of T3's answer, with no run keys at all.
+    const incident = { status: 'completed', taskId: `thread-1:delegate-task%3Aflow-seat-${seat.id}`, workState: 'result_available', hasPendingChildRuns: false }
+    for (const keys of [...RUN_KEYS.map((key) => [key]), ['childRunId', 'summary'], RUN_KEYS]) {
+      const status = without(keys)
+      for (const [how, refused] of [['stdin', closeSeat(seat.id, status)], ['argv', seatCli(['close', seat.id, '--task-status', JSON.stringify(status)])]]) {
+        assert.equal(refused.error?.kind, 'TASK_INCOMPLETE', `${keys.join(', ')} on ${how}: ${JSON.stringify(refused)}`)
+        assert.deepEqual(refused.error.details?.missing, RUN_KEYS.filter((key) => keys.includes(key)), `${keys.join(', ')}: the refusal does not name what is missing`)
+        unchanged(`a status without ${keys.join(', ')} on ${how}`)
+      }
+    }
+    assert.equal(closeSeat(seat.id, incident).error?.kind, 'TASK_INCOMPLETE')
+    unchanged('the incident\'s trimmed status')
+    ok('close refuses TASK_INCOMPLETE, naming each missing key and writing nothing, a task status that lacks any of childRunId, latestTerminalRunId, latestTerminalStatus, summary and latestTerminalSummary, on stdin or argv, the incident\'s trimmed {status, taskId} included')
+
+    // The older refusals come first: a trimmed status that is not finished, or not this seat's.
+    assert.equal(closeSeat(seat.id, without(RUN_KEYS, { status: 'running' })).error?.kind, 'TASK_NOT_TERMINAL')
+    assert.equal(closeSeat(seat.id, without(RUN_KEYS, { taskId: 'task-1' })).error?.kind, 'TASK_MISMATCH')
+    unchanged('a trimmed status refused for another reason')
+    ok('a trimmed status that is not finished reads TASK_NOT_TERMINAL, and one that is not the seat\'s own task reads TASK_MISMATCH, before TASK_INCOMPLETE')
+
+    // A key that is present with a null value is not missing.
+    for (const key of ['latestTerminalStatus', 'summary', 'latestTerminalSummary']) {
+      const each = hookedSeat({})
+      const out = closeSeat(each.id, taskStatusOf(each.id, { [key]: null }))
+      assert.equal(out.ok, true, `${key}: null: ${JSON.stringify(out)}`)
+    }
+    const whole = closeSeat(seat.id)
+    assert.deepEqual([whole.verdict, existsSync(holder)], ['valid', false], JSON.stringify(whole))
+    ok('a run key present with a null value is no missing key, and the whole status then closes the seat that refused the trimmed ones')
+  },
+
+  'close-run-id-grammar': () => {
+    const writerWt = gitWorktree('close-run-id-grammar')
+    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const seat = hookedSeat({ id: opened.id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
+    const thread = childThreadOf(seat.id)
+    const encoded = encodeURIComponent(thread)
+    const withOrdinal = (text) => `run:thread:${encoded}:ordinal:${text}`
+    const refuse = (status, what) => {
+      const refused = closeSeat(seat.id, status)
+      assert.equal(refused.error?.kind, 'TASK_MISMATCH', `${what}: ${JSON.stringify(refused)}`)
+      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
+    }
+    const badIds = [
+      ['null', null], ['a number', 1], ['an object', { thread, ordinal: 1 }], ['an empty string', ''],
+      ['no prefix', `${encoded}:ordinal:1`], ['another prefix', `run:node:${encoded}:ordinal:1`],
+      ['the thread not encoded', `run:thread:${thread}:ordinal:1`], ['the thread encoded twice', `run:thread:${encodeURIComponent(encoded)}:ordinal:1`],
+      ['lower-case escapes', `run:thread:${encoded.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase())}:ordinal:1`],
+      ['another thread', runIdOf(childThreadOf(store.newId()), 1)], ['no ordinal', `run:thread:${encoded}`], ['an empty ordinal', withOrdinal('')],
+      ['ordinal 0', withOrdinal('0')], ['a leading zero', withOrdinal('01')], ['a negative ordinal', withOrdinal('-1')], ['a fraction', withOrdinal('1.5')],
+      ['an exponent', withOrdinal('1e3')], ['past the safe integers', withOrdinal('9007199254740993')], ['a space', withOrdinal(' 1')],
+      ['trailing text', withOrdinal('1:x')], ['a second ordinal', `run:thread:${encoded}:ordinal:1:ordinal:1`],
+    ]
+    for (const [what, value] of badIds) {
+      for (const key of ['childRunId', 'latestTerminalRunId']) refuse(taskStatusOf(seat.id, { [key]: value }), `${key} ${what}`)
+      refuse(taskStatusOf(seat.id, { childRunId: value, latestTerminalRunId: value }), `both run ids ${what}`)
+    }
+    ok(`close refuses TASK_MISMATCH, writing nothing and keeping the lease, a child or latest run id that is not run:thread:<encodeURIComponent(childThreadId)>:ordinal:<n> with n a positive safe integer in canonical digits (${badIds.length} malformed, foreign or wrong-type forms)`)
+
+    const { childThreadId, ...noThread } = taskStatusOf(seat.id)
+    refuse(noThread, 'no childThreadId')
+    for (const [what, value] of [['empty', ''], ['a number', 7], ['null', null], ['a lone surrogate', '\ud800'], ['another thread', childThreadOf(store.newId())]]) {
+      refuse(taskStatusOf(seat.id, { childThreadId: value }), `a childThreadId that is ${what}`)
+    }
+    refuse(taskStatusOf(seat.id, { childRunId: runIdOf(thread, 3), latestTerminalRunId: runIdOf(thread, 2) }), 'a latest run before the child run')
+    ok('a missing, empty, wrong-type, unencodable or foreign childThreadId, and a latest run whose ordinal comes before the child run\'s, are refused TASK_MISMATCH too')
+
+    // Any thread id encodes, and a later latest run is in order.
+    for (const odd of ['a/b:c%d e', 'thread:été/\u{1F600}', '%%', ':ordinal:1']) {
+      const each = hookedSeat({})
+      const out = closeSeat(each.id, taskStatusOf(each.id, { childThreadId: odd, childRunId: runIdOf(odd, 1), latestTerminalRunId: runIdOf(odd, 1) }))
+      assert.equal(out.ok, true, `${odd}: ${JSON.stringify(out)}`)
+    }
+    const later = hookedSeat({})
+    assert.equal(closeSeat(later.id, taskStatusOf(later.id, { latestTerminalRunId: runIdOf(childThreadOf(later.id), 4) })).ok, true, 'a later latest run')
+    assert.equal(closeSeat(seat.id).verdict, 'valid')
+    assert.equal(existsSync(holder), false)
+    ok('a thread id with :, /, %, spaces, non-ASCII text or :ordinal: inside it is accepted through its encoded form, a latest run after the child run is accepted, and the whole status then closes the refused seat')
+  },
+
+  'close-status-size': () => {
+    // A status of exactly `bytes` UTF-8 bytes as JSON: the status with a pad field of ASCII filler.
+    const sized = (status, bytes) => {
+      const base = Buffer.byteLength(JSON.stringify({ ...status, pad: '' }))
+      assert.ok(bytes >= base, `a ${bytes}-byte status cannot hold ${base} bytes of fields`)
+      const text = JSON.stringify({ ...status, pad: 'x'.repeat(bytes - base) })
+      assert.equal(Buffer.byteLength(text), bytes)
+      return Buffer.from(text)
+    }
+    const writerWt = gitWorktree('close-status-size')
+    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
+    const seat = hookedSeat({ id: opened.id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
+    const STDIN_CAP = 256 * 1024
+    const ARGV_CAP = 64 * 1024
+    const stdin = (input) => seatCli(['close', seat.id, '--task-status', '-'], { input })
+    const refused = (out, pattern, what) => {
+      assert.equal(out.error?.kind, 'BAD_REQUEST', `${what}: ${JSON.stringify(out)}`)
+      if (pattern) assert.match(out.error.message, pattern, what)
+      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
+    }
+    const status = taskStatusOf(seat.id)
+    refused(stdin(sized(status, STDIN_CAP + 1)), /256 KiB/, 'one byte over 256 KiB')
+    refused(stdin(Buffer.concat([sized(status, STDIN_CAP), Buffer.from('\n')])), /256 KiB/, '256 KiB of JSON and a trailing newline')
+    refused(stdin(Buffer.alloc(STDIN_CAP * 4, 0x20)), /256 KiB/, 'a megabyte of spaces')
+    refused(stdin(Buffer.concat([Buffer.from('{"status":"completed","pad":"'), Buffer.from([0xc3, 0x28]), Buffer.from('"}')])), /UTF-8/, 'invalid UTF-8')
+    refused(stdin(''), /not JSON/, 'an empty stdin')
+    refused(stdin('{"status":'), /not JSON/, 'a torn JSON document')
+    refused(seatCli(['close', seat.id, '--task-status', sized(status, ARGV_CAP + 1).toString()]), /64 KiB/, 'an argv status one byte over 64 KiB')
+    ok('close refuses BAD_REQUEST, writing nothing and keeping the lease, a stdin status over 256 KiB of raw bytes (a trailing newline counts), stdin that is not UTF-8 or not JSON, and an argv status over 64 KiB')
+
+    // Accepted: 200 KiB whose final message carries non-ASCII text and JSON escapes, exactly 64 KiB
+    // as one argument, and exactly 256 KiB on stdin.
+    const notes = `résumé \u{1F600} "quoted" \\ back\tslash\n\u0001 `.repeat(2_500)
+    const long = hookedSeat({ envelope: { ...ENVELOPE_OK, notes } })
+    const longStatus = sized(taskStatusOf(long.id, { summary: long.message }), 200 * 1024)
+    assert.ok(long.message.length > 100_000 && /\\u0001/.test(longStatus.toString()) && /é/.test(longStatus.toString()))
+    const longOut = seatCli(['close', long.id, '--task-status', '-'], { input: longStatus })
+    assert.deepEqual([longOut.verdict, longOut.result?.notes], ['valid', notes], JSON.stringify(longOut).slice(0, 400))
+    const argvSeat = hookedSeat({})
+    assert.equal(seatCli(['close', argvSeat.id, '--task-status', sized(taskStatusOf(argvSeat.id), ARGV_CAP).toString()]).verdict, 'valid', 'exactly 64 KiB as one argument')
+    const atCap = stdin(sized(status, STDIN_CAP))
+    assert.deepEqual([atCap.verdict, existsSync(holder)], ['valid', false], JSON.stringify(atCap).slice(0, 400))
+    assert.equal(store.readStamp(seat.id, 'closed').taskStatus.pad.length > 200_000, true, 'the closed stamp does not hold the whole status')
+    ok('close accepts a 200 KiB stdin status with non-ASCII text and escapes in its final message, exactly 64 KiB as one argument, and exactly 256 KiB on stdin, which closes the seat that refused the larger ones')
   },
 
   'close-abandon': () => {
