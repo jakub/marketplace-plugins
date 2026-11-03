@@ -108,7 +108,7 @@ if (argv[0] === '--version') { console.log(NAME === 'codex' ? 'codex-cli 0.0.0-f
 if (argv[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0) }
 if (argv[0] === 'auth') { console.log(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'secret@example.invalid', orgId: 'org-secret' })); process.exit(0) }
 const finding = (mode) => mode === 'bad-structure' ? { severity: 'urgent', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd' }
-  : { severity: 'low', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd', systemic: false }
+  : { severity: 'low', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd', basis: 'code-path' }
 const answerFor = (schema, mode) => !schema ? 'fake answer' : JSON.stringify(schema.properties.findings ? { findings: [finding(mode)] } : { answer: '42' })
 const modeOf = (text) => (/FLOW_FAKE_MODE=([a-z-]+)/.exec(text) || [])[1] || 'happy'
 // locked-tmp leaves what a command the job ran can leave: a directory in TMPDIR, holding a file,
@@ -842,7 +842,15 @@ try {
   }
   const badReview = await start(claudeHost, { prompt: 'FLOW_FAKE_MODE=bad-structure', mode: 'adversarial-review', base: 'main~1' })
   assert.deepEqual([badReview.job.status, badReview.job.error?.kind], ['failed', 'SCHEMA_OUTPUT'])
-  assert.deepEqual(badReview.job.error.details.errors, ['$.findings[0]: missing the required property "systemic"', '$.findings[0].severity: not one of the allowed values'])
+  assert.deepEqual(badReview.job.error.details.errors, ['$.findings[0]: missing the required property "basis"', '$.findings[0].severity: not one of the allowed values'])
+  // basis names the reviewer's evidence: exactly three values, required, and systemic is gone.
+  const sixFields = { severity: 'low', confidence: 90, title: 't', file: 'a.txt', line: 1, detail: 'd' }
+  const findingErrors = (finding) => validate(FINDINGS_SCHEMA, { findings: [finding] })
+  for (const basis of ['reproduced', 'code-path', 'grounded-unresolved']) assert.deepEqual(findingErrors({ ...sixFields, basis }), [], `basis ${basis} is refused`)
+  assert.deepEqual(findingErrors(sixFields), ['$.findings[0]: missing the required property "basis"'])
+  assert.deepEqual(findingErrors({ ...sixFields, basis: 'verified' }), ['$.findings[0].basis: not one of the allowed values'])
+  assert.deepEqual(findingErrors({ ...sixFields, systemic: false }), ['$.findings[0]: missing the required property "basis"', '$.findings[0].systemic: not a property the schema allows'])
+  assert.equal(FINDINGS_SCHEMA.properties.findings.items.required.length, 7)
   // A nested $id starts a resource its own references resolve in, and #name is an anchor, not a
   // pointer; the checker resolves every $ref as a pointer from the root, so it admits neither.
   const scoped = { type: 'object', $defs: { value: { type: 'string' }, child: { $id: 'https://example.invalid/child', type: 'object', $defs: { value: { type: 'integer' } }, properties: { value: { $ref: '#/$defs/value' } } } }, properties: { child: { $ref: '#/$defs/child' } } }

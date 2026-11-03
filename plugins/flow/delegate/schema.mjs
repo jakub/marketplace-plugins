@@ -113,7 +113,7 @@ export const FINDINGS_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['severity', 'confidence', 'title', 'file', 'line', 'detail', 'systemic'],
+        required: ['severity', 'confidence', 'title', 'file', 'line', 'detail', 'basis'],
         properties: {
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
           confidence: { type: 'integer', minimum: 0, maximum: 100 },
@@ -121,7 +121,7 @@ export const FINDINGS_SCHEMA = {
           file: { type: 'string' },
           line: { type: 'integer', minimum: 0 },
           detail: { type: 'string' },
-          systemic: { type: 'boolean' },
+          basis: { type: 'string', enum: ['reproduced', 'code-path', 'grounded-unresolved'] },
         },
       },
     },
