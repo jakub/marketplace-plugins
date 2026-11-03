@@ -2698,6 +2698,87 @@ const cases = {
     ok('a normal open still works')
   },
 
+  'review-context-instruction': () => {
+    // A review seat's context carries the reviewer instruction every review route shares, whole,
+    // and its bytes count in the same 6000-byte budget as the rest: inline schema first, the schema
+    // named by path when the inline form is over, a refusal when even that is over. A path length
+    // is found by measuring the context, never assumed.
+    const LIMIT = 6000
+    const bytes = (text) => Buffer.byteLength(text)
+    const inlineSchema = JSON.stringify(schemas.FINDINGS_SCHEMA)
+    const schemaPath = '/s/schema.json'
+    const review = (length) => {
+      const repoRoot = `/${'r'.repeat(length)}`
+      const id = store.newId()
+      return { ...seatRecord('claude', { access: 'review', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40) }), id, repoRoot, worktree: `${repoRoot}/.flow-worktrees/review-${id}` }
+    }
+    const contextOf = (length) => seatPolicy.seatContext(review(length), schemas.FINDINGS_SCHEMA, schemaPath)
+    const refused = (length) => {
+      try { contextOf(length); return false } catch (error) {
+        assert.equal(error.code, 'CONTEXT_TOO_LONG', `${length}: ${error.message}`)
+        return true
+      }
+    }
+
+    const normal = contextOf(1)
+    assert.ok(normal.includes(schemas.REVIEW_INSTRUCTION), 'a normal review context lacks the reviewer instruction')
+    assert.ok(normal.includes(inlineSchema), 'a normal review context lacks the inline findings schema')
+    assert.ok(bytes(normal) <= LIMIT, `${bytes(normal)} bytes`)
+    assert.ok(bytes(schemas.REVIEW_INSTRUCTION) > 1000, 'the reviewer instruction is not the one being measured')
+    ok('a review seat\'s context holds the whole reviewer instruction and the inline findings schema within 6000 bytes')
+
+    // The shortest repository path that pushes the inline form over the budget: the schema leaves
+    // by path, the instruction stays whole.
+    let named = 1
+    while (!refused(named) && contextOf(named).includes(inlineSchema)) named++
+    assert.equal(refused(named), false, 'the fallback never had a length where it fit')
+    const fallback = contextOf(named)
+    assert.ok(bytes(fallback) <= LIMIT && bytes(fallback) > LIMIT - 2000, `${bytes(fallback)} bytes`)
+    assert.ok(fallback.includes(schemas.REVIEW_INSTRUCTION), 'the fallback context cut the reviewer instruction')
+    assert.ok(fallback.includes(schemaPath) && !fallback.includes(inlineSchema) && !fallback.includes('"additionalProperties"'), 'the fallback did not name the schema in place of its JSON')
+    assert.match(fallback, /Read that file before you write your final message/)
+    assert.ok(contextOf(named - 1).includes(inlineSchema), 'the length before the fallback did not hold the inline schema')
+    ok('a review seat whose inline form is over 6000 bytes keeps the whole instruction, names the schema by path and still fits')
+
+    // The shortest path past which even the fallback cannot fit: the instruction is not cut to make room.
+    let past = named
+    while (!refused(past)) past++
+    assert.ok(past > named, 'the refusal and the fallback share a length')
+    assert.equal(refused(past - 1), false, `${past - 1} should still fit`)
+    assert.ok(bytes(contextOf(past - 1)) <= LIMIT)
+    assert.throws(() => seatPolicy.seatContext(review(past), schemas.FINDINGS_SCHEMA, schemaPath), { code: 'CONTEXT_TOO_LONG' })
+    ok('a review seat whose fallback context is still over 6000 bytes throws CONTEXT_TOO_LONG, never a cut instruction')
+
+    // Only a review seat is told to review.
+    const readOnly = seatPolicy.seatContext({ ...seatRecord('claude'), id: store.newId(), access: 'read-only', worktree: '/r/w' }, SCHEMA, schemaPath)
+    const writer = seatPolicy.seatContext({ ...seatRecord('claude'), id: store.newId(), access: 'workspace-write', worktree: '/r/w' }, SCHEMA, schemaPath)
+    for (const [what, text] of [['read-only', readOnly], ['workspace-write', writer]]) {
+      assert.ok(!text.includes(schemas.REVIEW_INSTRUCTION) && !text.includes('adversarial code reviewer'), `a ${what} context carries the reviewer instruction`)
+    }
+    ok('read-only and workspace-write contexts do not carry the reviewer instruction')
+
+    // seat.mjs open maps the throw to a refusal for a review seat as it does for a writer, and
+    // takes its review worktree back.
+    const base = ['--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high']
+    // The repository path runs past the length measured above, where the policy itself refuses.
+    const long = join(tmp, 'long', 'review-too-long', ...Array.from({ length: Math.ceil(past / 200) + 1 }, (_, at) => `${at}${'d'.repeat(199)}`))
+    assert.ok(long.length > past, `${long.length} <= ${past}`)
+    mkdirSync(long, { recursive: true })
+    gitOut(long, 'init', '-q')
+    writeFileSync(join(long, 'a.txt'), 'a\n')
+    gitOut(long, 'add', '-A')
+    gitOut(long, 'commit', '-q', '-m', 'base')
+    const seatDirs = () => (existsSync(seats) ? readdirSync(seats).filter((name) => /^[0-9a-f]{32}$/.test(name)).sort() : [])
+    const dirsBefore = seatDirs()
+    const out = seatCli(['open', '--access', 'review', ...base, '--base', 'HEAD', '--head', 'HEAD'], { cwd: long })
+    assert.equal(out.ok, false, 'a review seat whose context cannot fit the hook budget opened')
+    assert.equal(out.error.kind, 'BAD_REQUEST')
+    assert.match(out.error.message, /longer than the 6000-byte hook budget; use shorter paths/)
+    assert.deepEqual(seatDirs(), dirsBefore, 'the refused review open left a seat directory behind')
+    assert.equal(gitOut(long, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1, 'the refused review open left its review worktree behind')
+    ok('open refuses a review seat whose long paths make the context past 6000 bytes, BAD_REQUEST, leaving no seat record and no review worktree')
+  },
+
   'open-lease': async () => {
     // A live write job holds the worktree: the seat is refused and leaves no holder behind.
     const held = gitWorktree('lease-job')

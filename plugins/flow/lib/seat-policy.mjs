@@ -46,7 +46,7 @@
 import { lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { segments } from './hook-policy.mjs'
-import { CHECK_SECONDS, checkAnswer, envelopeSchema, validate } from '../delegate/schema.mjs'
+import { CHECK_SECONDS, REVIEW_INSTRUCTION, checkAnswer, envelopeSchema, validate } from '../delegate/schema.mjs'
 import { inside } from './state-dir.mjs'
 
 /** The permission_mode each host reports for T3's `auto` runtime mode, measured on 2026-10-03. */
@@ -764,9 +764,12 @@ export function failedStop(record, state, errors) {
  * the record (schema, null when the seat has none). The schema is inlined only while the whole
  * context stays within CONTEXT_BYTES; past that, the context names schemaPath, the absolute path
  * of the record's schema.json, and tells the seat to read it. The Seat Contract itself arrived at
- * SessionStart and is not repeated. The context returned is always within CONTEXT_BYTES: the
- * record's paths repeat in it, so a context that cannot fit even with the schema left out by path
- * throws a CONTEXT_TOO_LONG error, which seat.mjs open turns into a refusal before it writes anything.
+ * SessionStart and is not repeated. A review seat's context also carries REVIEW_INSTRUCTION, the
+ * reviewer instruction every review route shares, whole and ahead of the schema decision: its bytes
+ * count in the inline check, the by-path fallback and the refusal alike, and it is never cut. The
+ * context returned is always within CONTEXT_BYTES: the record's paths repeat in it, so a context
+ * that cannot fit even with the schema left out by path throws a CONTEXT_TOO_LONG error, which
+ * seat.mjs open turns into a refusal before it writes anything.
  */
 export function seatContext(record, schema = null, schemaPath = null) {
   const lines = [
@@ -783,7 +786,7 @@ export function seatContext(record, schema = null, schemaPath = null) {
       `- git reads run as usual. Your git writes are add, rm, mv, commit, restore and apply, each as \`git -C ${record.worktree} ...\`, and you commit by path: \`git -C ${record.worktree} commit -m <message> -- <paths>\`.`,
     )
   } else if (record.access === 'review') {
-    lines.push(`- review worktree: ${record.worktree}, base ${record.baseSha}, head ${record.headSha}. Edit nothing.`)
+    lines.push(`- review worktree: ${record.worktree}, base ${record.baseSha}, head ${record.headSha}. Edit nothing.`, '', REVIEW_INSTRUCTION)
   } else {
     lines.push(`- worktree: ${record.worktree}. Edit nothing.`)
   }
