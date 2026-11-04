@@ -46,7 +46,7 @@
 // of the keys and hashes it read as hooksDigest and the root and its digest as codexPluginRoot and
 // codexPluginDigest; for a writer, hold
 // the worktree's write lease directory (below); for a review, snapshot the canonical checkout
-// with tree-snapshot.mjs and add its HEAD commit, the branch HEAD names and origin's URL; then write the schema and the record, last, through lib/seat-store.mjs. Before the holder, open builds the seat's context as the prompt hook will (with the real schema.json path) and refuses BAD_REQUEST when the paths make it past the 6000-byte hook budget even with the schema left out by path.
+// with tree-snapshot.mjs and add its HEAD commit, the branch HEAD names and the sha256 of origin's URL; then write the schema and the record, last, through lib/seat-store.mjs. Before the holder, open builds the seat's context as the prompt hook will (with the real schema.json path) and refuses BAD_REQUEST when the paths make it past the 6000-byte hook budget even with the schema left out by path.
 // A failure undoes whatever this run created, the review worktree and the lease holder, so a
 // refused open leaves nothing behind, with one exception under The lease.
 //
@@ -129,9 +129,10 @@
 // hold, and ls-remote runs only once the rest do:
 //   - the branch is the one open recorded, named and under refs/heads/;
 //   - both HEADs are 40-hex commits, and `git merge-base --is-ancestor <then> <now>` exits 0;
-//   - origin's URL, `git remote get-url origin`, is a non-empty string at open and the same string
-//     now, so a seat can't repoint origin at a repository it controls. A record from before the
-//     rule has no origin and never passes;
+//   - the sha256 of origin's URL, `git remote get-url origin`, was recorded at open and is the same
+//     now, so a seat can't repoint origin at a repository it controls. Only the digest is stored
+//     or printed, because an HTTPS URL can carry a token. A record from before the rule has no
+//     origin and never passes;
 //   - `git ls-remote --exit-code origin <branch>` prints exactly one line, for exactly that ref,
 //     whose SHA is the HEAD now. That is origin's live tip, never the local tracking ref, which
 //     update-ref can forge.
@@ -308,14 +309,16 @@ function snapshot(path) {
 }
 const sameSnapshot = (a, b) => ['status', 'diff', 'cached', 'untracked'].every((key) => typeof a?.[key] === 'string' && a[key] === b?.[key])
 // The canonical checkout as a review pins it: the four digests, the HEAD commit (null when unborn),
-// the branch HEAD names (null when detached) and origin's URL (null with no origin), or null when
+// the branch HEAD names (null when detached) and the sha256 of origin's URL (null with no origin),
+// never the URL, which can carry a token, or null when
 // tree-snapshot cannot take them.
+const digestOf = (text) => (text === null ? null : createHash('sha256').update(text).digest('hex'))
 function canonicalState(path) {
   const digests = snapshot(path)
   if (!digests) return null
   return {
     ...digests, head: gitLine(path, ['rev-parse', '--verify', '--quiet', 'HEAD']), branch: gitLine(path, ['symbolic-ref', '--quiet', 'HEAD']),
-    origin: gitLine(path, ['remote', 'get-url', 'origin']),
+    origin: digestOf(gitLine(path, ['remote', 'get-url', 'origin'])),
   }
 }
 
@@ -326,8 +329,8 @@ function fastForwardProblem(repoRoot, then, now) {
   const branch = then?.branch
   if (typeof branch !== 'string' || !branch.startsWith('refs/heads/') || now.branch !== branch) return 'the branch is not the named branch open recorded'
   if (!HEAD_SHA.test(then.head ?? '') || !HEAD_SHA.test(now.head ?? '')) return 'a HEAD is not a 40-hex commit'
-  if (typeof then.origin !== 'string' || then.origin === '') return 'open recorded no origin URL'
-  if (now.origin !== then.origin) return `origin's URL is ${String(now.origin ?? 'gone').slice(0, 200)}, not the one open recorded`
+  if (typeof then.origin !== 'string' || then.origin === '') return 'open recorded no origin'
+  if (now.origin !== then.origin) return now.origin === null ? 'origin is gone' : "origin's URL is not the one open recorded"
   if (!git(repoRoot, ['merge-base', '--is-ancestor', then.head, now.head]).ok) return 'the HEAD at open is not an ancestor of this one'
   const remote = git(repoRoot, ['ls-remote', '--exit-code', 'origin', branch], { env: LS_REMOTE_ENV, timeout: LS_REMOTE_MS })
   if (!remote.ok) return `origin's ${branch} could not be read`

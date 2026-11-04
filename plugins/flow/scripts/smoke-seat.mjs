@@ -3345,7 +3345,7 @@ const cases = {
 
     resetFixture()
     const pulled = reviewSeat()
-    assert.equal(store.readRecord(pulled.id).record.canonicalSnapshot.origin, bare, 'a review records origin\'s URL')
+    assert.equal(store.readRecord(pulled.id).record.canonicalSnapshot.origin, createHash('sha256').update(bare).digest('hex'), 'a review records the sha256 of origin\'s URL, never the URL')
     const tip = advanceOrigin()
     pullMain()
     assert.equal(gitOut(canon, 'rev-parse', 'HEAD'), tip)
@@ -3412,7 +3412,7 @@ const cases = {
       pullMain()
       assert.equal(gitOut(canon, 'rev-parse', 'HEAD'), planted)
       assert.equal(gitOut(canon, 'ls-remote', 'origin', 'refs/heads/main').split('\t')[0], planted, 'the decoy\'s tip is the new HEAD')
-    }, new RegExp(`not a fast-forward onto origin's live tip: origin's URL is ${decoy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, not the one open recorded`))
+    }, /not a fast-forward onto origin's live tip: origin's URL is not the one open recorded$/)
     rmSync(decoy, { recursive: true, force: true })
 
     // A record from before origin was pinned has no origin key, and never passes.
@@ -3427,7 +3427,7 @@ const cases = {
     pullMain()
     const legacyOut = closeReview(legacy)
     assert.equal(legacyOut.verdict, 'tree-moved', JSON.stringify(legacyOut))
-    assert.match(headReason(legacyOut) ?? '', /not a fast-forward onto origin's live tip: open recorded no origin URL/, JSON.stringify(legacyOut.reasons))
+    assert.match(headReason(legacyOut) ?? '', /not a fast-forward onto origin's live tip: open recorded no origin/, JSON.stringify(legacyOut.reasons))
     ok('tree-moved: a record opened before origin was pinned, then a fast-forward onto origin\'s live tip')
 
     // Over SSH, ls-remote runs ssh in batch mode with a connect timeout, no terminal prompt and no
