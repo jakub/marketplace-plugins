@@ -271,21 +271,73 @@ for (const [name, over, reason] of [
 }
 
 // ---------------------------------------------------------------------------------------------
-console.log('\nadmission: an issue with no run marks must pass what the claim checks')
-for (const [name, request, issues, reason] of [
-  ['a closed leaf', '#1', { 1: issue(1, { state: 'CLOSED' }) }, 'issue-closed'],
-  ['an issue with no ready label', '#1', { 1: issue(1, { labels: [{ name: 'needs-triage' }] }) }, 'not-ready'],
-  ['a blocker beside the ready label', '#1', { 1: issue(1, { labels: [{ name: 'ready-for-agent' }, { name: 'needs-human' }] }) }, 'blocked'],
-  ['a waiting dependent someone blocked', '#1 → #2', { 1: issue(1), 2: issue(2, { labels: [{ name: 'ready-for-agent' }, { name: 'needs-info' }] }) }, 'blocked'],
-  ['a lower-case criteria heading', '#1', { 1: issue(1, { body: 'Why.\n\n## Acceptance criteria\n\n- [ ] lower case\n' }) }, 'no-acceptance-criteria'],
-  ['an empty criteria section', '#1', { 1: issue(1, { body: 'Why.\n\n## Acceptance Criteria\n\n## Notes\n' }) }, 'no-acceptance-criteria'],
-  ['a parent closed with no merged pull request and no run', '#1 → #2', { 1: issue(1, { state: 'CLOSED' }), 2: issue(2) }, 'dead-parent'],
-  ['a dead parent with an unmerged closed pull request', '#1 → #2', { 1: issue(1, { state: 'CLOSED', closedByPullRequestsReferences: [linkTo(11)] }), 2: issue(2) }, 'dead-parent'],
+console.log('\nadmission: the preflight holds an issue with no run marks to what the claim checks; a confirmed chain reads it a state')
+/** --confirmed with every issue's body as it reads now: a chain the user confirmed and nobody edited since. */
+const confirmAll = (issues) => Object.values(issues).map((i) => `${i.number}:${sha256(i.body)}`).join(',')
+const states = (r) => r.json?.nodes?.map((x) => `${x.state}:${x.next}`)
+for (const [name, request, issues, reason, confirmedStates, unknownReason] of [
+  ['a closed leaf', '#1', { 1: issue(1, { state: 'CLOSED' }) }, 'issue-closed', ['parked:closed:user']],
+  ['an issue with no ready label', '#1', { 1: issue(1, { labels: [{ name: 'needs-triage' }] }) }, 'not-ready', ['parked:needs-triage:user']],
+  ['an issue with no lifecycle label at all', '#1', { 1: issue(1, { labels: [{ name: 'enhancement' }] }) }, 'not-ready', ['unknown:user'], 'not-ready'],
+  ['a blocker beside the ready label', '#1', { 1: issue(1, { labels: [{ name: 'ready-for-agent' }, { name: 'needs-human' }] }) }, 'blocked', ['parked:needs-human:user']],
+  ['a lower-case criteria heading', '#1', { 1: issue(1, { body: 'Why.\n\n## Acceptance criteria\n\n- [ ] lower case\n' }) }, 'no-acceptance-criteria', ['unknown:user'], 'no-acceptance-criteria'],
+  ['an empty criteria section', '#1', { 1: issue(1, { body: 'Why.\n\n## Acceptance Criteria\n\n## Notes\n' }) }, 'no-acceptance-criteria', ['unknown:user'], 'no-acceptance-criteria'],
+  ['a parent closed with no merged pull request and no run', '#1 → #2', { 1: issue(1, { state: 'CLOSED' }), 2: issue(2) }, 'dead-parent', ['parked:closed:user', 'dead-parent:user']],
+  ['a dead parent with an unmerged closed pull request', '#1 → #2', { 1: issue(1, { state: 'CLOSED', closedByPullRequestsReferences: [linkTo(11)] }), 2: issue(2) }, 'dead-parent', ['parked:closed:user', 'dead-parent:user']],
 ]) {
   const w = makeWorld()
-  const st = freshState({ issues, prs: { 11: pr(11, 1, { state: 'CLOSED' }) } })
-  const r = run(w, st, { request })
-  check(`${name}: refused ${reason}, exit 2`, r.code === 2 && r.json?.result === 'refused' && r.json?.reason === reason && same(Object.keys(r.json), ['result', 'reason', 'detail']), show(r))
+  const st = () => freshState({ issues, prs: { 11: pr(11, 1, { state: 'CLOSED' }) } })
+  const r = run(w, st(), { request })
+  check(`${name}: the preflight refuses ${reason}, exit 2`, r.code === 2 && r.json?.result === 'refused' && r.json?.reason === reason && same(Object.keys(r.json), ['result', 'reason', 'detail']), show(r))
+  const c = run(w, st(), { request, confirmed: confirmAll(issues) })
+  check(`${name}: a confirmed chain reads ${confirmedStates.join(', ')}, exit 0`, c.code === 0 && same(states(c), confirmedStates) &&
+    (unknownReason === undefined || (node(c, 1)?.reason === unknownReason && c.json?.warnings?.some((x) => x.startsWith('#1 is unknown: issue #1 ')))), show(c))
+}
+{
+  // #1 runs, #2 waits on it, #3 is independent. Then someone parks the waiting #2.
+  const w = makeWorld()
+  w.plant('refs/heads/feat/issue-1-issue-1')
+  const issuesWith = (labels2) => ({ 1: issue(1, { labels: [{ name: 'in-progress' }] }), 2: issue(2, { labels: labels2 }), 3: issue(3) })
+  const ready = issuesWith([{ name: 'ready-for-agent' }])
+  const baseline = run(w, freshState({ issues: ready }), { request: '#1 → #2; #3', confirmed: confirmAll(ready) })
+  check('(baseline) the confirmed chain before the relabel: running, waiting, launch', same(states(baseline), ['running:watch', 'waiting:wait', 'ready:launch']), show(baseline))
+  const parked = issuesWith([{ name: 'ready-for-agent' }, { name: 'needs-info' }])
+  const pre = run(w, freshState({ issues: parked }), { request: '#1 → #2; #3' })
+  check('a relabelled waiting dependent: the preflight refuses blocked', pre.code === 2 && pre.json?.reason === 'blocked', show(pre))
+  const conf = run(w, freshState({ issues: parked }), { request: '#1 → #2; #3', confirmed: confirmAll(parked) })
+  check('a relabelled waiting dependent: a confirmed chain reads it parked:needs-info, next user, exit 0', conf.code === 0 &&
+    pick(node(conf, 2), ['state', 'reason', 'next']) === JSON.stringify({ state: 'parked:needs-info', reason: null, next: 'user' }), show(conf))
+  check('and its siblings keep the states they had before it was parked', same(node(conf, 1), node(baseline, 1)) && same(node(conf, 3), node(baseline, 3)) &&
+    conf.json?.active === baseline.json?.active, `${JSON.stringify(node(conf, 1))} ${JSON.stringify(node(conf, 3))}`)
+}
+{
+  // A confirmed chain whose root, never started, was closed without a merge.
+  const w = makeWorld()
+  const issues = { 1: issue(1, { state: 'CLOSED', closedByPullRequestsReferences: [linkTo(11)] }), 2: issue(2), 3: issue(3) }
+  const r = run(w, freshState({ issues, prs: { 11: pr(11, 1, { state: 'CLOSED' }) } }), { request: '#1 → land → #2; #3', confirmed: confirmAll(issues) })
+  check('a confirmed chain\'s root with no run marks, closed unmerged: parked:closed, its child dead-parent, the rest go on', r.code === 0 &&
+    same(states(r), ['parked:closed:user', 'dead-parent:user', 'ready:launch']) && same(node(r, 2)?.waitsOn, [1]) && r.json?.active === 0, show(r))
+}
+{
+  const w = makeWorld()
+  const cut = { 1: issue(1, { body: 'Why, with the criteria cut.\n' }) }
+  const moved = run(w, freshState({ issues: cut }), { request: '#1', confirmed: `1:${sha256(bodyOf(1))}` })
+  check('a confirmed body whose criteria were cut reads waiting body-moved, never ready', pick(node(moved, 1), ['state', 'reason', 'next']) ===
+    JSON.stringify({ state: 'waiting', reason: 'body-moved', next: 'wait' }), show(moved))
+  const unconfirmed = run(w, freshState({ issues: { ...cut, 2: issue(2) } }), { request: '#1; #2', confirmed: `2:${sha256(bodyOf(2))}` })
+  check('the same body with no confirmed digest to compare reads unknown no-acceptance-criteria, never ready', pick(node(unconfirmed, 1), ['state', 'reason', 'next']) ===
+    JSON.stringify({ state: 'unknown', reason: 'no-acceptance-criteria', next: 'user' }) && node(unconfirmed, 2)?.state === 'ready', show(unconfirmed))
+}
+{
+  // The grammar and repository refusals hold on a confirmed run too.
+  const digest = `1:${sha256(bodyOf(1))}`
+  const cycle = run(null, freshState(), { request: '#1 → #2 → #1', confirmed: digest })
+  check('a confirmed run still refuses a cycle', cycle.code === 2 && cycle.json?.reason === 'cycle', show(cycle))
+  const w = makeWorld()
+  const foreign = run(w, freshState(), { repo: 'github.com/jakub/other', request: '#1', confirmed: digest })
+  check('a confirmed run still refuses foreign-repo', foreign.code === 2 && foreign.json?.reason === 'foreign-repo', show(foreign))
+  const trunk = run(w, freshState({ defaultBranch: 'trunk', issues: { 1: issue(1) } }), { request: '#1', confirmed: digest })
+  check('a confirmed run still refuses not-main', trunk.code === 2 && trunk.json?.reason === 'not-main', show(trunk))
 }
 {
   const w = makeWorld()

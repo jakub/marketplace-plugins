@@ -39,12 +39,17 @@
 // one that never merged is ignored. One OPEN or MERGED candidate is the issue's, and two are
 // unknown. Run marks are the claim tag, a run branch on origin, a candidate and `in-progress`.
 //
-// Admission and reconciliation. An issue with no run marks has to pass what the claim checks: open,
-// ready-for-agent as its sole lifecycle label, an exact `## Acceptance Criteria` section, all through
-// issue-claim.mjs's own exports so the two can't drift. A parent that is closed with no run marks
-// refuses dead-parent, since no child of it can start. An issue with run marks gets a state and never
-// a refusal, which is what lets a chain resume over issues already running or landed. An issue whose
-// reads failed is neither admitted nor refused: it reads unknown.
+// Admission and reconciliation. The grammar and repository refusals (usage, parse, cycle,
+// self-edge, duplicate, unknown-issue, foreign-repo, not-main) hold on every run. The issue
+// refusals hold only on a run without --confirmed, the preflight: there an issue with no run marks
+// has to pass what the claim checks (open, ready-for-agent as its sole lifecycle label, an exact
+// `## Acceptance Criteria` section, all through issue-claim.mjs's own exports so the two can't
+// drift), and a parent closed with no run marks refuses dead-parent, since no child of it can
+// start. A run with --confirmed is a chain the user already confirmed, and no issue refuses it: one
+// that was parked or closed since gets a state, because a parked issue holds only its descendants
+// and everything else keeps going. An issue with run marks gets a state on every run, which is what
+// lets a chain resume over issues already running or landed. An issue whose reads failed is neither
+// admitted nor refused: it reads unknown.
 //
 // The state, first match wins:
 //   unknown         a read for this issue failed (the issue, origin's refs, a linked pull request,
@@ -52,6 +57,7 @@
 //                   without its merge commit. Nothing rounds it up.
 //   landed          the candidate is MERGED, and the compare is ahead or identical with behind_by 0.
 //   dead-parent     a parent at any depth is CLOSED with no merged candidate.
+//   parked:closed   CLOSED with no run marks, which only a confirmed chain gets this far with.
 //   parked:<label>  a lifecycle label other than ready-for-agent and in-progress, the first in the
 //                   label contract's order. It outranks a clean line.
 //   started-early   run marks while some parent hasn't landed.
@@ -63,7 +69,10 @@
 //   claiming        a claim tag and no branch.
 //   waiting         some parent hasn't landed (reason waits-on), or the body digests differently
 //                   from its --confirmed value (body-moved), which the claim would refuse anyway.
-//   ready           none of the above.
+//   ready           none of the above, and the issue passes the claim's readiness and criteria
+//                   checks. One that fails them here, which only a confirmed chain can reach,
+//                   reads unknown with the claim's reason (not-ready, no-acceptance-criteria),
+//                   never ready.
 //
 // Slots. claiming, running, clean, started-early and unknown each hold one, since a run nobody can
 // see may still be live, and the rest hold none. ready issues get `next: launch` in ascending order
@@ -75,9 +84,10 @@
 // chain".
 //
 // stdout is one JSON line. `result` is ledger (exit 0, whatever the states, unknown among them),
-// refused (exit 2: usage, parse, cycle, self-edge, duplicate, unknown-issue, foreign-repo, not-main,
-// issue-closed, not-ready, blocked, no-acceptance-criteria or dead-parent, with the cycle printed in
-// `cycle`), or unknown (exit 4: origin-unreadable, default-branch-unreadable or login-unreadable).
+// refused (exit 2: usage, parse, cycle, self-edge, duplicate, unknown-issue, foreign-repo or
+// not-main on any run, and issue-closed, not-ready, blocked, no-acceptance-criteria or dead-parent
+// only without --confirmed; a cycle is printed in `cycle`), or unknown (exit 4: origin-unreadable,
+// default-branch-unreadable or login-unreadable).
 // Nothing printed carries origin's credential.
 
 import { createHash } from 'node:crypto'
@@ -413,8 +423,10 @@ export function chainLedger({ argv, cwd, env = process.env, runGh }) {
     })
   }
 
-  // ---- admission: an issue with no run marks is held to what the claim checks, in ascending order.
-  for (const n of parsed.issues) {
+  // ---- admission, on the preflight only: an issue with no run marks is held to what the claim
+  // checks, in ascending order. A confirmed chain never refuses here, so one issue the user parked
+  // can't take the others' status down with it.
+  for (const n of confirmedArg === null ? parsed.issues : []) {
     const fact = facts.get(n)
     if (fact.unknown !== null || fact.marks) continue
     if (fact.dead && childrenOf.get(n).length > 0) {
@@ -431,6 +443,8 @@ export function chainLedger({ argv, cwd, env = process.env, runGh }) {
     seen.add(p)
     return facts.get(p).dead || deadAbove(p, seen)
   })
+  /** issue -> why it reads unknown, for the warnings. */
+  const why = new Map()
   const nodes = parsed.issues.map((n) => {
     const fact = facts.get(n)
     const parents = parentsOf.get(n)
@@ -440,9 +454,10 @@ export function chainLedger({ argv, cwd, env = process.env, runGh }) {
     const ref = refs?.get(n)
     let state = 'ready'
     let reason = null
-    if (fact.unknown !== null) { state = 'unknown'; reason = fact.unknown }
+    if (fact.unknown !== null) { state = 'unknown'; reason = fact.unknown; why.set(n, fact.detail) }
     else if (fact.landed) state = 'landed'
     else if (deadAbove(n)) state = 'dead-parent'
+    else if (fact.dead && !fact.marks) state = 'parked:closed'
     else if (parked !== undefined) state = `parked:${parked}`
     else if (fact.marks && waitsOn.length > 0) state = 'started-early'
     else if (fact.clean) state = 'clean'
@@ -450,6 +465,12 @@ export function chainLedger({ argv, cwd, env = process.env, runGh }) {
     else if (ref?.tag) state = 'claiming'
     else if (waitsOn.length > 0) { state = 'waiting'; reason = 'waits-on' }
     else if (confirmed.has(n) && confirmed.get(n) !== body) { state = 'waiting'; reason = 'body-moved' }
+    else {
+      // Only a confirmed chain gets here unadmitted. What the claim would refuse is never ready.
+      const wrong = readinessOf(n, fact.raw) ?? (acceptanceCriteria(fact.raw.body) === null
+        ? { reason: 'no-acceptance-criteria', detail: `issue #${n} has no "## Acceptance Criteria" line with anything under it` } : null)
+      if (wrong !== null) { state = 'unknown'; reason = wrong.reason; why.set(n, wrong.detail) }
+    }
     const pv = fact.candidate
     return {
       issue: n, title: typeof fact.raw?.title === 'string' ? fact.raw.title : null, state, reason,
@@ -477,7 +498,7 @@ export function chainLedger({ argv, cwd, env = process.env, runGh }) {
   const warnings = []
   for (const n of parsed.issues) {
     const fact = facts.get(n)
-    if (fact.unknown !== null) warnings.push(`${tag(n)} is unknown: ${fact.detail}`)
+    if (why.has(n)) warnings.push(`${tag(n)} is unknown: ${why.get(n)}`)
     if (fact.raw !== null) {
       const named = new Set([...String(fact.raw.body ?? '').matchAll(MENTION)].map((m) => Number(m[1])))
       for (const m of [...named].sort(byNumber)) {
