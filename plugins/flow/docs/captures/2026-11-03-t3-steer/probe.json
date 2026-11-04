@@ -1,0 +1,94 @@
+{
+  "date": "2026-11-03",
+  "flow": "0.43.0 (main b391d79)",
+  "note": "Probe: delegate_task read-only seat, t3_thread_send mode steer while turn 1 ran, then seat.mjs close with the verbatim task_status. Expected corrected answer {files:6,total:2843}; uncorrected {files:18,total:11980}.",
+  "cases": [
+    {
+      "case": "claude mid-turn steer",
+      "model": "claude-sonnet-5-5 low",
+      "delivery": "steered (run ordinal 1)",
+      "answer": {
+        "files": 6,
+        "total": 2843
+      },
+      "verdict": "valid",
+      "state": {
+        "opened": "2e52f787-1157-4577-b15a-d9148299739e",
+        "turn": 1,
+        "turnKey": "2e52f787-1157-4577-b15a-d9148299739e",
+        "blocks": 0,
+        "outcome": "valid",
+        "errors": [],
+        "stops": 1,
+        "messageSha256": "a4fcaf5f2ce7ab86f3dfa8e87b799493e0b5e5eb04b4d77c2a9594d5914d26a0",
+        "models": [
+          "claude-sonnet-5-5"
+        ]
+      }
+    },
+    {
+      "case": "codex mid-turn steer",
+      "model": "gpt-6.1-sol low",
+      "delivery": "steered (run ordinal 1)",
+      "answer": {
+        "files": 6,
+        "total": 2843
+      },
+      "verdict": "valid",
+      "state": {
+        "opened": "01a1a31d-d630-7a50-a6e3-05a9ed1862da",
+        "turn": 1,
+        "turnKey": "01a1a31d-d630-7a50-a6e3-05a9ed1862da",
+        "blocks": 0,
+        "outcome": "valid",
+        "errors": [],
+        "stops": 1,
+        "messageSha256": "09d249db7a3cdac13985a59c21ff61ed0d91beef5d0b420402f5d2e4e3dc59aa",
+        "models": [
+          "gpt-6.1-sol"
+        ]
+      }
+    },
+    {
+      "case": "claude follow-up to finished seat (prep critique)",
+      "model": "claude-opus-5-5 high",
+      "delivery": "started (run ordinal 2)",
+      "verdict": "valid, result = turn 2 envelope",
+      "state": {
+        "opened": "10b584af-2457-468b-823b-85dc73a84b37",
+        "turn": 2,
+        "turnKey": "10b584af-2457-468b-823b-85dc73a84b37",
+        "blocks": 0,
+        "outcome": "valid",
+        "errors": [],
+        "stops": 1,
+        "messageSha256": "acd9606ca690f41e7f6425cfa607e53304e831a86781118d46cea6cf2a327913",
+        "models": [
+          "claude-opus-5-5"
+        ]
+      }
+    },
+    {
+      "case": "codex follow-up to finished seat (prep critique)",
+      "model": "gpt-6-astra xhigh",
+      "delivery": "started (run ordinal 2 failed on host error, ordinal 3 completed)",
+      "verdict": "valid, but result = TURN 1 envelope; task_status.latestTerminalSummary held the turn-3 critique",
+      "state": {
+        "turn": 1,
+        "turnKey": "01a1a314-189b-70f3-9feb-8cda41263da5",
+        "blocks": 0,
+        "outcome": "valid",
+        "errors": [],
+        "stops": 1,
+        "messageSha256": "c5f3c61e3bb40bc5487dc5df464e3d0d63669bfa4da2ed8e08ba206d13faeef6",
+        "models": [
+          "gpt-6-astra"
+        ]
+      }
+    }
+  ],
+  "cli": {
+    "codex": "codex-cli 0.166.0",
+    "claude": "Claude Code 2.1.317"
+  }
+}

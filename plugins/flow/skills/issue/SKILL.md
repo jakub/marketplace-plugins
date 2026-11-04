@@ -1,7 +1,7 @@
 ---
 name: issue
 description: Implement one ready-for-agent issue hands-off, through a pushed, reviewed, evidenced PR, then hand it to babysit. Never merges. Use when the user asks to run a specific issue number. Never start it from a finished prep, a defect you found, or a survey.
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor, mcp__t3-code__orchestrator_capabilities, mcp__t3-code__delegate_task, mcp__t3-code__task_status, mcp__t3-code__task_cancel
+allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Read, Edit, Write, TaskOutput, TaskStop, PushNotification, Agent, SendMessage, AskUserQuestion, Skill, mcp__plugin_flow_flow_delegate__delegate_to_codex, mcp__plugin_flow_flow_delegate__delegation_result, mcp__plugin_flow_flow_delegate__delegation_cancel, mcp__plugin_flow_flow_delegate__delegation_steer, mcp__plugin_flow_flow_delegate__delegation_doctor, mcp__t3-code__orchestrator_capabilities, mcp__t3-code__delegate_task, mcp__t3-code__task_status, mcp__t3-code__task_cancel, mcp__t3-code__t3_thread_send
 ---
 
 # issue
@@ -67,7 +67,7 @@ Pass `--kind` only if the label default is wrong: `bug` is fix, `documentation` 
 
 Three kinds of issue comment, and no others:
 
-1. **Pre-flight**, before work starts: the base SHA, the AC digest, the risk tier, and the seats with their models, efforts and why.
+1. **Pre-flight**, before work starts: the base SHA, the AC digest, the risk tier, the seats with their models, efforts and why, and the CI mapping invariant 3 asks for.
 2. **Events**, as they happen: a tripwire fired, the run widened or narrowed, a fork guessed, a seat re-run on a stronger model, the fix-round total, the breaker tripped, a stale answer rejected. Each review round adds one triage line per finding: the reviewed head, the finding's title and location, its basis, its disposition, the obligation or exclusion, the reason, and an evidence link. Several lines can share one comment.
 3. **Final**: a verdict per criterion, and coverage: which seats actually looked at the diff versus the ones you planned, by name.
 
@@ -75,22 +75,35 @@ When you recover from anything, re-read live state. A journal line never authori
 
 ## 4. Design pass
 
-Every `standard` or `high` run gets one, even when prep or an ADR settled the spec. A `low` run skips it, because prep's dialectic already shaped the change. Start the native leg, then the other-family leg, so both land in the same turn:
+Every `standard` or `high` run gets one, even when prep or an ADR settled the spec. A `low` run skips it, because prep's dialectic already shaped the change, but a `low` run with more than one checkpoint still writes the checkpoint plan below. Start the native leg, then the other-family leg, so both land in the same turn:
 
 - The native leg frames the smallest change with the most reuse, grounded in the real code seams.
 - The other-family leg is blind. It proposes its own shape and explicitly calls out what the issue left unsaid or poorly defined.
 
-Synthesize them yourself, and resolve each disagreement out loud instead of averaging. Say where each new thing lives and why, which layer enforces each invariant, and the checkpoints with a difficulty for each. Difficulty is about what could break, never file count, and it picks each write seat's rung.
+Synthesize them yourself, and resolve each disagreement out loud instead of averaging. Say where each new thing lives and why, which layer enforces each invariant, and the checkpoint plan.
+
+The checkpoint plan lists each checkpoint's id, the files it owns (invariant 6), its parents, premise checkpoints included, and its difficulty. Difficulty is about what could break, never file count, and it picks each write seat's rung. Add a shared or exclusive constraint only where it affects scheduling, such as a fixed port or one test database. Schedule the checkpoints from the plan:
+
+- A checkpoint starts once every parent's commits passed invariant 8's git check and the parents' named checks are green on those commits. It doesn't wait for unrelated checkpoints. A dependent waits for evidence on its parent's current state, and never inherits a green from an earlier one.
+- Done means committed and verified on the run branch, never merged.
+- A premise checkpoint runs at its first eligible point, because a failed premise changes what its dependents build against.
+- When a parent changes or a premise fails, pause or steer its dependents with the verified state (step 6), and recheck each one before it counts as done. A steer is how the change reaches a dependent, not proof the dependent absorbed it.
+- A failed premise whose decision is the user's goes to step 8.
 
 Open design questions found mid-run means prep missed something. A small shape question is a fork (step 8), journaled as a prep-gap event. A genuinely open design is `needs-info`, back through prep.
 
 ## 5. Invariants
 
 1. **Review crosses families per diff.** A PR with native-written and delegated-written work needs a reviewer from each family.
-2. **Someone tries to break it.** Tell at least one review seat to refute the change, not summarize it. Brief the first review as `babysit` §Rounds says, on every route. A reviewer's failing test is evidence, not a way past triage, and a Fixed finding's fix keeps it as the regression guard. If the fixer thinks the test encodes the wrong requirement, it says so instead of satisfying it.
+2. **Someone tries to break it.** Tell at least one review seat to refute the change, not summarize it. Brief the first review as `babysit` §Rounds says, on every route. A reviewer's failing test is evidence, not a way past triage, and a Fixed finding's test follows `babysit` §Triage. If the fixer thinks the test encodes the wrong requirement, it says so instead of satisfying it.
 3. **Unknown is not a pass.** CI is green only on a head you checked is in sync (the local SHA equals the PR's `headRefOid`) and that you actually saw. Never infer it from an exit code. A `failed`, `cancelled` or `unknown` review job is a missing seat, not a clean review.
+   - Before a push, run the tests the checkpoints named and every command the repo's `AGENTS.md` or `CLAUDE.md` requires. Leave any other suite that a CI job runs to that job, because CI runs it on the same head and a local copy of that run adds no evidence.
+   - Record once, in the pre-flight journal, which CI job runs each remaining suite: the job, its command, and the matrix or environment that selects the suite. Reuse that mapping until the run changes the workflow files or the test commands.
+   - On every synced head, read that job's actual result. A job that was skipped, path-filtered or unreadable on that head is no evidence, so run its suite locally on that head and journal the result before you count the head validated. `land` reads a skipped check as a pass, so nothing later catches it.
+   - A suite no CI job runs stays local. With no CI, everything stays local, and `land` still refuses `ci-unknown`.
 4. **Every criterion has evidence a stranger can re-run.** Each gets a verdict and a pointer in the PR's evidence ledger, reproducible from the merged repo alone with a committed test, script or artifact. Journal prose is narrative. An expiring URL is evidence with a TTL.
 5. **Stop on evidence, not exhaustion.** The issue's `## Risk` tier sets the bar, and no section means `standard`. `low` and `standard` converge on one clean adversarial pass from the family that didn't write the fix. `high` needs two clean passes in a row from different seats, and a security seat is one of the reviewers. Triage every finding as `babysit` §Triage says, and count a pass as clean only by its definition there. The final pass sweeps the whole diff file by file and lists what it read and skipped, and a file no reviewer named since the last fix round is a gap. A `flow_delegate` review returns no such list, so continue that job and ask for one before the pass counts. Count fix rounds against the breaker in `babysit` §Rounds, exactly 3 on `low` and 5 otherwise, which says what a round is and what to do when it trips. Journal the running total after every fix round, because `babysit` continues the count instead of resetting it.
+   - On a `standard` or `high` run with more than one checkpoint, you may get an early cross-family review of a verified checkpoint, so a defect surfaces before its dependents build on it. Review its real commit range: an ancestor base and a head that contains the checkpoint's commits, any interleaved commits included, with no filtered tree. Writers keep going only when the reviewer reads a checkout flow's executor pins and closes, which is T3's `seat open --access review`. On any other route, review at a quiet boundary or skip the early pass, because invariant 8's snapshot would move under live writers. The reviewer returns coverage for every file in the range. An early pass is never a clean pass and never final coverage, because it doesn't read the head that ships. Triage its findings as `babysit` §Triage says, and count its fix batches against the same breaker, with no carve-out. A range with both families' work follows invariant 1.
 6. **One file, one writer.** No two seats hold the same file at once, and each stages only its own paths, because the index is shared. Notes, logs, captures and anything else the run won't commit go in the worktree's `.flow-scratch/`, which the claim git-ignores. Never put them in /tmp or the workspace root, because `land` retires scratch with the worktree. Say so in each seat's task.
    - A `flow_delegate` writer can edit but not commit, so tell it that. When it returns, verify it (invariant 8), stage its files by path, and commit them. Name the seat in the journal, never in the commit.
    - A T3 writer commits its own paths with `git -C <wt> commit -- <paths>`, and invariant 8 checks those commits.
@@ -99,9 +112,9 @@ Open design questions found mid-run means prep missed something. A small shape q
 
 ## 6. Seats
 
-- **In T3 Code**, every seat is a T3 seat through `delegate_task` (see the `delegate` skill's `## T3 seats`). Wait for each wake, use `task_status` mid-turn only when you need it, and stop one with `task_cancel`. Act on the `seat close` verdict. Preflight's doctor still runs, because `flow_delegate` is the cross-family fallback, and the native seats below are the same-family one.
+- **In T3 Code**, every seat is a T3 seat through `delegate_task` (see the `delegate` skill's `## T3 seats`). Wait, steer and close as its §3–§5 say, stop a seat with `task_cancel`, and act on the `seat close` verdict. Preflight's doctor still runs, because `flow_delegate` is the cross-family fallback, and the native seats below are the same-family one.
 - **In Claude Code**, `flow:implementer` writes and `flow:reader` scouts, proposes and reviews. Run a long or parallel `flow_delegate` call through `flow:bridge`. `SendMessage` reaches a running seat with state you verified, `TaskOutput` reads its stream, and `TaskStop` ends it.
-- **In Codex**, use native spawns, one checkpoint each. You can't reach a running seat, so verify with git between batches, and `followup_task` a finished seat with verified state.
+- **In Codex**, use native spawns, one checkpoint each. You can't reach a running seat, so verify a parent with git before its dependents start (step 4), and `followup_task` a finished seat with verified state.
 
 ## 7. Tripwires
 
@@ -120,10 +133,16 @@ A fork is the user's only when it's genuinely theirs to pick: two designs both d
 
 **Optional forks.** A remedy that expands the approved responsibility, the supported behavior or the trust posture is never one. It goes to the user before anyone writes it, because guessing it grows the work. Otherwise, if you can ask and get the answer in the same turn, ask, with the consequence on each option. If they dismiss it, decide and journal. If asking would end the turn, don't ask. Decide, journal a `fork guessed` event naming the rejected option and why, and keep going.
 
-**Trust-model forks** set the posture of a trust boundary: who can reach what, what an unattended tool reads or publishes, where authority ends. Always ask these, on every host, because reviewers will ratify a coherent guessed posture instead of contesting it. If nobody answers, take the conservative posture (confine, refuse, least reach), label `needs-human`, journal it, and stop.
+**Trust-model forks** set the posture of a trust boundary: who can reach what, what an unattended tool reads or publishes, where authority ends. Always ask these, on every host, because reviewers will ratify a coherent guessed posture instead of contesting it. When asking ends the turn, take the conservative posture (confine, refuse, least reach), journal it, and stop as "Suspending" says, with the `needs-human` label.
 
-**Suspending.** When asking ends the turn, finish every mutation first: commit, push, journal, label, ping. Then read the anchors (the AC digest, the head SHA and the issue's `updatedAt`) right before you ask. One exception: when the question is whether something may be pushed at all, such as possible secret material, commit locally and do everything else except the push. Every other trust fork keeps the push, because pushing this run's own feature branch settles nothing about who can reach what.
+**Suspending.** When a `needs-info`, `needs-human`, trust-fork or breaker stop ends the run, the question to the user is your last act, so nothing the run still owes waits behind an answer that may never come. In this order:
+
+1. **Settle every running seat.** Let a seat that's about to commit finish, cancel the rest, and wait until each cancelled seat has stopped, because a seat still running after its cancel can commit behind the check and step 2 would push it. In Codex you can't reach a running seat (§6), so wait for each one to finish instead. Then close every seat and check it against git (invariant 8). Cancelling a task doesn't close its seat.
+2. **Finish the mutations:** commit, push, journal, label, comment and ping. Finish only what the run was already allowed to do. This step never authorizes a new push or more implementation. One exception: when the question is whether something may be pushed at all, such as possible secret material, commit locally and do everything else except the push. Every other trust fork keeps the push, because pushing this run's own feature branch settles nothing about who can reach what.
+3. **Remove watchers and scheduled wakes,** as `babysit` §Waiting says.
+4. **Read the anchors** that exist, right before you ask: the AC digest, the head SHA and the issue's `updatedAt`. A stage with no issue yet, such as a free-text prep, has fewer.
+5. **Ask** through the session's question tool, with 2 to 4 options, the recommended one first, and the reason inside the question. With no question tool, the question is the run's final response.
 
 An answer that arrives after the anchors moved is stale. Journal `stale-answer-rejected`, keep `needs-human`, re-read, and ask again against the new state. `needs-human` clears only after that re-check.
 
-**Escalate early.** A blocking question the issue, code and docs can't settle is `needs-info` the moment you find it, not after you guessed an implementation. Every escalation is a label, a comment saying what blocks, then a best-effort ping: `PushNotification` in Claude Code, `notify-send` in Codex (silent over SSH). The label and the comment are what count.
+**Escalate early.** A blocking question the issue, code and docs can't settle is `needs-info` the moment you find it, not after you guessed an implementation. Every escalation is a label, a comment saying what blocks, then a best-effort ping: `PushNotification` in Claude Code, `notify-send` in Codex (silent over SSH). A stop that "Suspending" covers then ends with the question, in its order. Nothing tests whether the user is present. The label and the comment stay the record, and an unanswered question leaves the run stopped. Preflight stops (step 1) and optional forks keep their own paths.

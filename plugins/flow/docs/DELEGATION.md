@@ -2,7 +2,7 @@
 
 This is the maintenance record for `plugins/flow/delegate/`. To call the tools, read `skills/delegate/SKILL.md` instead, and `reference.md` beside it for the protocol detail. Nothing here repeats it.
 
-A T3 seat is not a delegated job, and this file does not govern it. `skills/delegate/SKILL.md` covers it under `## T3 seats`. A T3 seat runs inside T3 Code with flow's hooks, the user's config, their credentials and the network, and those hooks are its only guard. A delegated job is the reverse: no hook runs in it, and its session's read-back is its confinement.
+A T3 seat is not a delegated job, and this file does not govern it. `skills/delegate/SKILL.md` covers it under `## T3 seats`. A T3 seat runs inside T3 Code with flow's hooks, the user's config and their credentials, and those hooks are its only guard. What each route can't reach is listed in `skills/delegate/reference.md`, under "T3 seats: posture and identity". A delegated job is the reverse: no hook runs in it, and its session's read-back is its confinement.
 
 The Codex transport was checked on 2026-09-30 against Codex CLI 0.159.0 with a handshake that starts no model turn: `initialize`, `model/list`, `config/read`, `thread/start` with a `flow_delegation` profile and the thread config below, the thread's read-back, and `turn/steer` and `turn/interrupt` with no turn open. The turn notifications it folds come from the protocol schema that `codex app-server generate-ts --experimental --out <dir>` prints, and `thread/resume` is unchecked, because it refuses a thread that has never run a turn.
 
