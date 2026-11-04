@@ -6,7 +6,7 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Re
 
 # issue
 
-If the user started this, they aren't watching. You own the issue from claim to a pushed, reviewed, evidenced PR, and then you hand it to `babysit`. You never merge and you never retire the worktree. That's `land`'s job.
+If the user started this, they aren't watching. You own the issue from claim to a pushed, reviewed, evidenced PR, and then you hand it to `babysit`. You never merge and you never retire the worktree. That's `land`'s job. The one exception is a chain land grant for this issue in the session's starting prompt: `babysit` then hands the clean PR to `land`, and `land` still does the merge.
 
 You're the orchestrator. File scans, command output and diffs live in seats, and decisions stay with you. Pick the seats, models, width and rounds per issue, and journal each choice. However you compose the run, the invariants in step 5 hold.
 
@@ -16,7 +16,8 @@ Exactly one of these:
 
 - the issue number in the invocation (`/flow:issue 42` in Claude Code, "run issue #42" in Codex),
 - the user naming the issue in words,
-- the user saying yes to a prep hand-off.
+- the user saying yes to a prep hand-off,
+- a starting prompt that a `chain` launched or printed for this issue. It names the issue, the chain's land grant or none, and the claim flags.
 
 A hand-off line that mentions this stage is not an invocation. A number that isn't a positive integer aborts with usage and changes nothing. If a message mentions `#N` while it describes something else, ask which they mean.
 
@@ -50,18 +51,20 @@ Where roots come from: in Claude Code, the session's MCP roots plus `CLAUDE_PROJ
 
 Assigning the issue and re-reading it isn't a claim: two runs under one account both see a green re-read. The claim is a tag that origin creates, and `scripts/issue-claim.mjs` owns it. Its header is the protocol.
 
-Run it once, from the canonical checkout (the main working tree, not a linked worktree):
+Run it from the canonical checkout (the main working tree, not a linked worktree), and again only as the `unknown` bullet says:
 
 ```bash
-node <plugin-root>/scripts/issue-claim.mjs claim <N> [--kind feat|fix|chore]
+node <plugin-root>/scripts/issue-claim.mjs claim <N> [--kind feat|fix|chore] [--expect-body <sha256>] [--require-ancestor <sha>]...
 ```
+
+A chain-started run passes its starting prompt's `--expect-body` value and each `--require-ancestor` value unchanged. The claim checks them under its tag, before it creates a branch or a worktree.
 
 Pass `--kind` only if the label default is wrong: `bug` is fix, `documentation` without `enhancement` is chore, and anything else is feat. It prints one JSON line, and `result` is the whole answer:
 
 - **`claimed`**: go. Record `base`, `branch`, `worktree`, `head` and `acDigest`, the sha256 of the exact `## Acceptance Criteria` bytes. The run is judged against that snapshot. If the body moves mid-run, flag it and don't chase it. Post the pre-flight comment.
-- **`refused`**: nothing was left behind, and `reason` says why. `not-ready` goes back through prep. `blocked` goes to the blocking label, which only the user clears. `live-run` means another run owns it, and `found` says where. Fix anything else it names, or report it.
+- **`refused`**: nothing was left behind, and `reason` says why. `not-ready` goes back through prep. `blocked` goes to the blocking label, which only the user clears. `live-run` means another run owns it, and `found` says where. `body-moved` (the body changed since the chain's user confirmed it) and `missing-ancestor` (a parent's merge commit isn't in the base) go back to the chain's user. Fix anything else it names, or report it.
 - **`held`**: another run holds the claim tag. Stop.
-- **`unknown`**: something broke, or a cleanup couldn't be confirmed. Report `reason`, `retained` and `cleanup` verbatim and stop. Don't read it as another run owning the issue, and never delete a tag this run didn't create. A stale tag goes to the user with the branch and PR state it guards.
+- **`unknown`**: something broke, or a cleanup couldn't be confirmed. When `retained` is empty, the claim left nothing behind, so run it again in the foreground up to 3 times, waiting 5 s, 15 s and 45 s before each. Any other `unknown`, or one still there after the third retry: report `reason`, `retained` and `cleanup` verbatim and stop. Don't read it as another run owning the issue, and never delete a tag this run didn't create. A stale tag goes to the user with the branch and PR state it guards.
 
 ## 3. Journal
 
@@ -75,7 +78,7 @@ When you recover from anything, re-read live state. A journal line never authori
 
 ## 4. Design pass
 
-Every `standard` or `high` run gets one, even when prep or an ADR settled the spec. A `low` run skips it, because prep's dialectic already shaped the change, but a `low` run with more than one checkpoint still writes the checkpoint plan below. Start the native leg, then the other-family leg, so both land in the same turn:
+Every `standard` or `high` run gets one, even when prep or an ADR settled the spec. A `low` run skips it, because prep's dialectic already shaped the change, but a `low` run with more than one checkpoint still writes the checkpoint plan below. A chain dependent, a run whose starting prompt names parents' merge commits, always gets one, even at `low`. Both legs work on its claimed base and check the spec against each parent's merged diff. A conflict between the spec and a parent's merged change is `needs-info`. Start the native leg, then the other-family leg, so both land in the same turn:
 
 - The native leg frames the smallest change with the most reuse, grounded in the real code seams.
 - The other-family leg is blind. It proposes its own shape and explicitly calls out what the issue left unsaid or poorly defined.

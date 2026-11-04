@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// issue-claim.mjs claim <N> [--kind feat|fix|chore]
+// issue-claim.mjs claim <N> [--kind feat|fix|chore] [--expect-body <sha256>] [--require-ancestor <sha>]...
 //
 // Starts at most one autonomous run on an issue. The lock is a lightweight tag,
 // refs/tags/flow-claim-issue-<N>, created on origin by a plain push: a ref create is the one
@@ -11,12 +11,19 @@
 // The run: read the issue (open, ready-for-agent as its sole lifecycle label, an exact
 // `## Acceptance Criteria` section with content, digested); scan this clone's worktrees and
 // branches, origin's branches and every open pull request for a live run; fetch and take the
-// tag; scan and read the issue again under it; add the worktree and branch at the tagged SHA
-// under <root>/.flow-worktrees/, with `/.flow-worktrees/` and `/.flow-scratch/` in the repository's
-// .git/info/exclude, the second for the run's uncommitted files, which land retires with the
-// worktree; push the branch; move the labels and read them back; drop the
-// tag. The branch reaches origin before the labels move, because the pushed branch is what every
-// later scan finds once the tag is gone, and no scan reads a label.
+// tag; scan and read the issue again under it; check what a chain asked for; add the worktree
+// and branch at the tagged SHA under <root>/.flow-worktrees/, with `/.flow-worktrees/` and
+// `/.flow-scratch/` in the repository's .git/info/exclude, the second for the run's uncommitted
+// files, which land retires with the worktree; push the branch; move the labels and read them
+// back; drop the tag. The branch reaches origin before the labels move, because the pushed
+// branch is what every later scan finds once the tag is gone, and no scan reads a label.
+//
+// A chain's worker passes --expect-body, the sha256 of the body the user confirmed, and one
+// --require-ancestor per parent's merge commit. Both are checked under the tag, after the re-read
+// and before anything is written. A body that digests differently refuses body-moved. A commit this
+// clone lacks, or one the tagged base doesn't contain, refuses missing-ancestor, and a read git
+// doesn't answer is unknown, ancestor-unreadable. The base is the object the tag was created at,
+// never a fresh read of main, so a parent that lands after the tag still reads as missing.
 //
 // stdout is one JSON line whose `result` is claimed (exit 0), refused (2), held (3) or unknown
 // (4). Every result but claimed carries `retained`: what this run may have left, from claim-tag,
@@ -46,16 +53,17 @@ const FETCH_MS = 120_000
 const EXIT = { claimed: 0, refused: 2, held: 3, unknown: 4 }
 
 const SHA = /^[0-9a-f]{40}$/
+const DIGEST = /^[0-9a-f]{64}$/
 const AC_HEADING = '## Acceptance Criteria'
-const READY = 'ready-for-agent'
+export const READY = 'ready-for-agent'
 const IN_PROGRESS = 'in-progress'
-const LIFECYCLE = ['needs-triage', 'agent-found', READY, IN_PROGRESS, 'needs-info', 'needs-human', 'needs-rebase', 'wontfix', 'deferred']
+export const LIFECYCLE = ['needs-triage', 'agent-found', READY, IN_PROGRESS, 'needs-info', 'needs-human', 'needs-rebase', 'wontfix', 'deferred']
 const KINDS = ['feat', 'fix', 'chore']
 const SLUG_MAX = 40
 // The lines the claim keeps in .git/info/exclude. The common exclude file applies in every worktree,
 // so the second keeps each run's uncommitted notes and captures out of its own status.
 const EXCLUDED = ['/.flow-worktrees/', '/.flow-scratch/']
-const USAGE = 'usage: issue-claim.mjs claim <issue-number> [--kind feat|fix|chore]\n'
+const USAGE = 'usage: issue-claim.mjs claim <issue-number> [--kind feat|fix|chore] [--expect-body <sha256>] [--require-ancestor <sha>]...\n'
 
 const git = (cwd, args, timeoutMs = LOCAL_MS, env) => execCapture('git', ['-C', cwd, ...args], { timeoutMs, env })
 
@@ -179,12 +187,32 @@ const loginsOf = (list) => (Array.isArray(list) ? list : [])
   .map((a) => (typeof a === 'string' ? a : String(a?.login ?? ''))).filter(Boolean)
 const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex')
 
+/** The sha256 of an issue body exactly as gh printed it, untrimmed: what --expect-body is compared to. */
+export const bodyDigest = (body) => sha256(String(body ?? ''))
+
+/**
+ * Why an issue can't be claimed, or null. `read` holds `state` and `labels` as gh prints them or as
+ * the claim's read normalizes them. Only an open issue whose sole lifecycle label is ready-for-agent
+ * passes.
+ */
+export const readinessOf = (issueNumber, read) => {
+  const state = String(read?.state ?? '').toUpperCase()
+  const labels = labelNames(read?.labels)
+  if (state !== 'OPEN') return { reason: 'issue-closed', detail: `issue #${issueNumber} is ${state || 'in no readable state'}, and only an open issue is claimed` }
+  if (!labels.includes(READY)) return { reason: 'not-ready', detail: `issue #${issueNumber} does not carry ${READY}` }
+  const others = LIFECYCLE.filter((l) => l !== READY && labels.includes(l))
+  if (others.length > 0) {
+    return { reason: 'blocked', detail: `issue #${issueNumber} carries ${others.join(', ')} beside ${READY}, which is trusted only as the sole lifecycle label`, extra: { blocking: others } }
+  }
+  return null
+}
+
 /**
  * The exact bytes from the `## Acceptance Criteria` line to the next `## ` heading, untrimmed,
  * since the digest is what the run is judged against. A trailing \r is ignored for the match and
  * kept in the digest. A heading with nothing under it is no section.
  */
-const acceptanceCriteria = (body) => {
+export const acceptanceCriteria = (body) => {
   const text = String(body ?? '')
   let offset = 0
   let start = -1
@@ -251,11 +279,24 @@ export function issueClaim({ argv, cwd, env = {}, runGh }) {
   if (typeof runGh !== 'function') return usage('claim was called with no gh runner')
   let issueArg = null
   let kindArg = null
+  let expectBody = null
+  const ancestors = []
   for (let i = 0; i < rest.length; i += 1) {
     if (rest[i] === '--kind') {
       kindArg = rest[i + 1] ?? null
       i += 1
       if (!KINDS.includes(kindArg)) return usage('--kind takes feat, fix or chore')
+    } else if (rest[i] === '--expect-body') {
+      const value = rest[i + 1] ?? ''
+      i += 1
+      if (expectBody !== null) return usage('--expect-body is given at most once')
+      if (!DIGEST.test(value)) return usage('--expect-body takes a sha256 as 64 lowercase hex digits')
+      expectBody = value
+    } else if (rest[i] === '--require-ancestor') {
+      const value = rest[i + 1] ?? ''
+      i += 1
+      if (!SHA.test(value)) return usage('--require-ancestor takes a full commit SHA as 40 lowercase hex digits')
+      if (!ancestors.includes(value)) ancestors.push(value)
     } else if (issueArg === null) issueArg = rest[i]
     else return usage(`${JSON.stringify(rest[i])} is an extra argument`)
   }
@@ -298,20 +339,11 @@ export function issueClaim({ argv, cwd, env = {}, runGh }) {
     if (v === null) return { problem: r.code === 0 ? `gh issue view ${issue} printed no JSON object` : failed(`gh issue view ${issue}`, r) }
     return { issue: v, state: String(v.state ?? '').toUpperCase(), labels: labelNames(v.labels) }
   }
-  const readiness = (read) => {
-    if (read.state !== 'OPEN') return { reason: 'issue-closed', detail: `issue #${issue} is ${read.state || 'in no readable state'}, and only an open issue is claimed` }
-    if (!read.labels.includes(READY)) return { reason: 'not-ready', detail: `issue #${issue} does not carry ${READY}` }
-    const others = LIFECYCLE.filter((l) => l !== READY && read.labels.includes(l))
-    if (others.length > 0) {
-      return { reason: 'blocked', detail: `issue #${issue} carries ${others.join(', ')} beside ${READY}, which is trusted only as the sole lifecycle label`, extra: { blocking: others } }
-    }
-    return null
-  }
 
   // ---- the issue. Everything up to the acquire is a read, so a refusal here changed nothing.
   const first = readIssue()
   if (first.problem) return settle('unknown', 'issue-unreadable', first.problem)
-  const wrong = readiness(first)
+  const wrong = readinessOf(issue, first)
   if (wrong !== null) return settle('refused', wrong.reason, wrong.detail, { extra: wrong.extra })
   const section = acceptanceCriteria(first.issue.body)
   if (section === null) return settle('refused', 'no-acceptance-criteria', `issue #${issue} has no "${AC_HEADING}" line with anything under it`)
@@ -437,8 +469,29 @@ export function issueClaim({ argv, cwd, env = {}, runGh }) {
   if (again.live) return standDown('refused', 'live-run', `issue #${issue} already has a run on it, found while holding the claim`, { extra: { found: again.found } })
   const reread = readIssue()
   if (reread.problem) return standDown('unknown', 'issue-unreadable', `the read under the claim tag failed: ${reread.problem}`)
-  const moved = readiness(reread)
+  const moved = readinessOf(issue, reread)
   if (moved !== null) return standDown('refused', moved.reason, `${moved.detail}, and it changed while this run held the claim`, { extra: moved.extra })
+
+  // ---- what a chain asked for, still before anything is written: the body the user confirmed,
+  // then each parent's merge commit inside the base the tag was created at.
+  if (expectBody !== null) {
+    const now = bodyDigest(reread.issue.body)
+    if (now !== expectBody) return standDown('refused', 'body-moved', `the body of issue #${issue} digests to ${now.slice(0, 12)}, not the confirmed ${expectBody.slice(0, 12)}`)
+  }
+  for (const sha of ancestors) {
+    const missing = `the base ${baseSha.slice(0, 12)} does not contain ${sha.slice(0, 12)}`
+    // git dies 128 for an absent object and for one that isn't a commit. Anything else is no
+    // answer: execCapture reports a timeout or a kill as exit 1.
+    const object = git(cwd, ['cat-file', '-e', `${sha}^{commit}`])
+    if (object.code === 128) return standDown('refused', 'missing-ancestor', `${missing}, which is no commit in this clone`)
+    if (object.code !== 0) return standDown('unknown', 'ancestor-unreadable', failed(`git cat-file -e ${sha.slice(0, 12)}`, object))
+    // The walk answers on stdout, empty when the base contains the commit, so a kill can't pass for
+    // a no the way `merge-base --is-ancestor`'s exit 1 could.
+    const walk = git(cwd, ['rev-list', '--max-count=1', sha, '--not', baseSha])
+    const outside = walk.stdout.trim()
+    if (walk.code === 0 && SHA.test(outside)) return standDown('refused', 'missing-ancestor', missing)
+    if (walk.code !== 0 || outside !== '') return standDown('unknown', 'ancestor-unreadable', failed(`git rev-list ${sha.slice(0, 12)} --not ${baseSha.slice(0, 12)}`, walk))
+  }
 
   // ---- local setup, then one re-check that the directories written through are still real.
   let setup = null

@@ -1,0 +1,28 @@
+{
+  "date": "2026-11-03",
+  "flow": "0.43.0 (main c29be82)",
+  "clis": { "claude": "2.1.317 (Claude Code)", "codex": "codex-cli 0.166.0" },
+  "premise": "P1 of issue #48: a question a T3 top-level thread asks through its question tool shows in t3_pending_request list, for a Codex-provider and a Claude-provider thread.",
+  "method": "The orchestrator launched two scratch top-level threads with t3_thread_launch, runtimeMode auto, each told to ask one question with options A and B and wait. While both runs were still running, it called t3_pending_request list and then read for each thread, then stopped both with t3_thread_interrupt stop. No question was answered. Thread and request ids are left out.",
+  "cases": [
+    {
+      "case": "codex thread",
+      "model": "gpt-6.1-sol low",
+      "runStatus": "running",
+      "pendingCount": 1,
+      "requestProvider": "codex",
+      "readShape": { "questions": 1, "options": 2, "header": "P1 probe" },
+      "pass": true
+    },
+    {
+      "case": "claude thread",
+      "model": "claude-sonnet-5-5 low",
+      "runStatus": "running",
+      "pendingCount": 1,
+      "requestProvider": "claudeAgent",
+      "readShape": { "questions": 1, "options": 2, "header": "P1 probe", "multiSelect": false },
+      "pass": true
+    }
+  ],
+  "verdict": "pass: the chain may launch both providers' threads. Permission approvals are not listed (the tool says so), so a chain thread must run hands-off."
+}

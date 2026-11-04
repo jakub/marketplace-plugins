@@ -41,7 +41,9 @@ const BRANCH = `feat/issue-${ISSUE}-${SLUG}`
 const TAG = `refs/tags/flow-claim-issue-${ISSUE}`
 const AC = '## Acceptance Criteria\n\n- [ ] one command replaces the prose steps\n  - evidence: this smoke\n'
 const BODY = `Why this exists.\n\n${AC}## Notes\n\nOutside the digest.\n`
-const AC_DIGEST = createHash('sha256').update(AC, 'utf8').digest('hex')
+const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex')
+const AC_DIGEST = sha256(AC)
+const BODY_SHA = sha256(BODY)
 const PIN = 'github.com/jakub/demo'
 
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -112,12 +114,27 @@ const run = (w, st = freshState(), { argv = ['claim', String(ISSUE)], cwd = w.re
 /** Nothing of this run anywhere: origin as it was, one worktree, no issue branch here, no edit. */
 const untouched = (w, r, before) =>
   allRefs(w.origin) === before && worktreeCount(w.repo) === 1 && refSha(w.repo, `refs/heads/${BRANCH}`) === null && edits(r.st).length === 0
+/** The whole claimed line, byte for byte, so a field added or reordered on the no-flag path fails here. */
+const claimedLine = (w, base = w.mainSha) => `${JSON.stringify({
+  command: 'claim', result: 'claimed', repo: PIN, issue: ISSUE, title: 'Add the claim verb', kind: 'feat', branch: BRANCH,
+  worktree: w.path(), base, head: base, acDigest: AC_DIGEST, url: `https://github.com/jakub/demo/issues/${ISSUE}`,
+})}\n`
+const ghArgs = (st) => JSON.stringify(st.calls.map((c) => c.args))
+/** A second commit on origin's main, so a parent can be an ancestor of the claimed base without being it. */
+const advanceMain = (w) => {
+  git(w.repo, 'commit', '-q', '--allow-empty', '-m', 'the parent landed')
+  execFileSync('git', ['-C', w.repo, 'push', '-q', 'origin', 'main'], { env: { ...process.env, GIT_SSH_COMMAND: w.ssh }, stdio: 'ignore' })
+  return git(w.repo, 'rev-parse', 'HEAD')
+}
 
 console.log('a claim on a ready issue')
+let happyCalls = null
 {
   const w = makeWorld('happy')
   const r = run(w)
+  happyCalls = ghArgs(r.st)
   check('exits 0 with result claimed', r.code === 0 && r.json?.result === 'claimed', `${r.code} ${r.stdout}${r.stderr}`)
+  check('with no flags, the claimed line is byte-equal to its pinned shape and stderr is empty', r.stdout === claimedLine(w) && r.stderr === '', `${r.stdout}${r.stderr}`)
   check('on the derived branch, at origin main, with the section digest', r.json?.branch === BRANCH && r.json?.base === w.mainSha && r.json?.head === w.mainSha && r.json?.acDigest === AC_DIGEST, r.stdout)
   check('the worktree is registered at the planned path on that branch', r.json?.worktree === w.path() && git(w.path(), 'symbolic-ref', 'HEAD') === `refs/heads/${BRANCH}`, r.stdout)
   check('the branch is on origin and the claim tag is gone', refSha(w.origin, `refs/heads/${BRANCH}`) === w.mainSha && refSha(w.origin, TAG) === null, allRefs(w.origin))
@@ -260,6 +277,115 @@ for (const [name, where, plant] of [
   const w = makeWorld('closed-under-tag')
   const r = run(w, freshState({ viewAt: { 1: { ...freshState().issue, state: 'CLOSED' } } }))
   check('an issue closed between the reads is refused under the tag, and the tag goes back', r.code === 2 && r.json?.reason === 'issue-closed' && refSha(w.origin, TAG) === null, r.stdout)
+}
+
+console.log('\nthe chain flags: the body and the parents, checked under the tag')
+{
+  const w = makeWorld('chain-flags-malformed')
+  for (const [name, flags] of [
+    ['an upper-case digest', ['--expect-body', BODY_SHA.toUpperCase()]],
+    ['a short digest', ['--expect-body', BODY_SHA.slice(1)]],
+    ['a commit where a digest goes', ['--expect-body', 'ab'.repeat(20)]],
+    ['a digest with no value', ['--expect-body']],
+    ['a second --expect-body', ['--expect-body', BODY_SHA, '--expect-body', BODY_SHA]],
+    ['an abbreviated commit', ['--require-ancestor', 'ab'.repeat(6)]],
+    ['an upper-case commit', ['--require-ancestor', 'AB'.repeat(20)]],
+    ['a ref name where a commit goes', ['--require-ancestor', 'main']],
+    ['an ancestor with no value', ['--require-ancestor']],
+  ]) {
+    const before = allRefs(w.origin)
+    const r = run(w, freshState(), { argv: ['claim', String(ISSUE), ...flags] })
+    check(`${name}: usage, exit 2, before any gh call`, r.code === 2 && r.json?.reason === 'usage' && r.json?.retained?.length === 0 &&
+      r.st.calls.length === 0 && r.stderr.includes('[--expect-body <sha256>] [--require-ancestor <sha>]...'), `${r.stdout}${r.stderr}`)
+    check(`${name}: no tag, worktree or branch`, untouched(w, r, before), allRefs(w.origin))
+  }
+}
+{
+  const w = makeWorld('chain-pass')
+  const landed = w.mainSha
+  const tip = advanceMain(w)
+  const trace = join(w.dir, 'trace')
+  process.env.GIT_TRACE = trace
+  const r = run(w, freshState(), { argv: ['claim', '--require-ancestor', landed, String(ISSUE), '--expect-body', BODY_SHA, '--require-ancestor', tip, '--require-ancestor', landed] })
+  delete process.env.GIT_TRACE
+  check('both flags passing: the claimed line is the no-flag line, byte for byte', r.code === 0 && r.stdout === claimedLine(w, tip) && r.stderr === '', `${r.code} ${r.stdout}${r.stderr}`)
+  check('and gh was asked exactly what a no-flag claim asks', ghArgs(r.st) === happyCalls, ghArgs(r.st))
+  const lines = existsSync(trace) ? readFileSync(trace, 'utf8').split('\n') : []
+  const walks = lines.flatMap((l, i) => (/trace: built-in: git rev-list --max-count=1 [0-9a-f]{40} --not /.test(l) ? [i] : []))
+  const added = lines.findIndex((l) => /trace: built-in: git worktree add /.test(l))
+  check('a repeated ancestor is walked once, each against the tagged base, before the worktree is added',
+    walks.length === 2 && walks.every((i) => lines[i].trimEnd().endsWith(` ${tip}`)) && added > walks.at(-1), JSON.stringify(walks.map((i) => lines[i])))
+}
+const treeOf = (w) => git(w.repo, 'rev-parse', 'HEAD^{tree}')
+/** A commit in this clone and nowhere on main: what a parent that never landed looks like. */
+const offMain = (w) => git(w.repo, 'commit-tree', treeOf(w), '-p', w.mainSha, '-m', 'a parent that never landed')
+/** A commit object whose own parent is absent, so cat-file finds it and the ancestry walk errors out. */
+const brokenParent = (w) => execFileSync('git', ['-C', w.repo, 'hash-object', '-t', 'commit', '-w', '--stdin'], {
+  encoding: 'utf8', input: `tree ${treeOf(w)}\nparent 0123456789abcdef0123456789abcdef01234567\nauthor smoke <smoke@example.invalid> 1 +0000\ncommitter smoke <smoke@example.invalid> 1 +0000\n\nbroken\n`,
+}).trim()
+const ABSENT = 'ab'.repeat(20)
+const movedBody = (over = {}) => ({ viewAt: { 1: { ...freshState().issue, body: `${BODY}An edit after the chain confirmed it.\n`, ...over } } })
+const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+/**
+ * A git first on PATH that exits 1 with nothing printed for the reads it names and runs the real
+ * git for everything else. Exit 1 with no output is how execCapture reports a read it killed at
+ * its timeout, so this is a read that gave no answer.
+ */
+const silentGit = (w, ...reads) => {
+  const bin = join(w.dir, 'silent-bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\ncase " $* " in\n${reads.map((r) => `  *" ${r} "*) exit 1;;\n`).join('')}esac\nexec ${REAL_GIT} "$@"\n`)
+  chmodSync(join(bin, 'git'), 0o755)
+  return `${bin}:${process.env.PATH}`
+}
+for (const [name, code, reason, prepare] of [
+  ['a body edited since confirmation', 2, 'body-moved', () => ({ flags: ['--expect-body', BODY_SHA], over: movedBody() })],
+  ['a parent committed off main', 2, 'missing-ancestor', (w) => ({ flags: ['--require-ancestor', offMain(w)] })],
+  ['a parent this clone has never seen', 2, 'missing-ancestor', () => ({ flags: ['--require-ancestor', ABSENT] })],
+  // origin's main, the clone's main and its tracking ref all move to the parent under the tag:
+  // the check reads the base acquire captured, so a parent that lands after the tag is still missing.
+  ['a parent that reaches main after the tag', 2, 'missing-ancestor', (w) => {
+    const late = offMain(w)
+    return {
+      flags: ['--require-ancestor', late],
+      underTag: () => {
+        execFileSync('git', ['-C', w.repo, 'push', '-q', 'origin', `${late}:refs/heads/main`], { stdio: 'ignore' })
+        git(w.repo, 'update-ref', 'refs/heads/main', late)
+      },
+    }
+  }],
+  ['an ancestry walk that errors out', 4, 'ancestor-unreadable', (w) => ({ flags: ['--require-ancestor', brokenParent(w)] })],
+  // The parent is main itself, so reading either silence as an answer would claim or refuse wrongly.
+  ['a commit read that gives no answer', 4, 'ancestor-unreadable', (w) => ({ flags: ['--require-ancestor', w.mainSha], path: silentGit(w, 'cat-file -e') })],
+  ['an ancestry walk that gives no answer', 4, 'ancestor-unreadable', (w) => ({
+    flags: ['--require-ancestor', w.mainSha], path: silentGit(w, 'rev-list --max-count=1', 'merge-base --is-ancestor'),
+  })],
+  ['a readiness change and a moved body: readiness first', 2, 'issue-closed', () => ({ flags: ['--expect-body', BODY_SHA], over: movedBody({ state: 'CLOSED' }) })],
+  ['a moved body and a missing parent: the body first', 2, 'body-moved', () => ({ flags: ['--expect-body', BODY_SHA, '--require-ancestor', ABSENT], over: movedBody() })],
+]) {
+  const w = makeWorld(`chain-${reason}-${name.length}`)
+  const { flags, over = {}, underTag, path } = prepare(w)
+  const st = freshState(over)
+  // The second pull-request read is the scan under the tag, so the tag is on origin when it runs.
+  st.onPrScan = (n) => { if (n === 2) { st.tagUnder = refSha(w.origin, TAG); underTag?.() } }
+  const outerPath = process.env.PATH
+  if (path) process.env.PATH = path
+  const r = run(w, st, { argv: ['claim', String(ISSUE), ...flags] })
+  process.env.PATH = outerPath
+  const result = code === 2 ? 'refused' : 'unknown'
+  check(`${name}: ${result} ${reason}, exit ${code}, nothing retained`, r.code === code && r.json?.result === result && r.json?.reason === reason &&
+    Array.isArray(r.json?.retained) && r.json.retained.length === 0, r.stdout)
+  check(`${name}: decided under the tag, which went back`, st.views === 2 && st.tagUnder === w.mainSha && refSha(w.origin, TAG) === null, `${st.views} ${st.tagUnder} ${allRefs(w.origin)}`)
+  check(`${name}: no worktree, container or branch`, worktreeCount(w.repo) === 1 && !existsSync(join(w.repo, '.flow-worktrees')) &&
+    refSha(w.repo, `refs/heads/${BRANCH}`) === null && refSha(w.origin, `refs/heads/${BRANCH}`) === null && edits(st).length === 0, allRefs(w.repo))
+}
+{
+  const w = makeWorld('chain-body-moved-tag-kept')
+  const st = freshState(movedBody())
+  st.onPrScan = (n) => { if (n === 2) writeHook(w.origin, 'pre-receive', REFUSE_DELETES) }
+  const r = run(w, st, { argv: ['claim', String(ISSUE), '--expect-body', BODY_SHA] })
+  check('a body-moved stand-down whose tag cannot be dropped is unknown and names the tag', r.code === 4 && r.json?.reason === 'body-moved' &&
+    r.json?.retained?.join() === 'claim-tag' && r.json?.cleanup === 'drop-tag' && refSha(w.origin, TAG) === w.mainSha, r.stdout)
 }
 
 console.log('\nwhat a failure leaves behind')
