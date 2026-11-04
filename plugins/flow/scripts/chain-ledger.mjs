@@ -29,7 +29,7 @@
 // for the login; per issue, `gh issue view` with its comments and linked pull requests, both paged
 // to the end by gh (2.103.3); per linked pull request in this repository, `gh pr view`; per merged
 // candidate, the REST `compare/<mergeCommit>...main`; and one `git ls-remote origin` for the claim
-// tags and run branches issue-claim.mjs makes, with no terminal prompt and, unless GIT_SSH_COMMAND
+// tags and run branches issue-claim.mjs makes, with no terminal prompt, no askpass helper and, unless GIT_SSH_COMMAND
 // is already set, ssh in batch mode. Origin is read the claim's way, so one whose fetch and push
 // URLs differ is unread here too. Origin, the default branch or the login unread is exit 4, because
 // no state means anything without them.
@@ -320,7 +320,7 @@ export function chainLedger({ argv, cwd, env = process.env, runGh }) {
   }
 
   // ---- origin, the default branch and the login. Without any of them no state means anything.
-  const gitEnv = { ...env, GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: env.GIT_SSH_COMMAND || BATCH_SSH }
+  const gitEnv = { ...env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', GIT_SSH_COMMAND: env.GIT_SSH_COMMAND || BATCH_SSH }
   const origin = originUrl(cwd, gitEnv)
   if (origin.url === undefined) return unread('origin-unreadable', origin.detail)
   const pinned = identityOfRemote(origin.url, { purpose: 'read a chain on', allowedHosts: allowedHostsFrom(env) })
