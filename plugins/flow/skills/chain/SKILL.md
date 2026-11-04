@@ -1,7 +1,7 @@
 ---
 name: chain
 description: Run several named ready-for-agent issues hands-off, independent ones at the same time and each dependent once its parents have landed, landing only the issues the user grants. Use only when the user names two or more issues with their order, or asks for the status of a chain they started.
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(node:*), Read, AskUserQuestion, Monitor, PushNotification, mcp__t3-code__t3_thread_launch, mcp__t3-code__t3_thread_list, mcp__t3-code__t3_thread_read, mcp__t3-code__t3_pending_request, mcp__t3-code__schedule_task, mcp__t3-code__delete_scheduled_task
+allowed-tools: Bash(node:*), Bash(git remote get-url:*), Read, AskUserQuestion, Monitor, PushNotification, mcp__t3-code__t3_thread_launch, mcp__t3-code__t3_thread_list, mcp__t3-code__t3_thread_read, mcp__t3-code__t3_pending_request, mcp__t3-code__schedule_task, mcp__t3-code__delete_scheduled_task
 ---
 
 # chain
