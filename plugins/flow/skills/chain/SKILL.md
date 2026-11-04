@@ -121,7 +121,7 @@ A ledger run is the only thing that tells you a state. A wake or an event only t
   2. run the footer's command;
   3. launch each node that reads `next: launch`, as step 3 says.
 
-  A wake with no change ends without a message. Keep the wake armed until every node is `landed`, `dead-parent` or `parked:*`, or reads `user-merge` with nothing left to launch. Then delete it with `delete_scheduled_task`, and say that asking for the chain's status picks it back up. Delete it too when the user pauses the chain. Pausing stops new launches. Running workers keep going, and a granted one still lands.
+  A wake with no change ends without a message. Keep the wake armed until every node is `landed` or `dead-parent`. A parked node or one waiting on the user's merge isn't done: the user can answer that worker in its own thread or merge the PR, and then its dependents need a launch that only a wake would make. Then delete it with `delete_scheduled_task`, and say that asking for the chain's status picks it back up. Delete it too when the user pauses the chain. Pausing stops new launches. Running workers keep going, and a granted one still lands.
 - **In Claude Code**, wait with `Monitor` in slices of at most 5 minutes. Its command reruns the footer's command every two minutes and prints a line only when the exit code, a node's `state` or a node's `next` changes. End every slice with a ledger run, whether it fired, timed out or errored. When an issue becomes ready or needs the user, send a `PushNotification`.
 - **In Codex**, run the ledger at the start of each user turn about the chain, and print start lines for what reads `next: launch`.
 
