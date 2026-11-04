@@ -701,12 +701,20 @@ const mutation = (args) => {
   const line = args.join(' ')
   if (/^(issue|pr|label|repo|release|gist|secret|variable|workflow|run|cache|ruleset) (edit|create|close|reopen|merge|delete|comment|lock|unlock|pin|unpin|transfer|develop|ready|review|revert|update-branch|archive|rename|set|sync|fork|clone|upload|cancel|rerun)\b/.test(line)) return true
   if (args[0] === 'api') {
-    const method = args.findIndex((a) => a === '-X' || a === '--method')
-    if (method >= 0 && String(args[method + 1]).toUpperCase() !== 'GET') return true
+    // gh takes the method as `-X POST`, `--method POST`, `-XPOST` or `--method=POST`.
+    const at = args.findIndex((a) => a === '-X' || a === '--method')
+    const attached = args.map((a) => /^(?:-X|--method=)(.+)$/.exec(a)).find(Boolean)
+    const verb = at >= 0 ? String(args[at + 1]) : attached?.[1]
+    if (verb !== undefined && verb.toUpperCase() !== 'GET') return true
     if (args.some((a) => /^(-f|-F|--field|--raw-field|--input)$/.test(a))) return true
   }
   return false
 }
+check('the mutation detector flags known writes and passes known reads',
+  [['issue', 'edit', '1', '--add-label', 'x'], ['api', '-X', 'POST', 'repos/a/b/issues'], ['api', '--method', 'PATCH', 'repos/a/b/issues/1'],
+    ['api', '--method=POST', 'repos/a/b/issues'], ['api', '-XPOST', 'repos/a/b/issues'], ['api', 'graphql', '-f', 'query=x']].every(mutation) &&
+  ![['api', '-X', 'GET', 'repos/a/b/issues'], ['api', '-XGET', 'repos/a/b/issues'], ['api', '--method=get', 'repos/a/b/issues'], ['issue', 'view', '1'],
+    ['api', '--hostname', 'github.com', 'user']].some(mutation))
 check(`no run issued a gh mutation (${everyCall.length} calls)`, everyCall.length > 100 && !everyCall.some(mutation), JSON.stringify(everyCall.filter(mutation)))
 check('no run made a gh call the stub doesn\'t know', everyUnexpected.length === 0, JSON.stringify(everyUnexpected))
 check('every kind of read the ledger makes was exercised', ['repo view', 'api --hostname github.com user', 'issue view', 'pr view', 'api --hostname github.com repos/jakub/demo/compare/']
