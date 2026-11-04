@@ -70,6 +70,7 @@ Two supporting skills sit outside the pipeline:
 |---|---|
 | `plugins/flow/charter/charter.md` | The engineering charter. |
 | `plugins/flow/skills/{prep,issue,babysit,land}/` | One `SKILL.md` per stage, and the invocation on both hosts. |
+| `plugins/flow/skills/chain/` | `chain`, which runs several issues through the stages: independent ones at once, and each dependent after its parents land. |
 | `plugins/flow/agents/` | `implementer` (writes, cannot spawn), `reader` (reads and runs commands, no edit tools), and `bridge` (makes one delegate call on a fixed cheap model). The orchestrator picks the model for the first two at spawn. |
 | `plugins/flow/delegate/`, `plugins/flow/bin/flow-delegate` | The delegate MCP server, and the dispatcher Codex starts it through. |
 | `plugins/flow/scripts/` | The executors (`issue-claim`, `land-merge`, `lint-actions`, `seat`), `tree-snapshot`, the dispatcher installer, and the smokes. |

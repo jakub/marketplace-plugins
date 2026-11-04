@@ -5,7 +5,7 @@ description: Set a project up for flow, audit it for drift, reconcile its labels
 
 # flow
 
-The charter is what every session needs. The stage skills (`prep`, `issue`, `babysit`, `land`) carry their own steps, and `delegate` covers running other models. This one covers everything around them: setting a repository up, the doc stack, the labels and drift audits. Each hook documents itself in its script header under `hooks/scripts/`.
+The charter is what every session needs. The stage skills (`prep`, `issue`, `babysit`, `land`) carry their own steps, `chain` runs several issues through them, and `delegate` covers running other models. This one covers everything around them: setting a repository up, the doc stack, the labels and drift audits. Each hook documents itself in its script header under `hooks/scripts/`.
 
 ## Subcommands
 
