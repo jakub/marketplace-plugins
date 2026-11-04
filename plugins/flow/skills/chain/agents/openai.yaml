@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chain"
+  short_description: "Run several named issues in dependency order, landing only the granted ones"
+  default_prompt: "Use $flow:chain to run issues #<a> → land → #<b>."
