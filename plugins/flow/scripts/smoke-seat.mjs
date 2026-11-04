@@ -2570,10 +2570,11 @@ const cases = {
     const { record, schema } = store.readRecord(review.id)
     assert.deepEqual([record.baseSha, record.headSha, record.repoRoot, record.worktree, record.reviewWorktree], [baseSha, headSha, canon, path, path])
     assert.deepEqual(schema, schemas.FINDINGS_SCHEMA)
-    assert.deepEqual(Object.keys(record.canonicalSnapshot).sort(), ['branch', 'cached', 'diff', 'head', 'status', 'untracked'])
+    assert.deepEqual(Object.keys(record.canonicalSnapshot).sort(), ['branch', 'cached', 'diff', 'head', 'origin', 'status', 'untracked'])
+    assert.equal(record.canonicalSnapshot.origin, null, 'a canonical checkout with no origin records null')
     assert.equal(record.reviewGitDir, realpathSync(gitOut(path, 'rev-parse', '--absolute-git-dir')))
     assert.equal(gitOut(canon, 'status', '--porcelain'), '', 'the review worktree shows nowhere in the canonical checkout')
-    ok('a review seat resolves --base and --head to SHAs, adds a detached worktree at the head under .flow-worktrees/review-<id>, answers in the findings schema, and records a canonical snapshot with HEAD and branch and the review worktree\'s git directory')
+    ok('a review seat resolves --base and --head to SHAs, adds a detached worktree at the head under .flow-worktrees/review-<id>, answers in the findings schema, and records a canonical snapshot with HEAD, branch and origin and the review worktree\'s git directory')
 
     const byWorktree = seatCli(['open', '--access', 'review', '--provider', 'codex', '--model', 'gpt-6-luna', '--effort', 'high', '--worktree', linkedWt, '--base', 'HEAD~1', '--head', 'HEAD'])
     assert.equal(store.readRecord(byWorktree.id).record.headSha, gitOut(linkedWt, 'rev-parse', 'HEAD'), '--worktree names where the revisions resolve')
@@ -3292,6 +3293,177 @@ const cases = {
     const record = store.readRecord(committed.id).record
     assert.deepEqual([record.canonicalSnapshot.head, record.canonicalSnapshot.branch], [headSha, 'refs/heads/main'])
     ok('a review records the canonical checkout\'s HEAD commit and branch, and reads tree-moved when either changed, the tree unchanged')
+
+    // A land in another run pulls main in the canonical checkout. A review whose canonical branch
+    // only fast-forwarded onto origin's live tip still closes valid, and every other move still
+    // reads tree-moved, from the HEAD reason alone. origin is a local bare clone of canon, pusher a
+    // clone that advances it without canon seeing, and each case starts from main at the head,
+    // clean, with origin's main and canon's tracking ref at the head.
+    const bare = join(tmp, 'origin.git')
+    const pusher = join(tmp, 'pusher')
+    gitOut(tmp, 'clone', '-q', '--bare', canon, bare)
+    gitOut(tmp, 'clone', '-q', bare, pusher)
+    gitOut(canon, 'remote', 'add', 'origin', bare)
+    let pushes = 0
+    const advanceOrigin = () => {
+      gitOut(pusher, 'fetch', '-q', 'origin')
+      gitOut(pusher, 'reset', '-q', '--hard', 'origin/main')
+      writeFileSync(join(pusher, 'ff.txt'), `${++pushes}\n`)
+      gitOut(pusher, 'add', 'ff.txt')
+      gitOut(pusher, 'commit', '-q', '-m', `origin ${pushes}`)
+      gitOut(pusher, 'push', '-q', 'origin', 'HEAD:main')
+      return gitOut(pusher, 'rev-parse', 'HEAD')
+    }
+    const pullMain = () => gitOut(canon, 'pull', '-q', '--ff-only', 'origin', 'main')
+    const resetFixture = () => {
+      if (existsSync(`${bare}.away`)) renameSync(`${bare}.away`, bare)
+      gitOut(bare, 'update-ref', 'refs/heads/main', headSha)
+      gitOut(canon, 'remote', 'set-url', 'origin', bare)
+      gitOut(canon, 'checkout', '-q', 'main')
+      gitOut(canon, 'reset', '-q', '--hard', headSha)
+      spawnSync('git', ['-C', canon, 'branch', '-q', '-D', 'side'], { env: gitEnv })
+      gitOut(canon, 'fetch', '-q', 'origin')
+      assert.equal(gitOut(canon, 'status', '--porcelain'), '')
+      assert.equal(gitOut(canon, 'rev-parse', 'refs/remotes/origin/main'), headSha)
+    }
+    const headReason = (out) => out.reasons.find((reason) => /canonical checkout's HEAD moved/.test(reason))
+    // A review opened on main at the head, after before() ran, the canonical checkout then moved by
+    // move(), and the review closed with env added to seat.mjs's: tree-moved, with the HEAD reason
+    // its only one and naming why (a pattern, or a function that builds one once move ran).
+    const stillMoved = (label, move, why, { before = () => {}, env = {} } = {}) => {
+      resetFixture()
+      before()
+      const seat = reviewSeat()
+      move()
+      const out = seatCli(['close', seat.id, '--task-status', '-'], { input: JSON.stringify(taskStatusOf(seat.id, { summary: seat.message })), env })
+      const pattern = typeof why === 'function' ? why() : why
+      assert.equal(out.verdict, 'tree-moved', `${label}: ${JSON.stringify(out)}`)
+      assert.equal(out.reasons.length, 1, `${label}: ${JSON.stringify(out.reasons)}`)
+      assert.match(headReason(out) ?? '', pattern, `${label}: ${JSON.stringify(out.reasons)}`)
+      ok(`tree-moved: ${label}`)
+    }
+
+    resetFixture()
+    const pulled = reviewSeat()
+    assert.equal(store.readRecord(pulled.id).record.canonicalSnapshot.origin, bare, 'a review records origin\'s URL')
+    const tip = advanceOrigin()
+    pullMain()
+    assert.equal(gitOut(canon, 'rev-parse', 'HEAD'), tip)
+    assert.ok(existsSync(join(canon, 'ff.txt')), 'the pull moved the canonical tree')
+    const pulledOut = closeReview(pulled)
+    assert.deepEqual([pulledOut.verdict, pulledOut.reasons], ['valid', []], JSON.stringify(pulledOut))
+    ok('canonical fast-forward onto origin\'s live tip: a review whose canonical main only pulled forward, as land does, onto the tip ls-remote reads, closes valid')
+
+    resetFixture()
+    const strayed = reviewSeat()
+    advanceOrigin()
+    pullMain()
+    writeFileSync(join(canon, 'stray.txt'), 'x')
+    const strayedOut = closeReview(strayed)
+    rmSync(join(canon, 'stray.txt'))
+    assert.deepEqual([strayedOut.verdict, strayedOut.reasons], ['tree-moved', ['the canonical checkout changed while the seat ran']], JSON.stringify(strayedOut))
+    ok('tree-moved: a fast-forward onto origin\'s live tip that also changed the tree, from the snapshot reason alone')
+
+    const NOT_THE_TIP = (sha) => new RegExp(`not a fast-forward onto origin's live tip: origin's refs/heads/main is ${sha}, not this HEAD`)
+    stillMoved('a detach onto origin\'s live tip', () => {
+      advanceOrigin()
+      gitOut(canon, 'fetch', '-q', 'origin')
+      gitOut(canon, 'checkout', '-q', '--detach', 'origin/main')
+    }, /not a fast-forward onto origin's live tip: the branch is not the named branch open recorded/)
+    stillMoved('a local commit', () => gitOut(canon, 'commit', '-q', '--allow-empty', '-m', 'local'), NOT_THE_TIP(headSha))
+    stillMoved('a switch to another branch at origin\'s live tip', () => {
+      advanceOrigin()
+      gitOut(canon, 'fetch', '-q', 'origin')
+      gitOut(canon, 'checkout', '-q', '-b', 'side', 'origin/main')
+    }, /not a fast-forward onto origin's live tip: the branch is not the named branch open recorded/)
+    stillMoved('a reset backwards, with origin\'s main moved back to match', () => {
+      gitOut(bare, 'update-ref', 'refs/heads/main', baseSha)
+      gitOut(canon, 'reset', '-q', '--hard', baseSha)
+    }, /not a fast-forward onto origin's live tip: the HEAD at open is not an ancestor of this one/)
+    stillMoved('a fast-forward onto origin\'s live tip plus a local commit', () => {
+      advanceOrigin()
+      pullMain()
+      gitOut(canon, 'commit', '-q', '--allow-empty', '-m', 'local')
+    }, () => NOT_THE_TIP(gitOut(bare, 'rev-parse', 'refs/heads/main')))
+    stillMoved('a fast-forward onto a tracking ref forged with update-ref, not origin\'s live tip', () => {
+      const forged = gitOut(canon, 'commit-tree', `${headSha}^{tree}`, '-p', headSha, '-m', 'forged')
+      gitOut(canon, 'update-ref', 'refs/remotes/origin/main', forged)
+      gitOut(canon, 'merge', '-q', '--ff-only', 'origin/main')
+      assert.equal(gitOut(canon, 'rev-parse', 'HEAD'), forged)
+    }, NOT_THE_TIP(headSha))
+    stillMoved('a fast-forward onto origin\'s live tip, then origin unreadable', () => {
+      advanceOrigin()
+      pullMain()
+      renameSync(bare, `${bare}.away`)
+    }, /not a fast-forward onto origin's live tip: origin's refs\/heads\/main could not be read/)
+    let ahead = null
+    stillMoved('a fast-forward, then origin advanced to a tip the canonical checkout does not have', () => {
+      advanceOrigin()
+      pullMain()
+      ahead = advanceOrigin()
+      assert.notEqual(spawnSync('git', ['-C', canon, 'cat-file', '-e', `${ahead}^{commit}`], { env: gitEnv }).status, 0, 'the new tip is not in the canonical checkout')
+    }, () => NOT_THE_TIP(ahead))
+    const decoy = join(tmp, 'decoy.git')
+    stillMoved('origin repointed between open and close at a repository whose tip is the new HEAD', () => {
+      gitOut(tmp, 'clone', '-q', '--bare', bare, decoy)
+      const planted = gitOut(canon, 'commit-tree', `${headSha}^{tree}`, '-p', headSha, '-m', 'planted')
+      gitOut(canon, 'push', '-q', decoy, `${planted}:refs/heads/main`)
+      gitOut(canon, 'remote', 'set-url', 'origin', decoy)
+      pullMain()
+      assert.equal(gitOut(canon, 'rev-parse', 'HEAD'), planted)
+      assert.equal(gitOut(canon, 'ls-remote', 'origin', 'refs/heads/main').split('\t')[0], planted, 'the decoy\'s tip is the new HEAD')
+    }, new RegExp(`not a fast-forward onto origin's live tip: origin's URL is ${decoy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, not the one open recorded`))
+    rmSync(decoy, { recursive: true, force: true })
+
+    // A record from before origin was pinned has no origin key, and never passes.
+    resetFixture()
+    const legacyOpen = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
+    const legacyPath = join(seats, legacyOpen.id, 'record.json')
+    const legacyRecord = JSON.parse(readFileSync(legacyPath, 'utf8'))
+    delete legacyRecord.canonicalSnapshot.origin
+    writeFileSync(legacyPath, JSON.stringify(legacyRecord))
+    const legacy = hookedSeat({ id: legacyOpen.id, envelope: covering() })
+    advanceOrigin()
+    pullMain()
+    const legacyOut = closeReview(legacy)
+    assert.equal(legacyOut.verdict, 'tree-moved', JSON.stringify(legacyOut))
+    assert.match(headReason(legacyOut) ?? '', /not a fast-forward onto origin's live tip: open recorded no origin URL/, JSON.stringify(legacyOut.reasons))
+    ok('tree-moved: a record opened before origin was pinned, then a fast-forward onto origin\'s live tip')
+
+    // Over SSH, ls-remote runs ssh in batch mode with a connect timeout, no terminal prompt and no
+    // askpass, so it fails rather than waits. A fake ssh first on PATH records how it ran and fails
+    // as an unreachable host does.
+    const fakeSshBin = join(tmp, 'fake-ssh-bin')
+    const sshLog = join(tmp, 'fake-ssh.jsonl')
+    mkdirSync(fakeSshBin, { recursive: true })
+    writeFileSync(join(fakeSshBin, 'ssh'), `#!${process.execPath}
+import { appendFileSync } from 'node:fs'
+appendFileSync(${JSON.stringify(sshLog)}, JSON.stringify({ argv: process.argv.slice(2), prompt: process.env.GIT_TERMINAL_PROMPT ?? null, askpass: process.env.SSH_ASKPASS ?? null }) + '\\n')
+process.stderr.write('ssh: Could not resolve hostname smoke.invalid\\n')
+process.exit(255)
+`)
+    chmodSync(join(fakeSshBin, 'ssh'), 0o755)
+    stillMoved('a fast-forward with an SSH origin that cannot be reached', () => {
+      const local = gitOut(canon, 'commit-tree', `${headSha}^{tree}`, '-p', headSha, '-m', 'over ssh')
+      gitOut(canon, 'merge', '-q', '--ff-only', local)
+    }, /not a fast-forward onto origin's live tip: origin's refs\/heads\/main could not be read/, {
+      before: () => gitOut(canon, 'remote', 'set-url', 'origin', 'ssh://smoke.invalid/r.git'),
+      env: { PATH: `${fakeSshBin}:${trustedCodex.env.PATH}`, SSH_ASKPASS: '/usr/bin/false' },
+    })
+    const sshRuns = readFileSync(sshLog, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    assert.ok(sshRuns.length > 0, 'ls-remote never ran ssh')
+    for (const run of sshRuns) {
+      assert.deepEqual(run.argv.slice(0, 4), ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'], JSON.stringify(run))
+      assert.ok(run.argv.includes('smoke.invalid'), JSON.stringify(run))
+      assert.deepEqual([run.prompt, run.askpass], ['0', ''], JSON.stringify(run))
+    }
+    ok('ls-remote over SSH runs ssh with BatchMode=yes and ConnectTimeout=10, GIT_TERMINAL_PROMPT=0 and an empty SSH_ASKPASS, so an unreachable origin fails closed')
+
+    resetFixture()
+    gitOut(canon, 'remote', 'remove', 'origin')
+    rmSync(bare, { recursive: true, force: true })
+    rmSync(pusher, { recursive: true, force: true })
+    assert.deepEqual([gitOut(canon, 'rev-parse', 'HEAD'), gitOut(canon, 'symbolic-ref', 'HEAD'), gitOut(canon, 'remote'), gitOut(canon, 'status', '--porcelain')], [headSha, 'refs/heads/main', '', ''])
 
     // close removes only the worktree its open added: the same path, the same admin directory, and
     // still listed by git. One moved away and replaced at that path by another is left in place.

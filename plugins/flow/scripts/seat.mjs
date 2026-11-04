@@ -46,7 +46,7 @@
 // of the keys and hashes it read as hooksDigest and the root and its digest as codexPluginRoot and
 // codexPluginDigest; for a writer, hold
 // the worktree's write lease directory (below); for a review, snapshot the canonical checkout
-// with tree-snapshot.mjs and add its HEAD commit and the branch HEAD names; then write the schema and the record, last, through lib/seat-store.mjs. Before the holder, open builds the seat's context as the prompt hook will (with the real schema.json path) and refuses BAD_REQUEST when the paths make it past the 6000-byte hook budget even with the schema left out by path.
+// with tree-snapshot.mjs and add its HEAD commit, the branch HEAD names and origin's URL; then write the schema and the record, last, through lib/seat-store.mjs. Before the holder, open builds the seat's context as the prompt hook will (with the real schema.json path) and refuses BAD_REQUEST when the paths make it past the 6000-byte hook budget even with the schema left out by path.
 // A failure undoes whatever this run created, the review worktree and the lease holder, so a
 // refused open leaves nothing behind, with one exception under The lease.
 //
@@ -117,13 +117,35 @@
 //                   A router id the call asked for is never read as a served one: flow maps no
 //                   router to the model behind it, so the parent declares it at open.
 //   tree-moved      for a review: the review worktree's HEAD left the head SHA or its tree is
-//                   dirty, the canonical checkout's snapshot, HEAD commit or branch changed, or
-//                   the coverage (read,
+//                   dirty, the canonical checkout's snapshot changed, its HEAD commit or branch
+//                   changed other than by the fast-forward below, or the coverage (read,
 //                   partial and unopened together) misses a file in `git diff --name-only base
 //                   head`, the last only when there is an envelope to read it from
 //   capped          the last turn was capped
 //   invalid         the last stop in the last turn was blocked
 //   valid           otherwise; result is the envelope Stop recorded
+// The fast-forward. A land in a parallel run pulls main in the canonical checkout, which moves the
+// HEAD every open review pinned. A HEAD or branch change is no tree-moved reason when all of these
+// hold, and ls-remote runs only once the rest do:
+//   - the branch is the one open recorded, named and under refs/heads/;
+//   - both HEADs are 40-hex commits, and `git merge-base --is-ancestor <then> <now>` exits 0;
+//   - origin's URL, `git remote get-url origin`, is a non-empty string at open and the same string
+//     now, so a seat can't repoint origin at a repository it controls. A record from before the
+//     rule has no origin and never passes;
+//   - `git ls-remote --exit-code origin <branch>` prints exactly one line, for exactly that ref,
+//     whose SHA is the HEAD now. That is origin's live tip, never the local tracking ref, which
+//     update-ref can forge.
+// ls-remote runs in the git environment below plus GIT_TERMINAL_PROMPT=0, an empty SSH_ASKPASS and
+// GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10', and is killed after 30 s, so it
+// never waits on a prompt. Any other result, an unreadable origin among them, keeps tree-moved. The
+// four digests stay their own reason, so a fast-forward that also changes the tree reads tree-moved.
+// Three residuals are known and accepted:
+//   - it isn't an authorship check. A seat that resets and pulls, or fetches and fast-forward
+//     merges, in the canonical checkout passes;
+//   - a sibling merge that lands on origin after a pull moves the live tip past the canonical
+//     HEAD, so a close after that merge and before that sibling's land pulls reads tree-moved;
+//   - an HTTPS origin that needs a credential helper fails closed, because no global or system
+//     configuration is read.
 // close then checks a valid verdict against the task status, as negative evidence only. T3's
 // text can withhold a valid, and the result is still the envelope Stop recorded, never T3's
 // summary. The latest run's text is summary when latestTerminalRunId is childRunId. Otherwise,
@@ -252,6 +274,10 @@ const SCHEMA_BYTES = 16 * 1024
 const TASK_STATUS_BYTES = 64 * 1024
 const TASK_STATUS_STDIN_BYTES = 256 * 1024
 const GIT_MS = 60_000
+const HEAD_SHA = /^[0-9a-f]{40}$/
+// ls-remote may reach the network: no prompt of any kind, and a bound on how long it may take.
+const LS_REMOTE_MS = 30_000
+const LS_REMOTE_ENV = { GIT_TERMINAL_PROMPT: '0', SSH_ASKPASS: '', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' }
 const RUNTIME_MODE = 'auto'
 
 class SeatError extends Error {
@@ -265,8 +291,8 @@ const gitEnv = () => ({
   ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_'))),
   GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
 })
-function git(cwd, args) {
-  const run = spawnSync('git', ['-C', cwd, ...args], { env: gitEnv(), encoding: 'utf8', timeout: GIT_MS, maxBuffer: 1 << 28 })
+function git(cwd, args, { env = {}, timeout = GIT_MS } = {}) {
+  const run = spawnSync('git', ['-C', cwd, ...args], { env: { ...gitEnv(), ...env }, encoding: 'utf8', timeout, maxBuffer: 1 << 28 })
   return { ok: run.status === 0, stdout: run.stdout ?? '', stderr: String(run.stderr ?? '').trim().split('\n')[0] }
 }
 const gitLine = (cwd, args) => {
@@ -281,12 +307,35 @@ function snapshot(path) {
   try { return JSON.parse(run.stdout) } catch { return null }
 }
 const sameSnapshot = (a, b) => ['status', 'diff', 'cached', 'untracked'].every((key) => typeof a?.[key] === 'string' && a[key] === b?.[key])
-// The canonical checkout as a review pins it: the four digests, the HEAD commit (null when unborn)
-// and the branch HEAD names (null when detached), or null when tree-snapshot cannot take them.
+// The canonical checkout as a review pins it: the four digests, the HEAD commit (null when unborn),
+// the branch HEAD names (null when detached) and origin's URL (null with no origin), or null when
+// tree-snapshot cannot take them.
 function canonicalState(path) {
   const digests = snapshot(path)
   if (!digests) return null
-  return { ...digests, head: gitLine(path, ['rev-parse', '--verify', '--quiet', 'HEAD']), branch: gitLine(path, ['symbolic-ref', '--quiet', 'HEAD']) }
+  return {
+    ...digests, head: gitLine(path, ['rev-parse', '--verify', '--quiet', 'HEAD']), branch: gitLine(path, ['symbolic-ref', '--quiet', 'HEAD']),
+    origin: gitLine(path, ['remote', 'get-url', 'origin']),
+  }
+}
+
+// Why the canonical HEAD's move from then to now is not a fast-forward onto origin's live tip of
+// the same branch, or null when it is (The fast-forward, in the header). ls-remote comes last, so
+// a move the local checks refuse never reaches the network.
+function fastForwardProblem(repoRoot, then, now) {
+  const branch = then?.branch
+  if (typeof branch !== 'string' || !branch.startsWith('refs/heads/') || now.branch !== branch) return 'the branch is not the named branch open recorded'
+  if (!HEAD_SHA.test(then.head ?? '') || !HEAD_SHA.test(now.head ?? '')) return 'a HEAD is not a 40-hex commit'
+  if (typeof then.origin !== 'string' || then.origin === '') return 'open recorded no origin URL'
+  if (now.origin !== then.origin) return `origin's URL is ${String(now.origin ?? 'gone').slice(0, 200)}, not the one open recorded`
+  if (!git(repoRoot, ['merge-base', '--is-ancestor', then.head, now.head]).ok) return 'the HEAD at open is not an ancestor of this one'
+  const remote = git(repoRoot, ['ls-remote', '--exit-code', 'origin', branch], { env: LS_REMOTE_ENV, timeout: LS_REMOTE_MS })
+  if (!remote.ok) return `origin's ${branch} could not be read`
+  const lines = remote.stdout.split('\n').filter(Boolean)
+  const [sha, ref] = lines[0]?.split('\t') ?? []
+  if (lines.length !== 1 || ref !== branch) return `origin named no single tip for ${branch}`
+  if (sha !== now.head) return `origin's ${branch} is ${sha.slice(0, 64)}, not this HEAD`
+  return null
 }
 
 // ----- arguments
@@ -740,7 +789,10 @@ function treeReasons(record, envelope) {
   else {
     if (!sameSnapshot(now, then)) reasons.push('the canonical checkout changed while the seat ran')
     if (now.head !== then?.head || now.branch !== then?.branch) {
-      reasons.push(`the canonical checkout's HEAD moved while the seat ran: ${now.head ?? 'unborn'} on ${now.branch ?? 'a detached HEAD'}, not ${then?.head ?? 'unborn'} on ${then?.branch ?? 'a detached HEAD'}`)
+      const problem = fastForwardProblem(record.repoRoot, then, now)
+      if (problem) {
+        reasons.push(`the canonical checkout's HEAD moved while the seat ran: ${now.head ?? 'unborn'} on ${now.branch ?? 'a detached HEAD'}, not ${then?.head ?? 'unborn'} on ${then?.branch ?? 'a detached HEAD'}, and it is not a fast-forward onto origin's live tip: ${problem}`)
+      }
     }
   }
   if (envelope && typeof at === 'string') {
