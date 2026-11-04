@@ -44,7 +44,7 @@ It prints one JSON line:
 - **exit 2**, `result: "refused"`: a refusal is final. Show `reason` and `detail`, and `cycle` when it's there, and launch nothing. `not-ready`, `blocked` and `no-acceptance-criteria` go back through `prep`. Everything else is the user's request to fix.
 - **exit 4**: origin, the default branch or the login couldn't be read. Retry up to 3 times with backoff, then report it.
 
-Each entry in `warnings` names an issue body that mentions another chain issue with no edge for it. A mention is a warning, never an edge. If the user wants the edge, they restate the request.
+`warnings` holds three kinds of line. A body that mentions another chain issue with no edge for it is a warning, never an edge. If the user wants the edge, they restate the request. `#N is unknown: …` says what couldn't be read for a node. `--confirmed has no digest for #N` means that issue was never confirmed, so ask before you launch it.
 
 ## 2. Confirm once
 
