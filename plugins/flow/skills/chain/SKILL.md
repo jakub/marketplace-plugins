@@ -79,7 +79,7 @@ On a yes, build `--confirmed` from the preflight's nodes, `N:<bodySha256>` for e
 
 ## 3. Dispatch
 
-For each node that reads `next: launch`, in the ledger's order, start one worker. The worker runs `issue` on that issue. `babysit` hands a clean PR to `land` only when the worker's starting prompt grants that issue. The claim flags are `--expect-body` with the issue's confirmed digest, and one `--require-ancestor` per parent with that parent's `mergeCommit` from the ledger.
+Count the free slots first. The ledger sees only the run marks GitHub and origin show, so a worker you started that hasn't claimed yet is invisible to it, and its node still reads `ready`. Each such worker holds a slot. In T3 Code, that's a chain thread (matched by its title prefix, as below) whose status is `preparing`, `queued`, `starting`, `running` or `waiting`. In Claude Code and Codex, it's a line you printed, until the ledger shows its claim or the user says they didn't start it. Start at most `cap − active −` that count, taking the nodes that read `next: launch` in the ledger's order, and start one worker for each. The worker runs `issue` on that issue. `babysit` hands a clean PR to `land` only when the worker's starting prompt grants that issue. The claim flags are `--expect-body` with the issue's confirmed digest, and one `--require-ancestor` per parent with that parent's `mergeCommit` from the ledger.
 
 - **In T3 Code**, launch a top-level thread with `t3_thread_launch`:
   - `title`: `[chain <id>] #N <issue title>`.
