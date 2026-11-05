@@ -208,7 +208,8 @@ function snapshot(db, id) {
  *   {ok: true, ambiguous: true, taskIds}: more than one finished task fits the seat;
  *   {ok: false, kind, message, details}: kind TASK_NOT_FOUND, TASK_NOT_TERMINAL, T3_STORE_BUSY, or
  *     T3_STORE with details.cause missing, schema or value, and details.code for a SQLite error.
- * Every SQLite error is answered here, so none reaches a caller's catch-all with its raw text.
+ * Every SQLite error, and node:sqlite's ERR_OUT_OF_RANGE for an integer past 2^53, is answered
+ * here, so none reaches a caller's catch-all with its raw text.
  */
 export function readSeatTask(id) {
   if (typeof id !== 'string' || !SEAT_ID.test(id)) throw new TypeError('readSeatTask: the id is not 32 lowercase hex characters')
@@ -218,16 +219,18 @@ export function readSeatTask(id) {
     let found = false
     try { found = statSync(file).isFile() } catch {}
     if (!found) refuse('T3_STORE', `T3's store is not at $T3CODE_HOME/userdata/statev2.sqlite, or ~/.t3/userdata/statev2.sqlite with T3CODE_HOME unset, so close can't read the seat's task. ${FALL_BACK}`, { cause: 'missing' })
-    try { db = new DatabaseSync(file, { readOnly: true, timeout: BUSY_MS }) } catch (error) {
-      const code = sqliteCode(error)
-      refuse('T3_STORE', `T3's store could not be opened${code === null ? '' : ` (SQLite error ${code})`}. ${FALL_BACK}`, { cause: 'missing', ...(code === null ? {} : { code }) })
-    }
+    // An open that fails is answered below by its SQLite code, as busy, missing or value.
+    db = new DatabaseSync(file, { readOnly: true, timeout: BUSY_MS })
     db.exec('BEGIN')
     const answer = snapshot(db, id)
     db.exec('COMMIT')
     return answer
   } catch (error) {
     if (error instanceof Refusal) return { ok: false, kind: error.kind, message: error.message, details: error.details }
+    // node:sqlite throws this, not a SQLite error, for an integer past JavaScript's safe range.
+    if (error?.code === 'ERR_OUT_OF_RANGE') {
+      return { ok: false, kind: 'T3_STORE', message: `T3's store holds an integer past JavaScript's safe range. ${FALL_BACK}`, details: { cause: 'value' } }
+    }
     const code = sqliteCode(error)
     if (code === null) throw error
     if (BUSY_CODES.has(code & 0xff)) {

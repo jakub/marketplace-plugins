@@ -639,12 +639,15 @@ syncBuiltinESMExports()
 // Preloaded into a seat guard or seat.mjs process: with STAMP_GATE_AT=bound it holds the process at
 // the write of a bound stamp's temp file, after the bind read every stamp and before its bound
 // stamp exists; with STAMP_GATE_AT=closed it holds the process just after the closed stamp is
-// linked into place. Either way it writes <STAMP_GATE>.waiting and waits for <STAMP_GATE>.go.
+// linked into place; with STAMP_GATE_AT=reread it holds close at its second look at T3's store,
+// after it judged the seat and before it reads the task again. Each writes <STAMP_GATE>.waiting
+// and waits for <STAMP_GATE>.go.
 const stampGate = join(tmp, 'stamp-gate.mjs')
 writeFileSync(stampGate, `import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 const realWrite = fs.writeFileSync
 const realLink = fs.linkSync
+const realStat = fs.statSync
 const hold = () => {
   realWrite(process.env.STAMP_GATE + '.waiting', '')
   const nap = new Int32Array(new SharedArrayBuffer(4))
@@ -654,6 +657,12 @@ if (process.env.STAMP_GATE_AT === 'bound') {
   fs.writeFileSync = function (path, ...rest) {
     if (typeof path === 'string' && /\\/seats\\/[0-9a-f]{32}\\/\\.bound\\.json\\./.test(path)) hold()
     return realWrite.call(this, path, ...rest)
+  }
+} else if (process.env.STAMP_GATE_AT === 'reread') {
+  let looks = 0
+  fs.statSync = function (path, ...rest) {
+    if (typeof path === 'string' && path.endsWith('/userdata/statev2.sqlite') && ++looks === 2) hold()
+    return realStat.call(this, path, ...rest)
   }
 } else {
   fs.linkSync = function (from, to, ...rest) {
@@ -4174,6 +4183,36 @@ process.exit(255)
     ok('once every run and nested task has ended, the same seat closes valid and drops its holder')
   },
 
+  'close-store-moved': async () => {
+    // T3 moves the task while close judges it: close is held after its first read and judge, a
+    // follow-up run lands, and the second read must refuse rather than stamp the judged run valid.
+    // A running run fails the read itself; a run that already completed fails only the comparison.
+    const seat = writerSeat('close-store-moved')
+    const moved = async (what, run, message) => {
+      const { thread } = t3Seat(seat.id, [{ texts: [seat.message] }])
+      const before = recordFiles(seat.id)
+      const gate = join(tmp, `close-store-moved-${run.status}`)
+      const held = await heldAt([SEAT_SCRIPT, 'close', seat.id], gate, 'reread')
+      t3MessageRow(thread, t3RunRow(thread, 2, run), seat.message)
+      writeFileSync(`${gate}.go`, '')
+      const { code, out } = await held.done
+      const refused = JSON.parse(out)
+      assert.deepEqual([code === 0, refused.error?.kind], [false, 'TASK_NOT_TERMINAL'], `${what}: ${out}`)
+      assert.match(refused.error.message, message, what)
+      assert.deepEqual(recordFiles(seat.id), before, `${what} changed the record directory`)
+      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+      assert.ok(existsSync(seat.holder), `${what} released the writer's lease holder`)
+    }
+    await moved('a run started while close judged', { status: 'running' }, /a run in its thread is running/)
+    await moved('a run started and completed while close judged', { status: 'completed' }, /changed while close judged/)
+    ok('a follow-up run T3 adds while close judges, running or already completed, makes close refuse TASK_NOT_TERMINAL at its second read, writing nothing and keeping the lease holder')
+
+    t3Seat(seat.id, [{ texts: [seat.message] }])
+    const out = seatCli(['close', seat.id])
+    assert.deepEqual([out.verdict, existsSync(seat.holder)], ['valid', false], JSON.stringify(out))
+    ok('with the store held still, the same seat closes valid')
+  },
+
   'close-store-identity': () => {
     // Rows that carry flow-seat-<id> and must never count as the seat's task, each running, so a
     // match would read TASK_NOT_TERMINAL rather than pass unseen.
@@ -4281,6 +4320,11 @@ process.exit(255)
         ['a message payload that is no object', run({}, { payloadJson: 'null' })],
         ['a message time with other precision', run({}, { at: '2026-11-04T12:00:00Z' })],
         ['an updated_at with other precision', run({}, { updatedAt: '2026-11-04T12:00:00.0001Z' })],
+        // node:sqlite throws ERR_OUT_OF_RANGE reading an integer past JavaScript's safe range.
+        ['a run ordinal past 2^53', () => {
+          t3Seat(seat.id, [])
+          t3RunRow(thread, 9223372036854775807n, { payloadJson: JSON.stringify({ startedAt: t3Time() }) })
+        }],
       ]
     }
     for (const seat of [writer, review]) {
@@ -4293,6 +4337,14 @@ process.exit(255)
         arrange()
         assert.deepEqual(refusedClose(seat, 'T3_STORE', what).details, { cause: 'value' }, what)
       }
+      // A migration id past 2^53, written on a connection of its own: the id is its rowid, and a
+      // connection whose last insert rowid is past the safe range throws on every later run().
+      t3Seat(seat.id, [{ texts: [seat.message] }])
+      const huge = new DatabaseSync(join(t3Home, 'userdata', 'statev2.sqlite'))
+      huge.exec("insert into effect_sql_migrations (migration_id, name) values (9223372036854775807, 'past-safe')")
+      try {
+        assert.deepEqual(refusedClose(seat, 'T3_STORE', 'a migration id past 2^53').details, { cause: 'value' })
+      } finally { huge.exec('delete from effect_sql_migrations where migration_id = 9223372036854775807'); huge.close() }
       // A writer holding the store locked past close's 2 s busy timeout.
       const locker = t3Store(home(`busy-${seat.id}`))
       t3Seat(seat.id, [{ texts: [seat.message] }], { db: locker })
@@ -4306,7 +4358,7 @@ process.exit(255)
     }
     assert.deepEqual([readdirSync(home('empty')), existsSync(join(canon, 't3'))], [[], false], 'close created a store directory')
     assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(opened.reviewWorktree), 'git still lists the review worktree')
-    ok(`a missing store (${elsewhere.slice(0, 4).map(([what]) => what).join(', ')}) refuses T3_STORE missing, a dropped column or table T3_STORE schema naming it, ${values(writer).length} values T3 doesn't write T3_STORE value, and a held write lock T3_STORE_BUSY; each changes no file of the record, keeps the writer's lease holder and the review worktree, and names no path and no SQLite text, close creates no store directory, and a retry against the store closes both seats valid`)
+    ok(`a missing store (${elsewhere.slice(0, 4).map(([what]) => what).join(', ')}) refuses T3_STORE missing, a dropped column or table T3_STORE schema naming it, ${values(writer).length} values T3 doesn't write T3_STORE value, a migration id past 2^53 T3_STORE value, and a held write lock T3_STORE_BUSY; each changes no file of the record, keeps the writer's lease holder and the review worktree, and names no path and no SQLite text, close creates no store directory, and a retry against the store closes both seats valid`)
 
     // With T3CODE_HOME unset or empty, the store is ~/.t3's.
     const fakeHome = join(tmp, 'fake-home')

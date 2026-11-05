@@ -170,9 +170,9 @@ No refusal writes anything. A writer keeps its lease and a review keeps its work
 | Kind | Meaning | Action |
 |---|---|---|
 | `TASK_NOT_FOUND` | No task row in the store fits the seat's task-id grammar. | If `delegate_task` errored or never returned a `taskId`, close with `--abandon`. Otherwise check that `T3CODE_HOME` names the home of the T3 server that ran the seat. |
-| `TASK_NOT_TERMINAL` | The task, a run in its child thread, or a task it started is not finished. | T3 can wake you a moment before its rows settle, so retry up to 3 times with backoff. |
+| `TASK_NOT_TERMINAL` | The task, a run in its child thread, or a task it started is not finished, or the task changed while `close` judged the seat. `close` reads the store again just before it stamps. | T3 can wake you a moment before its rows settle, so retry up to 3 times with backoff. |
 | `T3_STORE_BUSY` | A writer held the store past the 2 s busy timeout (`SQLITE_BUSY` or `SQLITE_LOCKED`). `details.code` is the SQLite code. | Retry up to 3 times with backoff, then treat it as `T3_STORE`. |
-| `T3_STORE` | This flow can't read the store. `details.cause` is `missing` (no file, a relative `T3CODE_HOME`, or an open that failed), `schema` (a table or column is gone, named in `details.missing`), or `value` (a status, run id, time or `payload_json` this flow doesn't read). | T3 changed under flow. Fall back on the work, and leave the seat open until flow is fixed. |
+| `T3_STORE` | This flow can't read the store. `details.cause` is `missing` (no file, a relative `T3CODE_HOME`, or an open that failed), `schema` (a table or column is gone, named in `details.missing`), or `value` (a status, run id, time or `payload_json` this flow doesn't read, or an integer past JavaScript's safe range). | T3 changed under flow. Fall back on the work, and leave the seat open until flow is fixed. |
 
 A refusal's message carries the SQLite error code, never SQLite's text or a path inside the store.
 

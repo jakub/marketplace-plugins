@@ -85,7 +85,8 @@
 // the thread that owns the task or the closer's, so a thread that did not start the task can close
 // it; the seat id is the capability. The store's refusals are TASK_NOT_FOUND, when no task row fits
 // the seat; TASK_NOT_TERMINAL, when the task, a run in its thread or a task it started is not
-// finished; T3_STORE_BUSY, when a writer holds the store past the busy timeout; and T3_STORE, with
+// finished, or when the task changed between the read before close judges and the read again just
+// before the stamp; T3_STORE_BUSY, when a writer holds the store past the busy timeout; and T3_STORE, with
 // details.cause missing, schema or value, when this flow can't read the store. No refusal of close
 // writes anything: no stamp is added or changed, and the writer's lease holder and the review
 // worktree stay, so a later close can still close the seat. Two finished task rows that fit the
@@ -166,7 +167,9 @@
 //   - a later run whose hooks were dark and whose text is byte-identical to the recorded message
 //     passes when the turn state already holds an opened key, from an earlier follow-up or steer;
 //   - the scan sees endpoint drift only, so a change restored byte for byte before close passes.
-//     The change seen on 2026-11-03 was a cache refresh that stayed.
+//     The change seen on 2026-11-03 was a cache refresh that stayed;
+//   - a run T3 starts between the second store read and the stamp's link is not seen. Once the
+//     stamp exists the closed-seat rule denies the seat every tool call, so that run can't act.
 // It writes the closed stamp first, with the verdict, the reasons, the task block lib/t3-store.mjs
 // read ({taskId, ownerThreadId, childThreadId, status, childRunId, latestRunId, latestRunStatus,
 // latestTextSha256, closerThreadId, t3Migration}, the last two for audit and drift forensics only,
@@ -1048,6 +1051,14 @@ function close(argv) {
   const task = run === null ? { ambiguous: true, taskIds: read.taskIds } : read.task
   const closed = { verdict, reasons, task, runId: run?.latestRunId ?? null, turn, resultSha256, messageSha256, servedModels, blocks, errors }
   let out = { ok: true, id, verdict, reasons, turn, result: RESULTS.has(verdict) ? facts.envelope : null, servedModels, blocks, errors }
+  // T3 can start a run while close judges, which takes seconds for a review. Read the task again
+  // and stamp only what held still, so the window left is this read to the stamp's link. A tool
+  // call after the stamp is denied by the closed-seat rule.
+  const again = readSeatTask(id)
+  if (!again.ok) fail(again.kind, again.message, again.details)
+  if (JSON.stringify(again) !== JSON.stringify(read)) {
+    fail('TASK_NOT_TERMINAL', 'T3\'s task changed while close judged the seat, so close wrote nothing. Close the seat again once T3 reports the task finished.')
+  }
   if (!store.stamp(id, 'closed', closed)) {
     // An earlier or racing close holds the stamp, and its record stands; or the record directory
     // is gone, and nothing can be recorded.
