@@ -253,7 +253,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../delegate/codex-app-server.mjs'
@@ -264,6 +264,7 @@ import { ensureExcluded } from '../lib/git-exclude.mjs'
 import { DEFAULT_INSTANCE, MODEL, plainShellWord, seatContext, seatIdentityProblem, validInstanceId } from '../lib/seat-policy.mjs'
 import * as store from '../lib/seat-store.mjs'
 import { inside } from '../lib/state-dir.mjs'
+import { readSeatTask } from '../lib/t3-store.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TREE_SNAPSHOT = join(HERE, 'tree-snapshot.mjs')
@@ -277,8 +278,6 @@ const EFFORT = /^[a-z][a-z0-9-]{0,31}$/
 const SEAT_ID = /^[0-9a-f]{32}$/
 const DIGEST = /^[0-9a-f]{64}$/
 const SCHEMA_BYTES = 16 * 1024
-const TASK_STATUS_BYTES = 64 * 1024
-const TASK_STATUS_STDIN_BYTES = 256 * 1024
 const GIT_MS = 60_000
 const HEAD_SHA = /^[0-9a-f]{40}$/
 // ls-remote may reach the network: no prompt of any kind, and a bound on how long it may take.
@@ -530,7 +529,7 @@ async function open(argv) {
     if (access === 'workspace-write' && !holdLive(worktree, id)) {
       const reason = 'a write job took the lease holder over as abandoned before the record was written'
       store.stamp(id, 'void', { reason: 'lease-lost-at-open' })
-      store.stamp(id, 'closed', { verdict: 'unknown', reasons: [reason], taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
+      store.stamp(id, 'closed', { verdict: 'unknown', reasons: [reason], task: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
       fail('WORKSPACE_BUSY', `This open stalled for over a minute, so ${reason}, and a write job may hold the worktree now.`)
     }
     return {
@@ -972,115 +971,23 @@ function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
 }
 
 // A later close's output once the stamp is on record: onRecord's, unless the stamp certified a
-// valid or coverage-gap verdict that this close's task status or the seat's hooks now contradict.
-// A latest run other than the one the stamp judged (a stamp written before close recorded runId
-// reads as another run), or the same run with text other than the message the stamp judged, is
-// stale-turn, and a changed plugin root is hooks-changed: the verdict is unknown, with those reasons, no result and
-// what the stamp recorded beside them. The stamp is never rewritten, so a later close never
-// certifies a run the stamp did not judge. A stamp that certified nothing prints as it is, and
-// judge's tree checks never run again here, since the first close removed the review worktree.
+// valid or coverage-gap verdict that T3's store or the seat's hooks now contradict. A store that
+// now holds two tasks for the seat (run is null) is task-ambiguous. A latest run other than the one
+// the stamp judged (a stamp written before close recorded runId reads as another run), or the same
+// run with text other than the message the stamp judged, is stale-turn, and a changed plugin root
+// is hooks-changed: the verdict is unknown, with those reasons, no result and what the stamp
+// recorded beside them. The stamp is never rewritten, so a later close never certifies a run the
+// stamp did not judge. A stamp that certified nothing prints as it is, and judge's tree checks
+// never run again here, since the first close removed the review worktree.
 function repeated(id, recorded, run, record) {
   const shown = onRecord(id, recorded)
   if (!RESULTS.has(recorded.verdict) || recorded.abandoned === true) return shown
   const reasons = []
-  if (run.latestRunId !== recorded.runId || store.textDigest(run.latestText) !== recorded.messageSha256) reasons.push('stale-turn')
+  if (run === null) reasons.push('task-ambiguous')
+  else if (run.latestRunId !== recorded.runId || store.textDigest(run.latestText) !== recorded.messageSha256) reasons.push('stale-turn')
   if (hooksChanged(record)) reasons.push('hooks-changed')
   if (reasons.length === 0) return shown
   return { ...shown, verdict: 'unknown', reasons, result: null, recorded: { verdict: recorded.verdict, turn: shown.turn } }
-}
-
-const TASK_ENDED = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
-const TASK_BUSY = new Set(['working', 'waiting_for_children'])
-const terminalTask = (status) => status !== null && typeof status === 'object' && !Array.isArray(status) &&
-  TASK_ENDED.has(status.status) && !TASK_BUSY.has(status.workState) && status.hasPendingChildRuns !== true
-
-// Whether a task status is the seat's own task: T3 builds the task id from the call's
-// clientRequestId, URL-encoded inside it, as in `...delegate-task%3Aflow-seat-<id>`.
-function taskOf(status, id) {
-  if (typeof status.taskId !== 'string') return false
-  let decoded = status.taskId
-  try { decoded = decodeURIComponent(status.taskId) } catch {}
-  return [status.taskId, decoded].some((text) => text.includes(clientRequestIdOf(id)))
-}
-
-// stdin's bytes, or null once there are more than cap of them. It reads synchronously, so close
-// stays one synchronous pass, and it never reads more than cap + 1 bytes.
-function readStdin(cap) {
-  const buffer = Buffer.alloc(cap + 1)
-  const nap = new Int32Array(new SharedArrayBuffer(4))
-  let length = 0
-  while (length <= cap) {
-    let read
-    try { read = readSync(0, buffer, length, buffer.length - length, null) } catch (error) {
-      if (error.code === 'EAGAIN') { Atomics.wait(nap, 0, 0, 10); continue }
-      if (error.code === 'EOF') break
-      fail('BAD_REQUEST', `--task-status - could not read stdin (${String(error.code ?? 'error').slice(0, 32)}).`)
-    }
-    if (read === 0) break
-    length += read
-  }
-  return length > cap ? null : buffer.subarray(0, length)
-}
-
-// The task status close was given: one argument of up to 64 KiB, or, for `-`, up to 256 KiB of
-// UTF-8 on stdin, counted in raw bytes, so a parent never has to build a long argv.
-function readTaskStatus(value) {
-  let text = value
-  if (value === '-') {
-    const bytes = readStdin(TASK_STATUS_STDIN_BYTES)
-    if (bytes === null) fail('BAD_REQUEST', '--task-status - is over 256 KiB on stdin.')
-    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) } catch { fail('BAD_REQUEST', '--task-status - is not UTF-8.') }
-  } else if (Buffer.byteLength(value) > TASK_STATUS_BYTES) {
-    fail('BAD_REQUEST', '--task-status is over 64 KiB; pass the task status on stdin with --task-status - instead.')
-  }
-  try { return JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
-}
-
-// The keys a task status must carry for close to tell which run's answer it would certify.
-const RUN_KEYS = ['childRunId', 'latestTerminalRunId', 'latestTerminalStatus', 'summary', 'latestTerminalSummary']
-const RUN_PREFIX = 'run:thread:'
-const RUN_ORDINAL = ':ordinal:'
-
-// A T3 run id's ordinal, when the id is run:thread:<encodeURIComponent(thread)>:ordinal:<n> with n
-// a positive safe integer in canonical digits; null for anything else, another thread's included.
-function runOrdinal(runId, thread) {
-  if (typeof runId !== 'string' || typeof thread !== 'string' || thread === '' || !runId.startsWith(RUN_PREFIX)) return null
-  let segment
-  try { segment = encodeURIComponent(thread) } catch { return null }
-  const at = runId.lastIndexOf(RUN_ORDINAL)
-  if (at < RUN_PREFIX.length || runId.slice(RUN_PREFIX.length, at) !== segment) return null
-  const digits = runId.slice(at + RUN_ORDINAL.length)
-  const ordinal = /^[1-9][0-9]*$/.test(digits) ? Number(digits) : NaN
-  return Number.isSafeInteger(ordinal) ? ordinal : null
-}
-
-// The task's runs as close judges them: the ordinal of the child's run and of its latest finished
-// run, and the latest one's id. Refuses TASK_INCOMPLETE a status missing a run key (a key present
-// with a null value is not missing) and TASK_MISMATCH run ids that are not the status's own thread's
-// or that put the latest run first, both before anything is written.
-function runsOf(status) {
-  const missing = RUN_KEYS.filter((key) => !Object.hasOwn(status, key))
-  if (missing.length > 0) {
-    fail('TASK_INCOMPLETE', `The task status lacks ${missing.join(', ')}, so close cannot tell which run's answer it would certify. Pass the whole task_status answer, unedited, with --task-status - on stdin.`, { missing })
-  }
-  const childOrdinal = runOrdinal(status.childRunId, status.childThreadId)
-  const latestOrdinal = runOrdinal(status.latestTerminalRunId, status.childThreadId)
-  if (childOrdinal === null || latestOrdinal === null) {
-    fail('TASK_MISMATCH', 'The task status\'s childRunId and latestTerminalRunId must each read run:thread:<childThreadId, URL-encoded>:ordinal:<n>, with n a positive integer, for the status\'s own childThreadId. Pass the task_status answer as T3 gave it.')
-  }
-  if (latestOrdinal < childOrdinal) fail('TASK_MISMATCH', 'The task status\'s latest finished run comes before its child run, so it is not one task\'s status. Pass the task_status answer as T3 gave it.')
-  return { childOrdinal, latestOrdinal, latestRunId: status.latestTerminalRunId, latestText: latestText(status) }
-}
-
-// The final text T3 reports for the task's latest finished run, or null when that run left none:
-// the summary when the latest run is the child's; for a later run that completed, its
-// latestTerminalSummary, or the summary when T3 nulled latestTerminalSummary for repeating it; and
-// no text for a later run that ended any other way.
-function latestText(status) {
-  const text = (value) => (typeof value === 'string' ? value : null)
-  if (status.latestTerminalRunId === status.childRunId) return text(status.summary)
-  if (status.latestTerminalStatus !== 'completed') return null
-  return status.latestTerminalSummary === null ? text(status.summary) : text(status.latestTerminalSummary)
 }
 
 // Whether a Codex seat's hooks may have gone dark while it ran: the flow plugin root open recorded
@@ -1100,13 +1007,12 @@ function hooksChanged(record) {
   return first.digest === undefined || first.digest !== record.codexPluginDigest || second.digest !== first.digest
 }
 
-// Why a seat judge read valid or coverage-gap is not proven to have answered T3's latest finished
-// run under its hooks, as reasons in this order, none when it is. T3's text is negative evidence
-// only: it can turn either into unknown, and the answer still comes from the result Stop wrote.
-// stale-turn:
-// the latest run left no text, its text is not byte for byte the final message Stop recorded, or it
-// is a later run than the child's while no follow-up prompt is on record. hooks-changed: see
-// hooksChanged.
+// Why a seat judge read valid or coverage-gap is not proven to have answered T3's latest run under
+// its hooks, as reasons in this order, none when it is. T3's text is negative evidence only: it can
+// turn either into unknown, and the answer still comes from the result Stop wrote. stale-turn: the
+// latest run left no text (lib/t3-store.mjs says when it has none), its text is not byte for byte
+// the final message Stop recorded, or it is a later run than the child's while no follow-up prompt
+// is on record. hooks-changed: see hooksChanged.
 function freshness(facts, run, record) {
   const reasons = []
   const latest = store.textDigest(run.latestText)
@@ -1119,30 +1025,26 @@ function close(argv) {
   const [id, ...rest] = argv
   if (typeof id !== 'string' || !SEAT_ID.test(id)) fail('BAD_REQUEST', 'close takes a seat id, 32 lowercase hex characters.')
   if (rest.includes('--abandon')) {
-    if (rest.length !== 1) fail('BAD_REQUEST', 'close --abandon takes nothing else: no --task-status and no value.')
+    if (rest.length !== 1) fail('BAD_REQUEST', 'close --abandon takes nothing else.')
     return abandon(id)
   }
-  const opts = flags(rest, ['--task-status'])
-  const text = opts['--task-status']
-  if (text === undefined) fail('BAD_REQUEST', 'close needs --task-status, the task_status answer for the seat\'s task, as JSON, or - to read it from stdin.')
-  const taskStatus = readTaskStatus(text)
-  if (!terminalTask(taskStatus)) {
-    fail('TASK_NOT_TERMINAL', 'close records a seat whose task T3 reports finished: a task_status answer whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs. Wait for the task to finish, then close it.')
-  }
-  if (store.readStamp(id, 'admitted') !== null && !taskOf(taskStatus, id)) {
-    fail('TASK_MISMATCH', `The task status is not this seat's task: its taskId does not carry ${clientRequestIdOf(id)}, the clientRequestId the seat's delegate_task call was admitted with. Pass the task_status answer for this seat's own task.`)
-  }
-  const run = runsOf(taskStatus)
+  flags(rest, [])
+  // T3's store comes first: a refusal there writes nothing, so a retry can still close the seat.
+  const read = readSeatTask(id)
+  if (!read.ok) fail(read.kind, read.message, read.details)
+  const run = read.ambiguous ? null : read.run
 
   const loaded = store.readRecord(id)
   const judged = judge(id, loaded)
-  // Only a verdict with a result is checked against T3's latest run, so every other verdict keeps
-  // its precedence, and the check can only turn valid or coverage-gap into unknown.
-  const doubts = RESULTS.has(judged.verdict) ? freshness(judged.facts, run, loaded.record) : []
+  // Two tasks for one seat outrank every verdict, since neither can be told for the seat's own.
+  // Otherwise only a verdict with a result is checked against T3's latest run, so every other
+  // verdict keeps its precedence, and the check can only turn valid or coverage-gap into unknown.
+  const doubts = run === null ? ['task-ambiguous'] : RESULTS.has(judged.verdict) ? freshness(judged.facts, run, loaded.record) : []
   const { verdict, reasons } = doubts.length > 0 ? { verdict: 'unknown', reasons: doubts } : judged
   const { facts } = judged
   const { turn, resultSha256, servedModels, blocks, errors, messageSha256 } = facts
-  const closed = { verdict, reasons, taskStatus, runId: run.latestRunId, turn, resultSha256, messageSha256, servedModels, blocks, errors }
+  const task = run === null ? { ambiguous: true, taskIds: read.taskIds } : read.task
+  const closed = { verdict, reasons, task, runId: run?.latestRunId ?? null, turn, resultSha256, messageSha256, servedModels, blocks, errors }
   let out = { ok: true, id, verdict, reasons, turn, result: RESULTS.has(verdict) ? facts.envelope : null, servedModels, blocks, errors }
   if (!store.stamp(id, 'closed', closed)) {
     // An earlier or racing close holds the stamp, and its record stands; or the record directory
@@ -1163,7 +1065,7 @@ function abandon(id) {
     fail('BAD_REQUEST', 'A bound seat closes with its task status: its child ran, so wait for task_status to report the task finished and pass it with --task-status.')
   }
   const loaded = store.readRecord(id)
-  store.stamp(id, 'closed', { verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
+  store.stamp(id, 'closed', { verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, task: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
   // Read only once the closed stamp is on disk, whoever wrote it.
   const bound = store.readStamp(id, 'bound') !== null
   const recorded = store.readStamp(id, 'closed')
@@ -1181,7 +1083,7 @@ function abandon(id) {
 
 // ----- main
 
-const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json|-> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
+const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
 const [verb, ...argv] = process.argv.slice(2)
 let answer
 try {
