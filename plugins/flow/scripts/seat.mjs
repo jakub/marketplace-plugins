@@ -83,7 +83,8 @@
 // where the store is, what is read, how the task row is found, when the task counts as finished,
 // and which run and text close checks. No model copies T3's text, and close checks nothing about
 // the thread that owns the task or the closer's, so a thread that did not start the task can close
-// it; the seat id is the capability. The store's refusals are TASK_NOT_FOUND, when no task row fits
+// it; the seat id is the capability. A same-user session that holds the id and calls delegate_task
+// outside flow's hooks is out of scope, as is one that writes T3's store. The store's refusals are TASK_NOT_FOUND, when no task row fits
 // the seat; TASK_NOT_TERMINAL, when the task, a run in its thread or a task it started is not
 // finished, or when the task or the seat's turn state changed between the read before close
 // judges and the read again just before the stamp; T3_STORE_BUSY, when a writer holds the store past the busy timeout; and T3_STORE, with

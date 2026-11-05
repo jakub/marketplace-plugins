@@ -163,7 +163,7 @@ When T3 wakes you with the seat's task finished, close the seat by its id:
 node <plugin-root>/scripts/seat.mjs close <seat-id>
 ```
 
-`close` takes nothing but the id, and refuses `BAD_REQUEST` for any flag but `--abandon`. It reads the seat's task from T3's own store (see "T3's store" below), so no model copies T3's text and you make no `task_status` call for it. It checks nothing about which thread started the task, so a takeover thread on the same machine and user closes a seat it inherited. The 128-bit seat id is the capability.
+`close` takes nothing but the id, and refuses `BAD_REQUEST` for any flag but `--abandon`. It reads the seat's task from T3's own store (see "T3's store" below), so no model copies T3's text and you make no `task_status` call for it. It checks nothing about which thread started the task, so a takeover thread on the same machine and user closes a seat it inherited. The 128-bit seat id is the capability. `close` stops a confused model, a bad echo and an unhooked later run. It doesn't stop a same-user process that writes T3's store, points `T3CODE_HOME` at a forged one, or holds the seat id and sends `delegate_task` from a session without flow's hooks, where the gate never checks the call.
 
 No refusal writes anything. A writer keeps its lease and a review keeps its worktree, so a later `close` can still close the seat. The refusals:
 
@@ -233,7 +233,7 @@ Because the store comes first, a repeated `close` after T3 prunes the task's row
 
   | Table | Columns |
   |---|---|
-  | `orchestration_v2_projection_subagents` | `subagent_id`, `thread_id`, `child_thread_id`, `status` |
+  | `orchestration_v2_projection_subagents` | `subagent_id`, `thread_id`, `child_thread_id`, `status`, `payload_json` (`prompt`) |
   | `orchestration_v2_projection_runs` | `run_id`, `thread_id`, `ordinal`, `status`, `payload_json` (`startedAt`) |
   | `orchestration_v2_projection_messages` | `message_id`, `run_id`, `role`, `created_at`, `updated_at`, `payload_json` (`text`) |
   | `effect_sql_migrations` | `max(migration_id)`, recorded as `t3Migration` for forensics |
