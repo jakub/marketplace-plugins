@@ -1,0 +1,38 @@
+PASS plugins/flow/scripts/smoke-chain-ledger.mjs (3.6s)
+  chain-ledger: ALL PASS
+PASS plugins/flow/scripts/smoke-charter.mjs (0.3s)
+  charter delivery: ALL PASS (17 checks)
+PASS plugins/flow/scripts/smoke-delegate.mjs (187.0s)
+  smoke-delegate: ALL PASS (86 checks)
+PASS plugins/flow/scripts/smoke-elicitation.mjs (1.5s)
+  smoke-elicitation: ALL PASS (12 checks, 12 cases)
+PASS plugins/flow/scripts/smoke-git-guard.mjs (2.3s)
+  git-guard: ALL PASS
+PASS plugins/flow/scripts/smoke-issue-claim-verb.mjs (4.1s)
+  issue-claim verb: ALL PASS
+PASS plugins/flow/scripts/smoke-issue-claim.mjs (0.9s)
+  issue-claim lock: ALL PASS
+PASS plugins/flow/scripts/smoke-land-merge.mjs (0.4s)
+  land-merge: ALL PASS
+PASS plugins/flow/scripts/smoke-lint-actions.mjs (12.3s)
+  lint-actions: ALL PASS
+PASS plugins/flow/scripts/smoke-protect-files.mjs (1.9s)
+  protect-files: ALL PASS
+PASS plugins/flow/scripts/smoke-publish-guard.mjs (3.5s)
+  publish-guard: ALL PASS
+PASS plugins/flow/scripts/smoke-seat.mjs (157.9s)
+  smoke-seat: ALL PASS (269 checks, 129 cases)
+PASS plugins/flow/scripts/smoke-tree-snapshot.mjs (0.3s)
+  tree snapshot: ALL PASS (5 checks)
+PASS plugins/gripe/scripts/smoke-hooks.mjs (0.3s)
+  gripe cross-harness hooks: ALL PASS
+PASS plugins/gripe/scripts/smoke-shim.mjs (0.5s)
+  34/34 checks passed
+PASS plugins/plans/scripts/smoke-plans.mjs (148.8s)
+  plans: ALL PASS (864 checks, 0 skipped)
+PASS plugins/gripe/scripts/collision-test.mjs (2.1s)
+  20/20 rows landed (child exit codes: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+PASS scripts/smoke-plugin-manifests.mjs (0.0s)
+  parallel plugin manifests: ALL PASS
+smoke-all: 18 scripts, ALL PASS
+exit 0
