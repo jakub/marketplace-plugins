@@ -6,7 +6,7 @@
 //   seat.mjs open --access read-only|workspace-write|review --provider claude|codex
 //                 [--provider-instance-id <id>] --model <id> [--expected-served-model <id>]
 //                 --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>]
-//   seat.mjs close <seat-id> --task-status <json|->
+//   seat.mjs close <seat-id>
 //   seat.mjs close <seat-id> --abandon
 //   seat.mjs trust [--write --expect <digest>]
 //
@@ -15,8 +15,8 @@
 // servedModels, blocks, errors, cleanupProblems?, recorded?}, with or without --abandon, trust prints {ok: true, keys: [{key, command, trustStatus,
 // currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
 // details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY,
-// HOOKS_MISMATCH, HOOKS_CHANGED and HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_TERMINAL,
-// TASK_MISMATCH and TASK_INCOMPLETE from close; BAD_REQUEST,
+// HOOKS_MISMATCH, HOOKS_CHANGED and HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_FOUND,
+// TASK_NOT_TERMINAL, T3_STORE and T3_STORE_BUSY from close; BAD_REQUEST,
 // HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App
 // Server's own failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for
 // anything this script did not expect, INTERNAL.
@@ -78,27 +78,23 @@
 // runs before the lease holder, so a refusal leaves no record, holder or review worktree. A Claude
 // record carries neither codexPluginRoot nor codexPluginDigest.
 //
-// close reads the task status from --task-status <json>, at most 64 KiB, or with --task-status -
-// from stdin, at most 256 KiB of raw bytes (a trailing newline counts) that must decode as UTF-8.
-// A single argv string fails with E2BIG at 128 KiB on Linux, so a parent passes a whole status on
-// stdin. A status over its cap, not UTF-8 or not JSON is refused BAD_REQUEST. No refusal of close
+// close takes the seat id and nothing else, and refuses BAD_REQUEST any flag but --abandon. It
+// reads the seat's task from T3's own store through lib/t3-store.mjs, whose header is the contract:
+// where the store is, what is read, how the task row is found, when the task counts as finished,
+// and which run and text close checks. No model copies T3's text, and close checks nothing about
+// the thread that owns the task or the closer's, so a thread that did not start the task can close
+// it; the seat id is the capability. The store's refusals are TASK_NOT_FOUND, when no task row fits
+// the seat; TASK_NOT_TERMINAL, when the task, a run in its thread or a task it started is not
+// finished; T3_STORE_BUSY, when a writer holds the store past the busy timeout; and T3_STORE, with
+// details.cause missing, schema or value, when this flow can't read the store. No refusal of close
 // writes anything: no stamp is added or changed, and the writer's lease holder and the review
-// worktree stay, so a retry with the whole status can still close the seat.
-// close then refuses TASK_NOT_TERMINAL, writing nothing, unless --task-status is a task_status
-// answer T3 gives for a finished task: an object whose status is completed, failed, cancelled or
-// interrupted, whose workState is not working or waiting_for_children, and whose
-// hasPendingChildRuns is not true. A writer's lease stays held until then. Once the seat was
-// admitted, close also refuses TASK_MISMATCH, writing nothing, unless the task status's taskId
-// carries flow-seat-<id>, the clientRequestId the admitted call named, plainly or URL-encoded, so
-// one seat is never closed on another task's status. It then refuses TASK_INCOMPLETE unless the
-// status has its own childRunId, latestTerminalRunId, latestTerminalStatus, summary and
-// latestTerminalSummary keys (a key set to null is present), and TASK_MISMATCH unless both run ids
-// follow one grammar: run:thread:<seg>:ordinal:<n>, split at the last :ordinal:, where seg equals
-// encodeURIComponent(childThreadId), compared encoded, childThreadId is a non-empty string, n
-// matches [1-9][0-9]* and is a safe integer, and the latest ordinal is not below the child's.
-// childThreadId is a T3 id and is never compared with a hook's sessionId. It then judges the seat
-// from its record and the stamps and results the hooks wrote, in this order of precedence, the
-// first that holds being the verdict:
+// worktree stay, so a later close can still close the seat. Two finished task rows that fit the
+// seat are no refusal. They make the verdict unknown with reason task-ambiguous, ahead of every
+// other verdict, because flow admits one call per seat, so the state never heals and a refusal
+// would keep a writer's lease forever.
+// The task's childThreadId is a T3 id and is never compared with a hook's sessionId. close then
+// judges the seat from its record and the stamps and results the hooks wrote, in this order of
+// precedence, the first that holds being the verdict:
 //   unknown         no readable record; a record that fails seatIdentityProblem, such as one
 //                   an older flow wrote without providerInstanceId or expectedServedModel; a
 //                   void stamp; no admitted, bound or receipt stamp; a record whose bytes no
@@ -151,12 +147,10 @@
 //     HEAD, so a close after that merge and before that sibling's land pulls reads tree-moved;
 //   - an HTTPS origin that needs a credential helper fails closed, because no global or system
 //     configuration is read.
-// close then checks a valid or coverage-gap verdict against the task status, as negative evidence
-// only. T3's text can withhold either, and the result is still the envelope Stop recorded, never
-// T3's summary. The latest run's text is summary when latestTerminalRunId is childRunId. Otherwise,
-// when latestTerminalStatus is completed, it is latestTerminalSummary when that is a string and
-// summary when it is null (T3 0.1.6 nulls it when it repeats summary), and for any other status
-// there is none. Reason stale-turn comes first, for no text, for text whose store.textDigest (the
+// close then checks a valid or coverage-gap verdict against the task T3's store holds, as negative
+// evidence only. T3's text can withhold either, and the result is still the envelope Stop recorded,
+// never T3's text. The child run, the latest run and the latest run's text are lib/t3-store.mjs's,
+// and a latest run that is a later one and did not complete has no text. Reason stale-turn comes first, for no text, for text whose store.textDigest (the
 // raw bytes Stop hashed, nothing trimmed or unfenced) is not the turn state's messageSha256, or
 // for a latest ordinal above the child's when the turn state has no own opened key. The ordinal is
 // a one-way signal and never a turn count: a failed run takes an ordinal and has no Stop, and a
@@ -173,9 +167,11 @@
 //     passes when the turn state already holds an opened key, from an earlier follow-up or steer;
 //   - the scan sees endpoint drift only, so a change restored byte for byte before close passes.
 //     The change seen on 2026-11-03 was a cache refresh that stayed.
-// It writes the closed stamp first, with the verdict, the reasons, the task status the parent
-// read from T3, the latest run's id as runId, the turn state's messageSha256, and the facts the
-// output reports: the turn, the sha256 of that turn's result bytes as judge read them (null with
+// It writes the closed stamp first, with the verdict, the reasons, the task block lib/t3-store.mjs
+// read ({taskId, ownerThreadId, childThreadId, status, childRunId, latestRunId, latestRunStatus,
+// latestTextSha256, closerThreadId, t3Migration}, the last two for audit and drift forensics only,
+// or {ambiguous: true, taskIds} for task-ambiguous) and none of T3's text, the latest run's id as
+// runId (null when ambiguous), the turn state's messageSha256, and the facts the output reports: the turn, the sha256 of that turn's result bytes as judge read them (null with
 // no result), the served models, the blocks and the errors. It
 // then drops the writer's lease holder and removes the review worktree it created, only while the
 // path still resolves to the recorded worktree, its admin directory is still reviewGitDir, and
@@ -186,20 +182,26 @@
 // hash to the pinned sha256, and otherwise null, with result-changed-after-close among the
 // reasons and the verdict unchanged. It also retries the cleanup. Cleanup that fails is listed in
 // cleanupProblems and does not change the verdict. A stamp that holds valid or coverage-gap and is
-// not an abandon is first checked against the status this close was given, so a later close never
-// certifies a run the stamp did not judge. A latest run id other than the stamp's runId adds
+// not an abandon is first checked against T3's store, which every close reads again with the same
+// refusals, so a later close never certifies a run the stamp did not judge. A store that now holds
+// two tasks for the seat adds task-ambiguous. Otherwise a latest run id other than the stamp's runId adds
 // stale-turn, and a stamp written before close recorded runId has none, so it reads as another
 // run. The same run with text whose store.textDigest is not the stamp's messageSha256 adds stale-turn too, and the root
 // scan above adds hooks-changed. With either reason, close prints verdict unknown with those
 // reasons, result null and, last, recorded: {verdict, turn} from the stamp. It never rewrites the
 // stamp, judges the seat again or reads its trees, because a review's worktree is gone by then. A
 // stamp that holds any other verdict certified nothing and prints as before. A close that lost the
-// race for the stamp takes the same path, so two first closes on one status print one outcome.
+// race for the stamp takes the same path, so two first closes on one store print one outcome.
+// Because the store comes first, a close after T3 has pruned the task's row refuses TASK_NOT_FOUND,
+// whatever the stamp holds; the stamp itself stays the record.
 //
 // close --abandon closes a seat whose delegate_task call made no task: T3 refused or lost the call
-// after the parent's PreToolUse admitted it, so no task_status will ever name the seat, and close
-// with one could never run. It takes no --task-status, and refuses BAD_REQUEST, writing nothing,
-// once the seat has a bound stamp: a bound seat's child ran, so it closes with its task status.
+// after the parent's PreToolUse admitted it, so T3's store will never hold a task for the seat,
+// and a plain close would refuse TASK_NOT_FOUND for good. It never reads the store, because it has
+// to work when T3 lost the call, and no row is also what a wrong T3CODE_HOME, projection lag or an
+// admitted call still in flight look like, so only the parent can tell that the call made no
+// task. It takes nothing else, and refuses BAD_REQUEST, writing nothing, once the seat has a
+// bound stamp: a bound seat's child ran, so it closes from the store once its task finishes.
 // Otherwise it writes the closed stamp with verdict unknown, reasons ['abandoned-before-bind'] and
 // abandoned: true, then reads the bound stamp again, and with none it drops the writer's lease
 // holder and removes the review worktree as close does. A bind refuses a record with a closed stamp
@@ -213,7 +215,7 @@
 //     before the closed stamp, so the child may still be working. Abandon reports reasons
 //     ['abandon-raced-bind'], keeps the holder and the review worktree, and lists them in
 //     cleanupProblems. delegate/jobs.mjs holds a holder of an abandoned seat with a bound stamp, and
-//     close with the task's status, once T3 reports it finished, prints the abandon on record and
+//     a plain close, once T3's store holds the task finished, prints the abandon on record and
 //     drops it.
 // Any later close of an abandoned seat prints abandon-raced-bind whenever the seat has a bound stamp.
 //
@@ -1057,12 +1059,12 @@ function close(argv) {
   return out
 }
 
-const ABANDON_RACED = 'a child bound this seat while it was abandoned and may still be running, so its lease holder and review worktree are kept; close it with --task-status once T3 reports its task finished'
+const ABANDON_RACED = 'a child bound this seat while it was abandoned and may still be running, so its lease holder and review worktree are kept; close it with seat.mjs close <seat-id>, without --abandon, once T3 reports its task finished'
 
 // close --abandon: see the header for the order of its writes and reads and why it is safe.
 function abandon(id) {
   if (store.readStamp(id, 'bound') !== null) {
-    fail('BAD_REQUEST', 'A bound seat closes with its task status: its child ran, so wait for task_status to report the task finished and pass it with --task-status.')
+    fail('BAD_REQUEST', 'A bound seat closes from T3\'s store, not with --abandon: its child ran, so close it with seat.mjs close <seat-id> once T3 reports its task finished.')
   }
   const loaded = store.readRecord(id)
   store.stamp(id, 'closed', { verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, task: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })

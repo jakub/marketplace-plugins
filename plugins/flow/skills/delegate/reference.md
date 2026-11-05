@@ -157,17 +157,26 @@ To give a finished seat another round, send it a message with `t3_thread_send` t
 
 ## seat.mjs close, in full
 
-When `task_status` reports the task finished, pass that whole `task_status` answer to `close` on stdin. Write it to a file with your file tool, then run:
+When T3 wakes you with the seat's task finished, close the seat by its id:
 
 ```sh
-node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status - < <file>
+node <plugin-root>/scripts/seat.mjs close <seat-id>
 ```
 
-`--task-status -` reads at most 256 KiB of UTF-8 from stdin, a trailing newline included. `--task-status '<json>'` still takes a status of at most 64 KiB on the command line, but a single argv string fails with `E2BIG` at 128 KiB on Linux. Don't pass the file through a heredoc or `$(cat)`, because both put its bytes back on the command line. A status over its cap, not UTF-8 or not JSON is refused with `BAD_REQUEST`.
+`close` takes nothing but the id, and refuses `BAD_REQUEST` for any flag but `--abandon`. It reads the seat's task from T3's own store (see "T3's store" below), so no model copies T3's text and you make no `task_status` call for it. It checks nothing about which thread started the task, so a takeover thread on the same machine and user closes a seat it inherited. The 128-bit seat id is the capability.
 
-Finished means its `status` is `completed`, `failed`, `cancelled` or `interrupted`, its `workState` is not `working` or `waiting_for_children`, and `hasPendingChildRuns` is not `true`. `close` refuses any other answer, a running task or an empty object included, with `TASK_NOT_TERMINAL`. It refuses an admitted seat's close with `TASK_MISMATCH` when the answer's `taskId` does not carry the seat's `clientRequestId`, so pass the status of this seat's own task. It refuses `TASK_INCOMPLETE` when the answer lacks any of `childRunId`, `latestTerminalRunId`, `latestTerminalStatus`, `summary` and `latestTerminalSummary`. A key set to `null` is present. Both run ids must read `run:thread:<encodeURIComponent(childThreadId)>:ordinal:<n>`, with `n` a positive integer and the latest ordinal no lower than the child's, or `close` refuses `TASK_MISMATCH`. No refusal writes anything. A writer keeps its lease and a review keeps its worktree, so retry with the whole status.
+No refusal writes anything. A writer keeps its lease and a review keeps its worktree, so a later `close` can still close the seat. The refusals:
 
-`close` records the task status beside the verdict and prints one JSON line:
+| Kind | Meaning | Action |
+|---|---|---|
+| `TASK_NOT_FOUND` | No task row in the store fits the seat's task-id grammar. | If `delegate_task` errored or never returned a `taskId`, close with `--abandon`. Otherwise check that `T3CODE_HOME` names the home of the T3 server that ran the seat. |
+| `TASK_NOT_TERMINAL` | The task, a run in its child thread, or a task it started is not finished. | T3 can wake you a moment before its rows settle, so retry up to 3 times with backoff. |
+| `T3_STORE_BUSY` | A writer held the store past the 2 s busy timeout (`SQLITE_BUSY` or `SQLITE_LOCKED`). `details.code` is the SQLite code. | Retry up to 3 times with backoff, then treat it as `T3_STORE`. |
+| `T3_STORE` | This flow can't read the store. `details.cause` is `missing` (no file, a relative `T3CODE_HOME`, or an open that failed), `schema` (a table or column is gone, named in `details.missing`), or `value` (a status, run id, time or `payload_json` this flow doesn't read). | T3 changed under flow. Fall back on the work, and leave the seat open until flow is fixed. |
+
+A refusal's message carries the SQLite error code, never SQLite's text or a path inside the store.
+
+`close` records the verdict in the closed stamp, with a `task` block of what it read from the store and none of T3's text, and prints one JSON line:
 
 ```json
 {"ok": true, "id": "<32 hex>", "verdict": "valid", "reasons": [], "turn": 1, "result": {},
@@ -181,29 +190,29 @@ Finished means its `status` is `completed`, `failed`, `cancelled` or `interrupte
 | `valid` | Every stamp is present and the result matches its recorded sha256. | Use the envelope. A writer's envelope is still a claim, so check its commits against git. |
 | `invalid` | The hooks worked, and the last final message failed the envelope or the schema. | Rerun once with the errors on the same rung, then step up a rung. |
 | `capped` | Stop blocked the child 3 times, then let it end. | Same as `invalid`. |
-| `unknown` | The record lacks `providerInstanceId` or `expectedServedModel` or holds a combination `open` refuses, a stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the admission or the bind, the bound session's index entry is void (`session-index-void`) or missing or names another seat (`session-index-mismatch`), the latest turn a prompt opened has no stop on record (`turn-without-result`), the result does not match its sha256, the latest result names no served model of its own, or no served model is on record. T3's latest finished run left no text, or text other than the message the Stop hook hashed, or ran after the first with no prompt on record (`stale-turn`). A Codex seat's plugin root changed after `open` (`hooks-changed`). Nothing proves the hooks held the seat. | Fall back. |
+| `unknown` | The record lacks `providerInstanceId` or `expectedServedModel` or holds a combination `open` refuses, a stamp is missing (`admitted`, `bound`, `receipt` or `result`), the seat is void, the record changed after the admission or the bind, the bound session's index entry is void (`session-index-void`) or missing or names another seat (`session-index-mismatch`), the latest turn a prompt opened has no stop on record (`turn-without-result`), the result does not match its sha256, the latest result names no served model of its own, or no served model is on record. T3's latest run left no text, or text other than the message the Stop hook hashed, or ran after the first with no prompt on record (`stale-turn`). Two finished task rows fit the seat (`task-ambiguous`); flow admits one call per seat, so this never heals, and it outranks every other verdict. A Codex seat's plugin root changed after `open` (`hooks-changed`). Nothing proves the hooks held the seat. | Fall back. |
 | `model-mismatch` | The model seen at the bind is not the `model` you asked for (`bound to <X>, not <model>`), or a model seen serving the seat at any stop in any turn is not its `expectedServedModel` (`served by <Y>, not <expected>`, one reason per id). A router id seen serving the seat is a mismatch too. | Discard the answer. A mismatch is not a refusal, so the refusal rule does not count it. |
 | `tree-moved` | The review worktree's HEAD left the head SHA or its tree is dirty, the canonical checkout's tree, HEAD commit or branch changed, or the pinned diff's file list can't be read. | Treat it as `unknown`. |
 | `coverage-gap` | The hooks held the review and its trees didn't move, but its coverage (`read`, `partial` and `unopened` together) misses a file in the pinned diff. The first reason gives the count, and every reason after it is one missed path, none left out. An entry covers a file when it is the file's path in the review worktree, or that path, a space and a note in parentheses, as `src/a.rs (changed hunks only)`. | Use the findings, and never count the missed files as reviewed. Open one more review seat on the same head, scoped to the missed files. A second gap on those files goes up a rung. It isn't a fallback. |
 
 `close` checks `stale-turn` and then `hooks-changed` only when every other check reads `valid` or `coverage-gap`, so they turn either into `unknown` with a `null` result and change no other verdict. T3's text is negative evidence only. It can withhold either, and `result` still comes from the envelope the Stop hook recorded, never from T3's `summary`.
 
-- **The latest run's text.** It is `summary` when `latestTerminalRunId` equals `childRunId`. For a later run that ended `completed`, it is `latestTerminalSummary`, or `summary` when that is `null`, because T3 0.1.6 nulls the latest summary when it repeats `summary`. A later run that ended any other way has no text. `close` compares raw bytes, with nothing trimmed and no fence stripped.
+- **The latest run's text.** It is the text of the latest run's newest assistant message in T3's store, as "T3's store" below says. A later run that didn't complete has no text. `close` compares raw bytes, with nothing trimmed and no fence stripped.
 - **The ordinal.** A latest ordinal above the child's with no later prompt on record is `stale-turn` too. An ordinal is never a turn count: a failed run takes one and leaves no Stop, and a steer adds no run.
 - **The plugin root.** `close` scans a Codex seat's recorded root twice. A root that is gone, a digest unlike the one `open` recorded, or two scans that differ read `hooks-changed`. A Codex record from an older flow has no root and closes without the check. A Claude seat never has it.
 - **Two known gaps.** A later run whose hooks were dark and whose text is byte-identical to the recorded message passes when an earlier follow-up or steer already recorded a prompt. A plugin change restored byte for byte before `close` passes, because the scan sees only the end state.
 
 A seat that made no tool call has no `receipt`, so it reads `unknown`. On Codex, the served-model check covers the model the hooks saw at UserPromptSubmit and at Stop. On Claude, it reads every model the transcript records for the seat's own turns.
 
-When the `delegate_task` call errors or returns no `taskId`, no `task_status` will ever name the seat. Close it with `--abandon` instead of `--task-status`:
+When the `delegate_task` call errors or returns no `taskId`, T3's store will never hold a task for the seat. Close it with `--abandon`:
 
 ```sh
 node <plugin-root>/scripts/seat.mjs close <seat-id> --abandon
 ```
 
-It records `unknown` with `abandoned-before-bind`, drops a writer's lease holder and removes a review worktree, as a normal `close` does. A child that starts after that is a void seat. `--abandon` refuses a seat whose child already bound it with `BAD_REQUEST` and writes nothing: that child ran, so its task exists, and you close it with its task status. If a child binds while the abandon runs, the reason is `abandon-raced-bind`. In that case `close` keeps the lease holder and the review worktree, says so in `cleanupProblems`, and denies every later tool call of the child. Find the child's task, wait for it to finish, then `close` it with `--task-status` to release them.
+It records `unknown` with `abandoned-before-bind`, drops a writer's lease holder and removes a review worktree, as a normal `close` does. A child that starts after that is a void seat. `--abandon` never reads the store, because a lost call, a wrong `T3CODE_HOME`, projection lag and a call still in flight all look like no row, so only you can say the call made no task. It refuses a seat whose child already bound it with `BAD_REQUEST` and writes nothing: that child ran, so its task exists, and you close it without `--abandon` once it finishes. If a child binds while the abandon runs, the reason is `abandon-raced-bind`. In that case `close` keeps the lease holder and the review worktree, says so in `cleanupProblems`, and denies every later tool call of the child. Wait for the child's task to finish, then run `close <seat-id>` without `--abandon` to release them.
 
-Close every seat you open, cancelled ones included. `close` records the verdict first, then drops a writer's lease holder and removes a review's worktree. A second `close` prints what the first recorded, verdict included. Its `result` is the recorded result while that file's bytes are unchanged, and `null` once they changed, with `result-changed-after-close` added to `reasons`. When the recorded verdict is `valid` or `coverage-gap`, it first checks the status you pass against the run the stamp judged. A later run, the same run with other text, or a changed Codex plugin root prints:
+Close every seat you open, cancelled ones included. `close` records the verdict first, then drops a writer's lease holder and removes a review's worktree. A second `close` prints what the first recorded, verdict included. Its `result` is the recorded result while that file's bytes are unchanged, and `null` once they changed, with `result-changed-after-close` added to `reasons`. Every `close` reads the store again, with the same refusals. When the recorded verdict is `valid` or `coverage-gap`, it checks the store against the run the stamp judged. A later run, the same run with other text, two task rows for the seat (`task-ambiguous`), or a changed Codex plugin root prints:
 
 ```json
 {"ok": true, "id": "<32 hex>", "verdict": "unknown", "reasons": ["stale-turn"], "turn": 1, "result": null,
@@ -211,3 +220,26 @@ Close every seat you open, cancelled ones included. `close` records the verdict 
 ```
 
 `recorded` is the stamp's verdict and turn, for history. The stamp never changes, so a later `close` never certifies a run the stamp didn't judge. A stamp written before `close` recorded the run id reads as another run. An unclosed T3 writer stays in the worktree's lease directory, and `flow_delegate` refuses a write job there with `WORKSPACE_BUSY` until the seat closes. A holder left by an `open` that died before writing its record holds for a minute, and then a write job drops it.
+
+Because the store comes first, a repeated `close` after T3 prunes the task's row refuses `TASK_NOT_FOUND`, whatever the stamp holds. The stamp stays on record, but no later `close` prints it, so act on the first close's output.
+
+## T3's store
+
+`lib/t3-store.mjs`'s header is the contract, and this section mirrors it. It was read from T3 0.1.6 at migration 76. Re-check it on every T3 bump, the way you re-check the CLI methods, because any T3 release can change its store. `close` never pins the migration id. Its per-close schema and value checks are the drift detector, and they refuse `T3_STORE` rather than guess.
+
+- **Location.** `$T3CODE_HOME/userdata/statev2.sqlite`, or `~/.t3/userdata/statev2.sqlite` when `T3CODE_HOME` is unset or empty. A relative `T3CODE_HOME` is `T3_STORE` (`missing`). T3's dev-mode `dev/` directory isn't supported.
+- **The open.** Read-only, with a 2 s busy timeout. Every query runs inside one `BEGIN` … `COMMIT`, so all of them see one snapshot. `close` writes no rows and never migrates or checkpoints. A read-only open of a WAL database can still create its `-wal` and `-shm` sidecars.
+- **Tables and columns**, each checked with `pragma table_info` before any query:
+
+  | Table | Columns |
+  |---|---|
+  | `orchestration_v2_projection_subagents` | `subagent_id`, `thread_id`, `child_thread_id`, `status` |
+  | `orchestration_v2_projection_runs` | `run_id`, `thread_id`, `ordinal`, `status`, `payload_json` (`startedAt`) |
+  | `orchestration_v2_projection_messages` | `message_id`, `run_id`, `role`, `created_at`, `updated_at`, `payload_json` (`text`) |
+  | `effect_sql_migrations` | `max(migration_id)`, recorded as `t3Migration` for forensics |
+
+- **The task row.** Its `subagent_id` is exactly `node:delegated-task:command%3Amcp%3A<uuid>%3Adelegate-task%3Aflow-seat-<seat id>`, the uuid being the parent's MCP session's, so `close` matches the grammar and never builds the id. SQL `LIKE` is no identity test: it reads the `%` of `%3A` as a wildcard and ignores case, and thread-send and provider-continuation rows carry `flow-seat-<id>` too. `child_thread_id` must be `thread:delegated-task:` plus the id's tail after `node:delegated-task:`.
+- **Finished.** The row's status is `completed`, `failed`, `cancelled` or `interrupted`. No run in the child thread is `preparing`, `queued`, `starting`, `running` or `waiting`. No `subagents` row whose `thread_id` is the child thread is `idle`, `pending`, `running` or `waiting`, which stands in for T3's `waiting_for_children`. A status outside T3 0.1.6's sets is `T3_STORE` (`value`).
+- **Runs.** Every run id must read `run:thread:<encodeURIComponent(child thread)>:ordinal:<n>`, with `n` its `ordinal` column. A run counts unless it has neither `payload_json.startedAt` nor any message, so monitor, `rolled_back` and continuation runs count. The child run is the lowest ordinal that counts and the latest run the highest.
+- **Text.** The latest run's text is `payload_json.text` of its newest `role = 'assistant'` message, by `created_at`, then `updated_at`, then `message_id`, all descending, thinking rows included. It applies only when the latest run is the child run or `completed`. Both times must be 24-character ISO times. `payload_json.result` and `turn_items` are never read, because neither follows the latest run. The rule over-includes on purpose: a wrong guess can only read `stale-turn`, never certify a run the hooks didn't see.
+- **The stamp's `task` block.** `{taskId, ownerThreadId, childThreadId, status, childRunId, latestRunId, latestRunStatus, latestTextSha256, closerThreadId, t3Migration}`, where `closerThreadId` is the closer's `T3CODE_THREAD_ID` or `null`. The last two are for audit and drift forensics only, and nothing matches on them. A `task-ambiguous` close records `{ambiguous: true, taskIds}`.
