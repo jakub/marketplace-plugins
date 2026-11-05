@@ -1084,6 +1084,18 @@ const cases = {
     }
     assert.deepEqual(readdirSync(seats).sort(), before, 'an untagged call wrote seat state')
     ok('an untagged delegate_task call naming its runtimeMode is allowed and writes nothing')
+
+    // T3 builds the task id from clientRequestId, so an untagged call reusing a seat's would make a
+    // task row close reads as the seat's.
+    for (const host of ['claude', 'codex']) {
+      for (const clientRequestId of [`flow-seat-${id}`, 'flow-seat-anything']) {
+        const reuse = { task: 'Summarise the README.', role: 'general', runtimeMode: 'auto', target: { providerInstanceId: 'codex', model: MODELS.codex }, clientRequestId }
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], reuse)), /reserved for the seat call/, `untagged ${clientRequestId}`)
+      }
+    }
+    assert.equal(store.readStamp(id, 'admitted'), null, 'an untagged call reusing the seat\'s clientRequestId admitted the record')
+    assert.deepEqual(readdirSync(seats).sort(), before, 'an untagged call reusing a seat clientRequestId wrote seat state')
+    ok('an untagged delegate_task call naming a flow-seat- clientRequestId is denied on both hosts and admits nothing')
   },
 
   'admit-mismatch': () => {

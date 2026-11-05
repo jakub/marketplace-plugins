@@ -13,8 +13,10 @@
 //                      what the record names: the runtime mode, the provider instance id, the
 //                      model, the effort under the option id of the record's provider family, and
 //                      clientRequestId flow-seat-<id>, which T3 builds the task id from, so close
-//                      can tell this seat's task from another. The admitted stamp pins the digest
-//                      of the record it admitted, which the bind and close compare.
+//                      can tell this seat's task from another. An untagged call that names a
+//                      flow-seat- clientRequestId is denied, so no other call makes a task row close
+//                      would read as the seat's. The admitted stamp pins the digest of the record it
+//                      admitted, which the bind and close compare.
 //   bindProblem        the child's UserPromptSubmit: whether this session may bind the record. A
 //                      record that fails seatIdentityProblem, or whose bytes are not the ones the
 //                      admitted stamp pinned, is never bound. A failed bind makes a void seat,
@@ -124,7 +126,12 @@ export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
   if (typeof task !== 'string') return deny('the delegate_task task is not a string, so the call is refused.')
 
   const tag = store.parseTag(task)
-  if (tag === null) return null
+  if (tag === null) {
+    if (typeof toolInput.clientRequestId === 'string' && toolInput.clientRequestId.startsWith('flow-seat-')) {
+      return deny('clientRequestId flow-seat-<id> is reserved for the seat call `seat open` printed, which carries its seat tag alone on line 1. Use another clientRequestId, or send the seat call as printed.')
+    }
+    return null
+  }
   if (tag.void) return deny('a seat tag appears in the task but not as the whole of line 1. Put the tag `seat open` printed alone on line 1.')
 
   const { id } = tag
