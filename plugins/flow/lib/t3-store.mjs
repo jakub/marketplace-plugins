@@ -134,14 +134,16 @@ function closerThreadId() {
   return typeof id === 'string' && id !== '' && Buffer.byteLength(id, 'utf8') <= CLOSER_BYTES && !/\p{Cc}/u.test(id) ? id : null
 }
 
-// payload.text of the run's newest assistant message, or null when it has none.
+// payload.text of the run's newest assistant message, or null when the run has no assistant
+// message. T3 0.1.6 writes text as a string on every assistant message, so anything else refuses.
 function newestText(db, runId) {
   const messages = db.prepare(`select message_id, created_at, updated_at, payload_json from ${MESSAGES} where run_id = ? and role = 'assistant' order by created_at desc, updated_at desc, message_id desc`).all(runId)
   const time = (value) => typeof value === 'string' && ISO_TIME.test(value)
   if (!messages.every((message) => time(message.created_at) && time(message.updated_at))) unreadable('a message time that is not a 24-character ISO time')
   if (messages.length === 0) return null
   const { text } = payloadOf(messages[0].payload_json, 'a message')
-  return typeof text === 'string' ? text : null
+  if (typeof text !== 'string') unreadable('an assistant message whose text is not a string')
+  return text
 }
 
 // One finished task row's child thread, runs and nested tasks, as {task, run}, or a refusal.

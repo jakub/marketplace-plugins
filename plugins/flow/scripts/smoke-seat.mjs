@@ -3945,7 +3945,7 @@ process.exit(255)
 
   'close-same-run-mismatch': () => {
     for (const [what, summary] of [
-      ['one byte changed', MESSAGE_OK.replace('"ok"', '"oK"')], ['one byte added', `${MESSAGE_OK} `], ['one byte dropped', MESSAGE_OK.slice(0, -1)], ['null', null], ['a number', 7],
+      ['one byte changed', MESSAGE_OK.replace('"ok"', '"oK"')], ['one byte added', `${MESSAGE_OK} `], ['one byte dropped', MESSAGE_OK.slice(0, -1)], ['null', null],
     ]) {
       const seat = guardedSeat()
       const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary }))
@@ -4345,6 +4345,8 @@ process.exit(255)
         ['a run payload that is no JSON', run({ payloadJson: '{"startedAt":' })],
         ['a run payload that is no object', run({ payloadJson: '[]' })],
         ['a message payload that is no object', run({}, { payloadJson: 'null' })],
+        ['a message payload with no text', run({}, { payloadJson: JSON.stringify({ role: 'assistant' }) })],
+        ['a message text that is no string', run({}, { payloadJson: JSON.stringify({ role: 'assistant', text: 7 }) })],
         ['a message time with other precision', run({}, { at: '2026-11-04T12:00:00Z' })],
         ['an updated_at with other precision', run({}, { updatedAt: '2026-11-04T12:00:00.0001Z' })],
         // node:sqlite throws ERR_OUT_OF_RANGE reading an integer past JavaScript's safe range.
