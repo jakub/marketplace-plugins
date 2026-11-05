@@ -6,7 +6,7 @@
 //   seat.mjs open --access read-only|workspace-write|review --provider claude|codex
 //                 [--provider-instance-id <id>] --model <id> [--expected-served-model <id>]
 //                 --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>]
-//   seat.mjs close <seat-id> --task-status <json|->
+//   seat.mjs close <seat-id>
 //   seat.mjs close <seat-id> --abandon
 //   seat.mjs trust [--write --expect <digest>]
 //
@@ -15,8 +15,8 @@
 // servedModels, blocks, errors, cleanupProblems?, recorded?}, with or without --abandon, trust prints {ok: true, keys: [{key, command, trustStatus,
 // currentHash}], digest, wrote}, and a refusal prints {ok: false, error: {kind, message,
 // details?}} with exit 1. The kinds are BAD_REQUEST, BAD_SCHEMA, GIT_REF, WORKSPACE_BUSY,
-// HOOKS_MISMATCH, HOOKS_CHANGED and HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_TERMINAL,
-// TASK_MISMATCH and TASK_INCOMPLETE from close; BAD_REQUEST,
+// HOOKS_MISMATCH, HOOKS_CHANGED and HOOKS_UNTRUSTED from open; BAD_REQUEST, TASK_NOT_FOUND,
+// TASK_NOT_TERMINAL, T3_STORE and T3_STORE_BUSY from close; BAD_REQUEST,
 // HOOKS_MISMATCH, HOOKS_CHANGED, HOOKS_UNTRUSTED, PROVIDER_NOT_INSTALLED and the Codex App
 // Server's own failure kinds (PROVIDER_ERROR, PROVIDER_AUTH, TIMEOUT) from trust; and, for
 // anything this script did not expect, INTERNAL.
@@ -78,27 +78,25 @@
 // runs before the lease holder, so a refusal leaves no record, holder or review worktree. A Claude
 // record carries neither codexPluginRoot nor codexPluginDigest.
 //
-// close reads the task status from --task-status <json>, at most 64 KiB, or with --task-status -
-// from stdin, at most 256 KiB of raw bytes (a trailing newline counts) that must decode as UTF-8.
-// A single argv string fails with E2BIG at 128 KiB on Linux, so a parent passes a whole status on
-// stdin. A status over its cap, not UTF-8 or not JSON is refused BAD_REQUEST. No refusal of close
+// close takes the seat id and nothing else, and refuses BAD_REQUEST any flag but --abandon. It
+// reads the seat's task from T3's own store through lib/t3-store.mjs, whose header is the contract:
+// where the store is, what is read, how the task row is found, when the task counts as finished,
+// and which run and text close checks. No model copies T3's text, and close checks nothing about
+// the thread that owns the task or the closer's, so a thread that did not start the task can close
+// it; the seat id is the capability. A same-user session that holds the id and calls delegate_task
+// outside flow's hooks is out of scope, as is one that writes T3's store. The store's refusals are TASK_NOT_FOUND, when no task row fits
+// the seat; TASK_NOT_TERMINAL, when the task, a run in its thread or a task it started is not
+// finished, or when the task or the seat's turn state changed between the read before close
+// judges and the read again just before the stamp; T3_STORE_BUSY, when a writer holds the store past the busy timeout; and T3_STORE, with
+// details.cause missing, schema or value, when this flow can't read the store. No refusal of close
 // writes anything: no stamp is added or changed, and the writer's lease holder and the review
-// worktree stay, so a retry with the whole status can still close the seat.
-// close then refuses TASK_NOT_TERMINAL, writing nothing, unless --task-status is a task_status
-// answer T3 gives for a finished task: an object whose status is completed, failed, cancelled or
-// interrupted, whose workState is not working or waiting_for_children, and whose
-// hasPendingChildRuns is not true. A writer's lease stays held until then. Once the seat was
-// admitted, close also refuses TASK_MISMATCH, writing nothing, unless the task status's taskId
-// carries flow-seat-<id>, the clientRequestId the admitted call named, plainly or URL-encoded, so
-// one seat is never closed on another task's status. It then refuses TASK_INCOMPLETE unless the
-// status has its own childRunId, latestTerminalRunId, latestTerminalStatus, summary and
-// latestTerminalSummary keys (a key set to null is present), and TASK_MISMATCH unless both run ids
-// follow one grammar: run:thread:<seg>:ordinal:<n>, split at the last :ordinal:, where seg equals
-// encodeURIComponent(childThreadId), compared encoded, childThreadId is a non-empty string, n
-// matches [1-9][0-9]* and is a safe integer, and the latest ordinal is not below the child's.
-// childThreadId is a T3 id and is never compared with a hook's sessionId. It then judges the seat
-// from its record and the stamps and results the hooks wrote, in this order of precedence, the
-// first that holds being the verdict:
+// worktree stay, so a later close can still close the seat. Two finished task rows that fit the
+// seat are no refusal. They make the verdict unknown with reason task-ambiguous, ahead of every
+// other verdict, because flow admits one call per seat, so the state never heals and a refusal
+// would keep a writer's lease forever.
+// The task's childThreadId is a T3 id and is never compared with a hook's sessionId. close then
+// judges the seat from its record and the stamps and results the hooks wrote, in this order of
+// precedence, the first that holds being the verdict:
 //   unknown         no readable record; a record that fails seatIdentityProblem, such as one
 //                   an older flow wrote without providerInstanceId or expectedServedModel; a
 //                   void stamp; no admitted, bound or receipt stamp; a record whose bytes no
@@ -118,9 +116,13 @@
 //                   router to the model behind it, so the parent declares it at open.
 //   tree-moved      for a review: the review worktree's HEAD left the head SHA or its tree is
 //                   dirty, the canonical checkout's snapshot changed, its HEAD commit or branch
-//                   changed other than by the fast-forward below, or the coverage (read,
-//                   partial and unopened together) misses a file in `git diff --name-only base
-//                   head`, the last only when there is an envelope to read it from
+//                   changed other than by the fast-forward below, or, with an envelope to check,
+//                   `git diff --name-only base head` could not be read
+//   coverage-gap    for a review with an envelope: the coverage (read, partial and unopened
+//                   together) misses a file in that diff. An entry covers a file when it is the
+//                   file's path, or that path, a space and a parenthesized note (see uncovered).
+//                   The reasons are one count, then every missed path, uncapped; result is the
+//                   envelope Stop recorded
 //   capped          the last turn was capped
 //   invalid         the last stop in the last turn was blocked
 //   valid           otherwise; result is the envelope Stop recorded
@@ -147,12 +149,10 @@
 //     HEAD, so a close after that merge and before that sibling's land pulls reads tree-moved;
 //   - an HTTPS origin that needs a credential helper fails closed, because no global or system
 //     configuration is read.
-// close then checks a valid verdict against the task status, as negative evidence only. T3's
-// text can withhold a valid, and the result is still the envelope Stop recorded, never T3's
-// summary. The latest run's text is summary when latestTerminalRunId is childRunId. Otherwise,
-// when latestTerminalStatus is completed, it is latestTerminalSummary when that is a string and
-// summary when it is null (T3 0.1.6 nulls it when it repeats summary), and for any other status
-// there is none. Reason stale-turn comes first, for no text, for text whose store.textDigest (the
+// close then checks a valid or coverage-gap verdict against the task T3's store holds, as negative
+// evidence only. T3's text can withhold either, and the result is still the envelope Stop recorded,
+// never T3's text. The child run, the latest run and the latest run's text are lib/t3-store.mjs's,
+// and a latest run that is a later one and did not complete has no text. Reason stale-turn comes first, for no text, for text whose store.textDigest (the
 // raw bytes Stop hashed, nothing trimmed or unfenced) is not the turn state's messageSha256, or
 // for a latest ordinal above the child's when the turn state has no own opened key. The ordinal is
 // a one-way signal and never a turn count: a failed run takes an ordinal and has no Stop, and a
@@ -161,16 +161,23 @@
 // codexPluginDigest or two unequal digests is a change. A Codex record with neither key predates
 // the check and is not scanned, one with a single key or a malformed digest reads hooks-changed,
 // and a Claude record is never scanned. Either reason makes the verdict unknown and the result
-// null, and keeps turn, servedModels, blocks and errors. close checks only a valid verdict, so the
-// two reasons only ever turn valid into unknown, and every verdict above keeps its precedence.
-// Two gaps are known and not fixed:
+// null, and keeps turn, servedModels, blocks and errors. close checks only those two verdicts, so
+// the two reasons only ever turn valid or coverage-gap into unknown, and every verdict above keeps
+// its precedence.
+// Three gaps are known and not fixed:
 //   - a later run whose hooks were dark and whose text is byte-identical to the recorded message
 //     passes when the turn state already holds an opened key, from an earlier follow-up or steer;
 //   - the scan sees endpoint drift only, so a change restored byte for byte before close passes.
-//     The change seen on 2026-11-03 was a cache refresh that stayed.
-// It writes the closed stamp first, with the verdict, the reasons, the task status the parent
-// read from T3, the latest run's id as runId, the turn state's messageSha256, and the facts the
-// output reports: the turn, the sha256 of that turn's result bytes as judge read them (null with
+//     The change seen on 2026-11-03 was a cache refresh that stayed;
+//   - a follow-up whose prompt hook fires between the second read of the turn state and the
+//     stamp's link is not seen, and a tool call the guard allowed before the link can still run
+//     after it, past the lease's release. The window is a temp-file write and a link, and a
+//     follow-up needs a model turn between its prompt hook and its first tool call.
+// It writes the closed stamp first, with the verdict, the reasons, the task block lib/t3-store.mjs
+// read ({taskId, ownerThreadId, childThreadId, status, childRunId, latestRunId, latestRunStatus,
+// latestTextSha256, closerThreadId, t3Migration}, the last two for audit and drift forensics only,
+// or {ambiguous: true, taskIds} for task-ambiguous) and none of T3's text, the latest run's id as
+// runId (null when ambiguous), the turn state's messageSha256, and the facts the output reports: the turn, the sha256 of that turn's result bytes as judge read them (null with
 // no result), the served models, the blocks and the errors. It
 // then drops the writer's lease holder and removes the review worktree it created, only while the
 // path still resolves to the recorded worktree, its admin directory is still reviewGitDir, and
@@ -180,21 +187,27 @@
 // and facts, with the result read again from the pinned turn: that result while its bytes still
 // hash to the pinned sha256, and otherwise null, with result-changed-after-close among the
 // reasons and the verdict unchanged. It also retries the cleanup. Cleanup that fails is listed in
-// cleanupProblems and does not change the verdict. A stamp that holds valid and is not an abandon
-// is first checked against the status this close was given, so a later close never certifies a
-// run the stamp did not judge. A latest run id other than the stamp's runId adds stale-turn, and a
-// stamp written before close recorded runId has none, so it reads as another run. The same run with
-// text whose store.textDigest is not the stamp's messageSha256 adds stale-turn too, and the root
+// cleanupProblems and does not change the verdict. A stamp that holds valid or coverage-gap and is
+// not an abandon is first checked against T3's store, which every close reads again with the same
+// refusals, so a later close never certifies a run the stamp did not judge. A store that now holds
+// two tasks for the seat adds task-ambiguous. Otherwise a latest run id other than the stamp's runId adds
+// stale-turn, and a stamp written before close recorded runId has none, so it reads as another
+// run. The same run with text whose store.textDigest is not the stamp's messageSha256 adds stale-turn too, and the root
 // scan above adds hooks-changed. With either reason, close prints verdict unknown with those
 // reasons, result null and, last, recorded: {verdict, turn} from the stamp. It never rewrites the
 // stamp, judges the seat again or reads its trees, because a review's worktree is gone by then. A
 // stamp that holds any other verdict certified nothing and prints as before. A close that lost the
-// race for the stamp takes the same path, so two first closes on one status print one outcome.
+// race for the stamp takes the same path, so two first closes on one store print one outcome.
+// Because the store comes first, a close after T3 has pruned the task's row refuses TASK_NOT_FOUND,
+// whatever the stamp holds; the stamp itself stays the record.
 //
 // close --abandon closes a seat whose delegate_task call made no task: T3 refused or lost the call
-// after the parent's PreToolUse admitted it, so no task_status will ever name the seat, and close
-// with one could never run. It takes no --task-status, and refuses BAD_REQUEST, writing nothing,
-// once the seat has a bound stamp: a bound seat's child ran, so it closes with its task status.
+// after the parent's PreToolUse admitted it, so T3's store will never hold a task for the seat,
+// and a plain close would refuse TASK_NOT_FOUND for good. It never reads the store, because it has
+// to work when T3 lost the call, and no row is also what a wrong T3CODE_HOME, projection lag or an
+// admitted call still in flight look like, so only the parent can tell that the call made no
+// task. It takes nothing else, and refuses BAD_REQUEST, writing nothing, once the seat has a
+// bound stamp: a bound seat's child ran, so it closes from the store once its task finishes.
 // Otherwise it writes the closed stamp with verdict unknown, reasons ['abandoned-before-bind'] and
 // abandoned: true, then reads the bound stamp again, and with none it drops the writer's lease
 // holder and removes the review worktree as close does. A bind refuses a record with a closed stamp
@@ -208,7 +221,7 @@
 //     before the closed stamp, so the child may still be working. Abandon reports reasons
 //     ['abandon-raced-bind'], keeps the holder and the review worktree, and lists them in
 //     cleanupProblems. delegate/jobs.mjs holds a holder of an abandoned seat with a bound stamp, and
-//     close with the task's status, once T3 reports it finished, prints the abandon on record and
+//     a plain close, once T3's store holds the task finished, prints the abandon on record and
 //     drops it.
 // Any later close of an abandoned seat prints abandon-raced-bind whenever the seat has a bound stamp.
 //
@@ -248,7 +261,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { connect } from '../delegate/codex-app-server.mjs'
@@ -259,6 +272,7 @@ import { ensureExcluded } from '../lib/git-exclude.mjs'
 import { DEFAULT_INSTANCE, MODEL, plainShellWord, seatContext, seatIdentityProblem, validInstanceId } from '../lib/seat-policy.mjs'
 import * as store from '../lib/seat-store.mjs'
 import { inside } from '../lib/state-dir.mjs'
+import { readSeatTask } from '../lib/t3-store.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TREE_SNAPSHOT = join(HERE, 'tree-snapshot.mjs')
@@ -272,8 +286,6 @@ const EFFORT = /^[a-z][a-z0-9-]{0,31}$/
 const SEAT_ID = /^[0-9a-f]{32}$/
 const DIGEST = /^[0-9a-f]{64}$/
 const SCHEMA_BYTES = 16 * 1024
-const TASK_STATUS_BYTES = 64 * 1024
-const TASK_STATUS_STDIN_BYTES = 256 * 1024
 const GIT_MS = 60_000
 const HEAD_SHA = /^[0-9a-f]{40}$/
 // ls-remote may reach the network: no prompt of any kind, and a bound on how long it may take.
@@ -525,7 +537,7 @@ async function open(argv) {
     if (access === 'workspace-write' && !holdLive(worktree, id)) {
       const reason = 'a write job took the lease holder over as abandoned before the record was written'
       store.stamp(id, 'void', { reason: 'lease-lost-at-open' })
-      store.stamp(id, 'closed', { verdict: 'unknown', reasons: [reason], taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
+      store.stamp(id, 'closed', { verdict: 'unknown', reasons: [reason], task: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
       fail('WORKSPACE_BUSY', `This open stalled for over a minute, so ${reason}, and a write job may hold the worktree now.`)
     }
     return {
@@ -768,17 +780,42 @@ async function seatTrust(cwd) {
 
 const STAMPS = ['admitted', 'bound', 'receipt']
 
-// A coverage entry as a path relative to the review worktree: `./a`, `a` and `<worktree>/a` are
-// one file.
-function covered(envelope, worktree) {
-  const lists = ['read', 'partial', 'unopened'].flatMap((key) => envelope?.coverage?.[key] ?? [])
-  return new Set(lists.filter((entry) => typeof entry === 'string').map((entry) => {
-    const path = isAbsolute(entry) && inside(worktree, entry) ? relative(worktree, entry) : entry
-    return path.replace(/^(?:\.\/)+/, '').split(sep).join('/')
-  }))
+// The verdicts whose result is the envelope Stop recorded, and the only ones freshness checks.
+const RESULTS = new Set(['valid', 'coverage-gap'])
+
+// The files in the pinned diff, `git diff --name-only base head` in the review worktree, or null
+// when the list can't be read.
+function pinnedDiff(record) {
+  if (typeof record.reviewWorktree !== 'string') return null
+  const diff = git(record.reviewWorktree, ['diff', '--no-ext-diff', '--name-only', '-z', record.baseSha, record.headSha])
+  return diff.ok ? diff.stdout.split('\0').filter(Boolean) : null
 }
 
-function treeReasons(record, envelope) {
+// The files in the diff that the coverage (read, partial and unopened together) doesn't cover.
+// An entry is first made a path relative to the review worktree, so `./a`, `a` and `<worktree>/a`
+// are one file. It covers diff path P when it is P, or when it is P, a space, and a note in
+// parentheses. An exact match wins, and otherwise only the longest such P is covered, so
+// `a (b).md` is that file, `a (b).md (n)` covers it, and neither covers a diffed `a`.
+function uncovered(envelope, worktree, files) {
+  const inDiff = new Set(files)
+  const seen = new Set()
+  for (const entry of ['read', 'partial', 'unopened'].flatMap((key) => envelope?.coverage?.[key] ?? [])) {
+    if (typeof entry !== 'string') continue
+    const path = (isAbsolute(entry) && inside(worktree, entry) ? relative(worktree, entry) : entry).replace(/^(?:\.\/)+/, '').split(sep).join('/')
+    if (inDiff.has(path)) { seen.add(path); continue }
+    if (!path.endsWith(')')) continue
+    let longest = null
+    for (const file of files) {
+      if (path.startsWith(`${file} (`) && (longest === null || file.length > longest.length)) longest = file
+    }
+    if (longest !== null) seen.add(longest)
+  }
+  return files.filter((file) => !seen.has(file))
+}
+
+// The reasons a review's trees read tree-moved. With an envelope to check coverage against, a
+// diff list that can't be read is one too, since the coverage can't be checked without it.
+function treeReasons(record, envelope, files) {
   const reasons = []
   const at = record.reviewWorktree
   const head = typeof at === 'string' ? gitLine(at, ['rev-parse', '--verify', 'HEAD']) : null
@@ -798,15 +835,7 @@ function treeReasons(record, envelope) {
       }
     }
   }
-  if (envelope && typeof at === 'string') {
-    const diff = git(at, ['diff', '--no-ext-diff', '--name-only', '-z', record.baseSha, record.headSha])
-    if (!diff.ok) reasons.push('the pinned diff\'s file list could not be read')
-    else {
-      const seen = covered(envelope, at)
-      const missing = diff.stdout.split('\0').filter(Boolean).filter((file) => !seen.has(file))
-      if (missing.length > 0) reasons.push(`the coverage misses ${missing.length} file(s) in the pinned diff: ${missing.slice(0, 10).join(', ')}`)
-    }
-  }
+  if (envelope && typeof at === 'string' && files === null) reasons.push('the pinned diff\'s file list could not be read')
   return reasons
 }
 
@@ -872,8 +901,13 @@ function judge(id, loaded) {
   }
   if (mismatches.length > 0) return { verdict: 'model-mismatch', reasons: mismatches, facts }
   if (record.access === 'review') {
-    const reasons = treeReasons(record, envelope)
+    const files = envelope ? pinnedDiff(record) : null
+    const reasons = treeReasons(record, envelope, files)
     if (reasons.length > 0) return { verdict: 'tree-moved', reasons, facts }
+    // Every missed path is its own reason, uncapped, because the parent scopes the next review
+    // from that list.
+    const missing = files === null ? [] : uncovered(envelope, record.reviewWorktree, files)
+    if (missing.length > 0) return { verdict: 'coverage-gap', reasons: [`the coverage misses ${missing.length} file(s) in the pinned diff`, ...missing], facts }
   }
   if (state.outcome === 'capped') return { verdict: 'capped', reasons: [`turn ${state.turn} was blocked ${facts.blocks} times and then let stop`], facts }
   if (state.outcome === 'blocked') return { verdict: 'invalid', reasons: [`turn ${state.turn}'s last final message failed the envelope or the schema`], facts }
@@ -935,7 +969,7 @@ function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
     : Array.isArray(recorded.reasons) ? [...recorded.reasons] : []
   let result = null
   if ((now?.sha256 ?? null) !== pinned) reasons.push('result-changed-after-close')
-  else if (recorded.verdict === 'valid') result = now?.body?.envelope ?? null
+  else if (RESULTS.has(recorded.verdict)) result = now?.body?.envelope ?? null
   return {
     ok: true, id, verdict: recorded.verdict, reasons, turn, result,
     servedModels: Array.isArray(recorded.servedModels) ? recorded.servedModels : [],
@@ -945,115 +979,23 @@ function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
 }
 
 // A later close's output once the stamp is on record: onRecord's, unless the stamp certified a
-// valid verdict that this close's task status or the seat's hooks now contradict. A latest run
-// other than the one the stamp judged (a stamp written before close recorded runId reads as another
-// run), or the same run with text other than the message the stamp judged, is stale-turn, and a
-// changed plugin root is hooks-changed: the verdict is unknown, with those reasons, no result and
-// what the stamp recorded beside them. The stamp is never rewritten, so a later close never
-// certifies a run the stamp did not judge. A stamp that certified nothing prints as it is, and
-// judge's tree checks never run again here, since the first close removed the review worktree.
+// valid or coverage-gap verdict that T3's store or the seat's hooks now contradict. A store that
+// now holds two tasks for the seat (run is null) is task-ambiguous. A latest run other than the one
+// the stamp judged (a stamp written before close recorded runId reads as another run), or the same
+// run with text other than the message the stamp judged, is stale-turn, and a changed plugin root
+// is hooks-changed: the verdict is unknown, with those reasons, no result and what the stamp
+// recorded beside them. The stamp is never rewritten, so a later close never certifies a run the
+// stamp did not judge. A stamp that certified nothing prints as it is, and judge's tree checks
+// never run again here, since the first close removed the review worktree.
 function repeated(id, recorded, run, record) {
   const shown = onRecord(id, recorded)
-  if (recorded.verdict !== 'valid' || recorded.abandoned === true) return shown
+  if (!RESULTS.has(recorded.verdict) || recorded.abandoned === true) return shown
   const reasons = []
-  if (run.latestRunId !== recorded.runId || store.textDigest(run.latestText) !== recorded.messageSha256) reasons.push('stale-turn')
+  if (run === null) reasons.push('task-ambiguous')
+  else if (run.latestRunId !== recorded.runId || store.textDigest(run.latestText) !== recorded.messageSha256) reasons.push('stale-turn')
   if (hooksChanged(record)) reasons.push('hooks-changed')
   if (reasons.length === 0) return shown
   return { ...shown, verdict: 'unknown', reasons, result: null, recorded: { verdict: recorded.verdict, turn: shown.turn } }
-}
-
-const TASK_ENDED = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
-const TASK_BUSY = new Set(['working', 'waiting_for_children'])
-const terminalTask = (status) => status !== null && typeof status === 'object' && !Array.isArray(status) &&
-  TASK_ENDED.has(status.status) && !TASK_BUSY.has(status.workState) && status.hasPendingChildRuns !== true
-
-// Whether a task status is the seat's own task: T3 builds the task id from the call's
-// clientRequestId, URL-encoded inside it, as in `...delegate-task%3Aflow-seat-<id>`.
-function taskOf(status, id) {
-  if (typeof status.taskId !== 'string') return false
-  let decoded = status.taskId
-  try { decoded = decodeURIComponent(status.taskId) } catch {}
-  return [status.taskId, decoded].some((text) => text.includes(clientRequestIdOf(id)))
-}
-
-// stdin's bytes, or null once there are more than cap of them. It reads synchronously, so close
-// stays one synchronous pass, and it never reads more than cap + 1 bytes.
-function readStdin(cap) {
-  const buffer = Buffer.alloc(cap + 1)
-  const nap = new Int32Array(new SharedArrayBuffer(4))
-  let length = 0
-  while (length <= cap) {
-    let read
-    try { read = readSync(0, buffer, length, buffer.length - length, null) } catch (error) {
-      if (error.code === 'EAGAIN') { Atomics.wait(nap, 0, 0, 10); continue }
-      if (error.code === 'EOF') break
-      fail('BAD_REQUEST', `--task-status - could not read stdin (${String(error.code ?? 'error').slice(0, 32)}).`)
-    }
-    if (read === 0) break
-    length += read
-  }
-  return length > cap ? null : buffer.subarray(0, length)
-}
-
-// The task status close was given: one argument of up to 64 KiB, or, for `-`, up to 256 KiB of
-// UTF-8 on stdin, counted in raw bytes, so a parent never has to build a long argv.
-function readTaskStatus(value) {
-  let text = value
-  if (value === '-') {
-    const bytes = readStdin(TASK_STATUS_STDIN_BYTES)
-    if (bytes === null) fail('BAD_REQUEST', '--task-status - is over 256 KiB on stdin.')
-    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) } catch { fail('BAD_REQUEST', '--task-status - is not UTF-8.') }
-  } else if (Buffer.byteLength(value) > TASK_STATUS_BYTES) {
-    fail('BAD_REQUEST', '--task-status is over 64 KiB; pass the task status on stdin with --task-status - instead.')
-  }
-  try { return JSON.parse(text) } catch { fail('BAD_REQUEST', '--task-status is not JSON.') }
-}
-
-// The keys a task status must carry for close to tell which run's answer it would certify.
-const RUN_KEYS = ['childRunId', 'latestTerminalRunId', 'latestTerminalStatus', 'summary', 'latestTerminalSummary']
-const RUN_PREFIX = 'run:thread:'
-const RUN_ORDINAL = ':ordinal:'
-
-// A T3 run id's ordinal, when the id is run:thread:<encodeURIComponent(thread)>:ordinal:<n> with n
-// a positive safe integer in canonical digits; null for anything else, another thread's included.
-function runOrdinal(runId, thread) {
-  if (typeof runId !== 'string' || typeof thread !== 'string' || thread === '' || !runId.startsWith(RUN_PREFIX)) return null
-  let segment
-  try { segment = encodeURIComponent(thread) } catch { return null }
-  const at = runId.lastIndexOf(RUN_ORDINAL)
-  if (at < RUN_PREFIX.length || runId.slice(RUN_PREFIX.length, at) !== segment) return null
-  const digits = runId.slice(at + RUN_ORDINAL.length)
-  const ordinal = /^[1-9][0-9]*$/.test(digits) ? Number(digits) : NaN
-  return Number.isSafeInteger(ordinal) ? ordinal : null
-}
-
-// The task's runs as close judges them: the ordinal of the child's run and of its latest finished
-// run, and the latest one's id. Refuses TASK_INCOMPLETE a status missing a run key (a key present
-// with a null value is not missing) and TASK_MISMATCH run ids that are not the status's own thread's
-// or that put the latest run first, both before anything is written.
-function runsOf(status) {
-  const missing = RUN_KEYS.filter((key) => !Object.hasOwn(status, key))
-  if (missing.length > 0) {
-    fail('TASK_INCOMPLETE', `The task status lacks ${missing.join(', ')}, so close cannot tell which run's answer it would certify. Pass the whole task_status answer, unedited, with --task-status - on stdin.`, { missing })
-  }
-  const childOrdinal = runOrdinal(status.childRunId, status.childThreadId)
-  const latestOrdinal = runOrdinal(status.latestTerminalRunId, status.childThreadId)
-  if (childOrdinal === null || latestOrdinal === null) {
-    fail('TASK_MISMATCH', 'The task status\'s childRunId and latestTerminalRunId must each read run:thread:<childThreadId, URL-encoded>:ordinal:<n>, with n a positive integer, for the status\'s own childThreadId. Pass the task_status answer as T3 gave it.')
-  }
-  if (latestOrdinal < childOrdinal) fail('TASK_MISMATCH', 'The task status\'s latest finished run comes before its child run, so it is not one task\'s status. Pass the task_status answer as T3 gave it.')
-  return { childOrdinal, latestOrdinal, latestRunId: status.latestTerminalRunId, latestText: latestText(status) }
-}
-
-// The final text T3 reports for the task's latest finished run, or null when that run left none:
-// the summary when the latest run is the child's; for a later run that completed, its
-// latestTerminalSummary, or the summary when T3 nulled latestTerminalSummary for repeating it; and
-// no text for a later run that ended any other way.
-function latestText(status) {
-  const text = (value) => (typeof value === 'string' ? value : null)
-  if (status.latestTerminalRunId === status.childRunId) return text(status.summary)
-  if (status.latestTerminalStatus !== 'completed') return null
-  return status.latestTerminalSummary === null ? text(status.summary) : text(status.latestTerminalSummary)
 }
 
 // Whether a Codex seat's hooks may have gone dark while it ran: the flow plugin root open recorded
@@ -1073,12 +1015,12 @@ function hooksChanged(record) {
   return first.digest === undefined || first.digest !== record.codexPluginDigest || second.digest !== first.digest
 }
 
-// Why a seat judge read valid is not proven to have answered T3's latest finished run under its
-// hooks, as reasons in this order, none when it is. T3's text is negative evidence only: it can
-// turn a valid into unknown, and the answer still comes from the result Stop wrote. stale-turn:
-// the latest run left no text, its text is not byte for byte the final message Stop recorded, or it
-// is a later run than the child's while no follow-up prompt is on record. hooks-changed: see
-// hooksChanged.
+// Why a seat judge read valid or coverage-gap is not proven to have answered T3's latest run under
+// its hooks, as reasons in this order, none when it is. T3's text is negative evidence only: it can
+// turn either into unknown, and the answer still comes from the result Stop wrote. stale-turn: the
+// latest run left no text (lib/t3-store.mjs says when it has none), its text is not byte for byte
+// the final message Stop recorded, or it is a later run than the child's while no follow-up prompt
+// is on record. hooks-changed: see hooksChanged.
 function freshness(facts, run, record) {
   const reasons = []
   const latest = store.textDigest(run.latestText)
@@ -1091,31 +1033,36 @@ function close(argv) {
   const [id, ...rest] = argv
   if (typeof id !== 'string' || !SEAT_ID.test(id)) fail('BAD_REQUEST', 'close takes a seat id, 32 lowercase hex characters.')
   if (rest.includes('--abandon')) {
-    if (rest.length !== 1) fail('BAD_REQUEST', 'close --abandon takes nothing else: no --task-status and no value.')
+    if (rest.length !== 1) fail('BAD_REQUEST', 'close --abandon takes nothing else.')
     return abandon(id)
   }
-  const opts = flags(rest, ['--task-status'])
-  const text = opts['--task-status']
-  if (text === undefined) fail('BAD_REQUEST', 'close needs --task-status, the task_status answer for the seat\'s task, as JSON, or - to read it from stdin.')
-  const taskStatus = readTaskStatus(text)
-  if (!terminalTask(taskStatus)) {
-    fail('TASK_NOT_TERMINAL', 'close records a seat whose task T3 reports finished: a task_status answer whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs. Wait for the task to finish, then close it.')
-  }
-  if (store.readStamp(id, 'admitted') !== null && !taskOf(taskStatus, id)) {
-    fail('TASK_MISMATCH', `The task status is not this seat's task: its taskId does not carry ${clientRequestIdOf(id)}, the clientRequestId the seat's delegate_task call was admitted with. Pass the task_status answer for this seat's own task.`)
-  }
-  const run = runsOf(taskStatus)
+  flags(rest, [])
+  // T3's store comes first: a refusal there writes nothing, so a retry can still close the seat.
+  const read = readSeatTask(id)
+  if (!read.ok) fail(read.kind, read.message, read.details)
+  const run = read.ambiguous ? null : read.run
 
   const loaded = store.readRecord(id)
+  const state = JSON.stringify(store.readState(id))
   const judged = judge(id, loaded)
-  // Only a valid verdict is checked against T3's latest run, so every other verdict keeps its
-  // precedence, and the check can only turn a valid into unknown.
-  const doubts = judged.verdict === 'valid' ? freshness(judged.facts, run, loaded.record) : []
+  // Two tasks for one seat outrank every verdict, since neither can be told for the seat's own.
+  // Otherwise only a verdict with a result is checked against T3's latest run, so every other
+  // verdict keeps its precedence, and the check can only turn valid or coverage-gap into unknown.
+  const doubts = run === null ? ['task-ambiguous'] : RESULTS.has(judged.verdict) ? freshness(judged.facts, run, loaded.record) : []
   const { verdict, reasons } = doubts.length > 0 ? { verdict: 'unknown', reasons: doubts } : judged
   const { facts } = judged
   const { turn, resultSha256, servedModels, blocks, errors, messageSha256 } = facts
-  const closed = { verdict, reasons, taskStatus, runId: run.latestRunId, turn, resultSha256, messageSha256, servedModels, blocks, errors }
-  let out = { ok: true, id, verdict, reasons, turn, result: verdict === 'valid' ? facts.envelope : null, servedModels, blocks, errors }
+  const task = run === null ? { ambiguous: true, taskIds: read.taskIds } : read.task
+  const closed = { verdict, reasons, task, runId: run?.latestRunId ?? null, turn, resultSha256, messageSha256, servedModels, blocks, errors }
+  let out = { ok: true, id, verdict, reasons, turn, result: RESULTS.has(verdict) ? facts.envelope : null, servedModels, blocks, errors }
+  // T3 can start a run while close judges, which takes seconds for a review. Read the task and the
+  // turn state again and stamp only what held still. The turn state catches a follow-up whose run
+  // row T3 has not projected yet, because its prompt hook writes the state before any tool call.
+  const again = readSeatTask(id)
+  if (!again.ok) fail(again.kind, again.message, again.details)
+  if (JSON.stringify(again) !== JSON.stringify(read) || JSON.stringify(store.readState(id)) !== state) {
+    fail('TASK_NOT_TERMINAL', 'The seat\'s task changed while close judged it, so close wrote nothing. Close the seat again once T3 reports the task finished.')
+  }
   if (!store.stamp(id, 'closed', closed)) {
     // An earlier or racing close holds the stamp, and its record stands; or the record directory
     // is gone, and nothing can be recorded.
@@ -1127,15 +1074,15 @@ function close(argv) {
   return out
 }
 
-const ABANDON_RACED = 'a child bound this seat while it was abandoned and may still be running, so its lease holder and review worktree are kept; close it with --task-status once T3 reports its task finished'
+const ABANDON_RACED = 'a child bound this seat while it was abandoned and may still be running, so its lease holder and review worktree are kept; close it with seat.mjs close <seat-id>, without --abandon, once T3 reports its task finished'
 
 // close --abandon: see the header for the order of its writes and reads and why it is safe.
 function abandon(id) {
   if (store.readStamp(id, 'bound') !== null) {
-    fail('BAD_REQUEST', 'A bound seat closes with its task status: its child ran, so wait for task_status to report the task finished and pass it with --task-status.')
+    fail('BAD_REQUEST', 'A bound seat closes from T3\'s store, not with --abandon: its child ran, so close it with seat.mjs close <seat-id> once T3 reports its task finished.')
   }
   const loaded = store.readRecord(id)
-  store.stamp(id, 'closed', { verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
+  store.stamp(id, 'closed', { verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, task: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
   // Read only once the closed stamp is on disk, whoever wrote it.
   const bound = store.readStamp(id, 'bound') !== null
   const recorded = store.readStamp(id, 'closed')
@@ -1153,7 +1100,7 @@ function abandon(id) {
 
 // ----- main
 
-const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> --task-status <json|-> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
+const USAGE = 'usage: seat.mjs open --access <read-only|workspace-write|review> --provider <claude|codex> [--provider-instance-id <id>] --model <id> [--expected-served-model <id>] --effort <level> [--worktree <abs>] [--base <rev> --head <rev>] [--schema <file>] | seat.mjs close <seat-id> | seat.mjs close <seat-id> --abandon | seat.mjs trust [--write --expect <digest>]'
 const [verb, ...argv] = process.argv.slice(2)
 let answer
 try {

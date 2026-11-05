@@ -11,7 +11,8 @@
 // replays a T3 wake that quotes a bound child's tag into another session; the containment families run against a
 // real temp git repository as the worktree, the executor families (open-*, close-*, prune-open,
 // trust-*) run scripts/seat.mjs as a process against a real canonical checkout with a linked
-// worktree and a fake codex first on PATH that speaks the App Server's JSON-RPC, and
+// worktree, a fake codex first on PATH that speaks the App Server's JSON-RPC, and a fixture T3
+// store under a temp T3CODE_HOME (no case reads the host's own), and
 // stop-timeout spends the full CHECK_SECONDS on a schema check that never ends. open-lease races
 // writer seats against flow_delegate write jobs as separate processes released together.
 // --case-prefix <p>
@@ -24,6 +25,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { performance } from 'node:perf_hooks'
+import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -33,6 +35,12 @@ const STORE = join(PLUGIN, 'lib', 'seat-store.mjs')
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-smoke-seat-')))
 const state = join(tmp, 'state')
 process.env.FLOW_DELEGATION_STATE_DIR = state
+// close reads T3's store from T3CODE_HOME, and a session inside T3 carries the live home and its own
+// thread id, so every process this smoke spawns reads the fixture store below and names no closer
+// thread unless a case gives one.
+const t3Home = join(tmp, 't3')
+process.env.T3CODE_HOME = t3Home
+delete process.env.T3CODE_THREAD_ID
 const store = await import(pathToFileURL(STORE).href)
 const wire = await import(pathToFileURL(join(PLUGIN, 'hooks', 'scripts', 'wire.mjs')).href)
 const seatPolicy = await import(pathToFileURL(join(PLUGIN, 'lib', 'seat-policy.mjs')).href)
@@ -340,26 +348,156 @@ const flowDigest = (entries) => sha256(JSON.stringify(entries.map(({ key, curren
 // names another state.
 const trustedCodex = codexState([...flowEntries({ trusted: true }), ...FOREIGN])
 
-// A finished task_status answer for the seat's own task, in the shape T3 0.1.6 answered with live.
-// T3 builds the task id from the call's clientRequestId, URL-encoded, and each run id from the
-// child thread id, URL-encoded once more (so its `%` reads `%25`), and the run's ordinal. By
-// default the task ran once and that run completed with MESSAGE_OK as its final message, which is
-// the summary; T3 nulls latestTerminalSummary when it repeats the summary. A case's fields replace
+// T3's store as close reads it: one fixture at <T3CODE_HOME>/userdata/statev2.sqlite, in WAL mode,
+// with T3 0.1.6's own column lists at migration 76 for the tables close reads and for turn_items,
+// which close must not read. This process writes it through one connection for the whole run, and
+// every case's rows carry its seat's random id, so the cases stay apart. A case about a missing,
+// changed or locked store makes a home of its own with t3Store.
+const T3_TABLES = {
+  orchestration_v2_projection_subagents: ['subagent_id TEXT PRIMARY KEY', 'thread_id TEXT NOT NULL', 'run_id TEXT', 'parent_node_id TEXT NOT NULL', 'provider TEXT NOT NULL',
+    'provider_thread_id TEXT', 'child_thread_id TEXT', 'origin TEXT NOT NULL', 'status TEXT NOT NULL', 'started_at TEXT', 'completed_at TEXT', 'updated_at TEXT NOT NULL',
+    'payload_json TEXT NOT NULL', 'driver TEXT', 'provider_instance_id TEXT', 'completion_delivery_state TEXT'],
+  orchestration_v2_projection_runs: ['run_id TEXT PRIMARY KEY', 'thread_id TEXT NOT NULL', 'ordinal INTEGER NOT NULL', 'provider TEXT NOT NULL', 'provider_thread_id TEXT',
+    'status TEXT NOT NULL', 'requested_at TEXT NOT NULL', 'completed_at TEXT', 'payload_json TEXT NOT NULL', 'provider_instance_id TEXT'],
+  orchestration_v2_projection_messages: ['message_id TEXT PRIMARY KEY', 'thread_id TEXT NOT NULL', 'run_id TEXT', 'node_id TEXT', 'role TEXT NOT NULL', 'streaming INTEGER NOT NULL',
+    'created_at TEXT NOT NULL', 'updated_at TEXT NOT NULL', 'payload_json TEXT NOT NULL'],
+  orchestration_v2_projection_turn_items: ['turn_item_id TEXT PRIMARY KEY', 'thread_id TEXT NOT NULL', 'run_id TEXT', 'node_id TEXT', 'provider_thread_id TEXT', 'provider_turn_id TEXT',
+    'parent_item_id TEXT', 'ordinal INTEGER NOT NULL', 'type TEXT NOT NULL', 'status TEXT NOT NULL', 'updated_at TEXT NOT NULL', 'payload_json TEXT NOT NULL'],
+  effect_sql_migrations: ['migration_id integer PRIMARY KEY NOT NULL', 'created_at datetime NOT NULL DEFAULT current_timestamp', 'name VARCHAR(255) NOT NULL'],
+}
+const T3_INDEXES = [
+  ['orchestration_v2_projection_subagents_child_thread_idx', 'orchestration_v2_projection_subagents', ['child_thread_id'], false],
+  ['orchestration_v2_projection_runs_thread_ordinal_idx', 'orchestration_v2_projection_runs', ['thread_id', 'ordinal'], true],
+  ['orchestration_v2_projection_messages_run_idx', 'orchestration_v2_projection_messages', ['run_id'], false],
+]
+// A T3 store under home, open for writing; without names the tables (`<table>`) and columns
+// (`<table>.<column>`) it leaves out, with every index on them.
+function t3Store(home, { without = [] } = {}) {
+  mkdirSync(join(home, 'userdata'), { recursive: true })
+  const db = new DatabaseSync(join(home, 'userdata', 'statev2.sqlite'))
+  db.exec('pragma journal_mode = wal')
+  const gone = (table, column) => without.includes(table) || without.includes(`${table}.${column}`)
+  for (const [table, columns] of Object.entries(T3_TABLES)) {
+    if (!without.includes(table)) db.exec(`CREATE TABLE ${table} (${columns.filter((column) => !gone(table, column.split(' ')[0])).join(', ')})`)
+  }
+  for (const [name, table, columns, unique] of T3_INDEXES) {
+    if (!columns.some((column) => gone(table, column))) db.exec(`CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${name} ON ${table}(${columns.join(', ')})`)
+  }
+  if (!without.includes('effect_sql_migrations')) {
+    for (const migration of [1, 76]) db.prepare('insert into effect_sql_migrations (migration_id, name) values (?, ?)').run(migration, `fixture_${migration}`)
+  }
+  return db
+}
+const t3 = t3Store(t3Home)
+// The parent's MCP session and thread T3 names a seat's task after, and T3's 24-character times,
+// one second apart in the order a case asks for them.
+const T3_SESSION = '0b6c2f1e-7200-4f3f-b16b-3d1e5a9c8f20'
+const T3_OWNER = '82505559-ef73-46d2-b19d-63c28130dee3'
+let t3Clock = 0
+const t3Time = () => new Date(Date.UTC(2026, 10, 4, 12) + ++t3Clock * 1000).toISOString()
+const taskIdOf = (id, session = T3_SESSION) => `node:delegated-task:command%3Amcp%3A${session}%3Adelegate-task%3Aflow-seat-${id}`
+const childThreadOf = (id, session = T3_SESSION) => `thread:delegated-task:command%3Amcp%3A${session}%3Adelegate-task%3Aflow-seat-${id}`
+// T3 builds each run id from the child thread id, URL-encoded once more (so its `%` reads `%25`),
+// and the run's ordinal.
+const runIdOf = (thread, ordinal) => `run:thread:${encodeURIComponent(thread)}:ordinal:${ordinal}`
+// One row as T3 writes it, with only what a case varies as options. A task row's owner is the
+// thread that made the call, and a nested task's owner is the child thread it runs under. Its
+// prompt is the seat call's, the seat tag alone on line 1, unless payload names another.
+function t3TaskRow(id, { db = t3, session = T3_SESSION, taskId = taskIdOf(id, session), owner = T3_OWNER, child = childThreadOf(id, session), status = 'completed', payload = {} } = {}) {
+  db.prepare('insert into orchestration_v2_projection_subagents (subagent_id, thread_id, run_id, parent_node_id, provider, child_thread_id, origin, status, updated_at, payload_json, driver, provider_instance_id) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(taskId, owner, `run:thread:${owner}:ordinal:1`, `node:run:${owner}:root`, 'claudeAgent', child, 'app_owned', status, t3Time(), JSON.stringify({ id: taskId, threadId: owner, childThreadId: child, status, prompt: `${store.seatTag(id)}\nReview the diff.`, ...payload }), 'claudeAgent', 'claudeAgent')
+  return taskId
+}
+function t3RunRow(thread, ordinal, { db = t3, status = 'completed', startedAt = t3Time(), runId = runIdOf(thread, ordinal), payloadJson = null } = {}) {
+  const payload = { id: runId, threadId: thread, ordinal, status, ...(startedAt === null ? {} : { startedAt }) }
+  db.prepare('insert into orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json) values (?, ?, ?, ?, ?, ?, ?)')
+    .run(runId, thread, ordinal, 'claudeAgent', status, t3Time(), payloadJson ?? JSON.stringify(payload))
+  return runId
+}
+function t3MessageRow(thread, runId, text, { db = t3, role = 'assistant', at = t3Time(), updatedAt = at, messageId = `claudeAgent:native-item:${randomUUID()}`, payloadJson = null } = {}) {
+  db.prepare('insert into orchestration_v2_projection_messages (message_id, thread_id, run_id, role, streaming, created_at, updated_at, payload_json) values (?, ?, ?, ?, 0, ?, ?, ?)')
+    .run(messageId, thread, runId, role, at, updatedAt, payloadJson ?? JSON.stringify({ id: messageId, threadId: thread, runId, role, text }))
+}
+// Every row that names the seat id, task rows of any grammar and its nested tasks included.
+function t3Forget(id, db = t3) {
+  db.prepare('delete from orchestration_v2_projection_subagents where instr(subagent_id, ?) > 0 or instr(thread_id, ?) > 0').run(id, id)
+  for (const table of ['runs', 'messages', 'turn_items']) db.prepare(`delete from orchestration_v2_projection_${table} where instr(thread_id, ?) > 0`).run(id)
+}
+// A seat's task as T3 records it, in place of the seat's rows: the task row (task's options), then
+// runs 1, 2, ... each {status, startedAt, texts}, every text an assistant message of that run in
+// order, and a nested task under the child thread for each status in nested. {taskId, thread}.
+function t3Seat(id, runs = [{ texts: [MESSAGE_OK] }], { db = t3, nested = [], ...task } = {}) {
+  t3Forget(id, db)
+  const thread = childThreadOf(id, task.session)
+  const taskId = t3TaskRow(id, { db, ...task })
+  runs.forEach(({ texts = [], ...run }, at) => {
+    const runId = t3RunRow(thread, at + 1, { db, ...run })
+    for (const text of texts) t3MessageRow(thread, runId, text, { db })
+  })
+  for (const status of nested) {
+    t3TaskRow(id, { db, taskId: `node:delegated-task:command%3Amcp%3A${randomUUID()}%3Adelegate-task%3Anested-${id}`, owner: thread, child: `thread:nested-${randomUUID()}`, status })
+  }
+  return { taskId, thread }
+}
+
+// A finished task as the fields of T3's task_status answer: by default the task ran once and that
+// run completed with MESSAGE_OK as its final message, which is the summary. A case's fields replace
 // these as given: nothing here makes a summary match the seat.
 const MESSAGE_OK = JSON.stringify(ENVELOPE_OK)
-const childThreadOf = (id) => `thread:delegated-task:command%3Amcp%3A0b6c2f1e-7200-4f3f-b16b-3d1e5a9c8f20%3Adelegate-task%3Aflow-seat-${id}`
-const runIdOf = (thread, ordinal) => `run:thread:${encodeURIComponent(thread)}:ordinal:${ordinal}`
-const taskStatusOf = (id, fields = {}) => {
+const taskStatusOf = (id, fields = {}) => ({
+  status: 'completed', latestTerminalRunId: runIdOf(childThreadOf(id), 1), latestTerminalStatus: 'completed', latestTerminalSummary: null, summary: MESSAGE_OK, ...fields,
+})
+// The store holding what a task status describes, in place of the seat's rows: the task row with
+// its status, and runs 1 to n, n the ordinal of latestTerminalRunId, each started, run n ending
+// latestTerminalStatus and the others completed. Run 1's final message is summary and run n's
+// latestTerminalSummary ?? summary, as T3 0.1.6 nulls latestTerminalSummary when it repeats the
+// summary; a null text writes no message.
+function t3Status(id, status = taskStatusOf(id)) {
+  const last = Number(/:ordinal:([0-9]+)$/.exec(status.latestTerminalRunId)[1])
+  const texts = (text) => (text === null || text === undefined ? [] : [text])
+  const runs = Array.from({ length: last }, (_, at) => ({ status: at === last - 1 ? status.latestTerminalStatus : 'completed', texts: [] }))
+  runs[0].texts = texts(status.summary)
+  if (last > 1) runs[last - 1].texts = texts(status.latestTerminalSummary ?? status.summary)
+  return t3Seat(id, runs, { status: status.status })
+}
+// close as the delegate skill tells a parent to run it, the seat id alone, against the store
+// holding the task status's rows.
+function closeSeat(id, status = taskStatusOf(id), options = {}) {
+  t3Status(id, status)
+  return seatCli(['close', id], options)
+}
+// The task block close stamps for a seat whose one run completed with text as its final message.
+const oneRunTask = (id, text, fields = {}) => {
   const thread = childThreadOf(id)
   return {
-    taskId: `thread-1:delegate-task%3Aflow-seat-${id}`, childThreadId: thread, childRunId: runIdOf(thread, 1), status: 'completed', workState: 'result_available',
-    hasPendingChildRuns: false, latestTerminalRunId: runIdOf(thread, 1), latestTerminalStatus: 'completed', latestTerminalSummary: null, summary: MESSAGE_OK, ...fields,
+    taskId: taskIdOf(id), ownerThreadId: T3_OWNER, childThreadId: thread, status: 'completed', childRunId: runIdOf(thread, 1), latestRunId: runIdOf(thread, 1),
+    latestRunStatus: 'completed', latestTextSha256: sha256(text), closerThreadId: null, t3Migration: 76, ...fields,
   }
 }
-// close as the delegate skill tells a parent to run it: the whole task status on stdin.
-const closeSeat = (id, taskStatus = taskStatusOf(id)) => seatCli(['close', id, '--task-status', '-'], { input: JSON.stringify(taskStatus) })
-// The five run keys close requires of a task status.
-const RUN_KEYS = ['childRunId', 'latestTerminalRunId', 'latestTerminalStatus', 'summary', 'latestTerminalSummary']
+
+// A writer seat open made in a worktree of its own, with turn 1 recorded valid through the store:
+// hookedSeat's {id, message} and the path of its live lease holder.
+function writerSeat(name, fields = {}) {
+  const at = gitWorktree(name)
+  const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', at])
+  assert.equal(opened.ok, true, JSON.stringify(opened))
+  return { ...hookedSeat({ id: opened.id, ...fields }), holder: join(jobs.leaseDirOf(at), `${opened.id}.live`) }
+}
+// Every file in a seat's record directory, by sha256.
+const recordFiles = (id) => Object.fromEntries(readdirSync(join(seats, id)).sort().map((name) => [name, sha256(readFileSync(join(seats, id, name)))]))
+// A close of seat that must refuse kind: it changes no file of the record, stamps nothing, keeps
+// kept (the writer's holder or the review worktree), and its message names no path in this run's
+// temp directory and no SQLite text. Returns the error.
+function refusedClose(seat, kind, what, { kept = seat.holder, options = {} } = {}) {
+  const before = recordFiles(seat.id)
+  const refused = seatCli(['close', seat.id], options)
+  assert.equal(refused.error?.kind, kind, `${what}: ${JSON.stringify(refused)}`)
+  assert.deepEqual(recordFiles(seat.id), before, `${what} changed the record directory`)
+  assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+  if (kept) assert.ok(existsSync(kept), `${what} released ${kept}`)
+  assert.ok(!refused.error.message.includes(tmp) && !/database is locked|not a database|unable to open|no such/i.test(refused.error.message), `${what} leaked: ${refused.error.message}`)
+  return refused.error
+}
 
 // The executor's repositories: a canonical checkout with two commits (base adds a.txt, b.txt and
 // sub/x.txt; head changes a.txt and adds c.txt), which keeps .flow-worktrees/ in its exclude file
@@ -502,12 +640,15 @@ syncBuiltinESMExports()
 // Preloaded into a seat guard or seat.mjs process: with STAMP_GATE_AT=bound it holds the process at
 // the write of a bound stamp's temp file, after the bind read every stamp and before its bound
 // stamp exists; with STAMP_GATE_AT=closed it holds the process just after the closed stamp is
-// linked into place. Either way it writes <STAMP_GATE>.waiting and waits for <STAMP_GATE>.go.
+// linked into place; with STAMP_GATE_AT=reread it holds close at its second look at T3's store,
+// after it judged the seat and before it reads the task again. Each writes <STAMP_GATE>.waiting
+// and waits for <STAMP_GATE>.go.
 const stampGate = join(tmp, 'stamp-gate.mjs')
 writeFileSync(stampGate, `import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 const realWrite = fs.writeFileSync
 const realLink = fs.linkSync
+const realStat = fs.statSync
 const hold = () => {
   realWrite(process.env.STAMP_GATE + '.waiting', '')
   const nap = new Int32Array(new SharedArrayBuffer(4))
@@ -517,6 +658,12 @@ if (process.env.STAMP_GATE_AT === 'bound') {
   fs.writeFileSync = function (path, ...rest) {
     if (typeof path === 'string' && /\\/seats\\/[0-9a-f]{32}\\/\\.bound\\.json\\./.test(path)) hold()
     return realWrite.call(this, path, ...rest)
+  }
+} else if (process.env.STAMP_GATE_AT === 'reread') {
+  let looks = 0
+  fs.statSync = function (path, ...rest) {
+    if (typeof path === 'string' && path.endsWith('/userdata/statev2.sqlite') && ++looks === 2) hold()
+    return realStat.call(this, path, ...rest)
   }
 } else {
   fs.linkSync = function (from, to, ...rest) {
@@ -938,6 +1085,18 @@ const cases = {
     }
     assert.deepEqual(readdirSync(seats).sort(), before, 'an untagged call wrote seat state')
     ok('an untagged delegate_task call naming its runtimeMode is allowed and writes nothing')
+
+    // T3 builds the task id from clientRequestId, so an untagged call reusing a seat's would make a
+    // task row close reads as the seat's.
+    for (const host of ['claude', 'codex']) {
+      for (const clientRequestId of [`flow-seat-${id}`, 'flow-seat-anything']) {
+        const reuse = { task: 'Summarise the README.', role: 'general', runtimeMode: 'auto', target: { providerInstanceId: 'codex', model: MODELS.codex }, clientRequestId }
+        denied(guard('pre', host, preCall(host, randomUUID(), SPELLING[host], reuse)), /reserved for the seat call/, `untagged ${clientRequestId}`)
+      }
+    }
+    assert.equal(store.readStamp(id, 'admitted'), null, 'an untagged call reusing the seat\'s clientRequestId admitted the record')
+    assert.deepEqual(readdirSync(seats).sort(), before, 'an untagged call reusing a seat clientRequestId wrote seat state')
+    ok('an untagged delegate_task call naming a flow-seat- clientRequestId is denied on both hosts and admits nothing')
   },
 
   'admit-mismatch': () => {
@@ -1778,7 +1937,7 @@ const cases = {
   'bash-seat-executor': () => {
     const script = join(PLUGIN, 'scripts', 'seat.mjs')
     const refused = [
-      `node ${script} open --access read-only --provider claude --model m --effort high`, `node ${script} close ${'a'.repeat(32)} --task-status '{}'`,
+      `node ${script} open --access read-only --provider claude --model m --effort high`, `node ${script} close ${'a'.repeat(32)}`,
       'node scripts/seat.mjs trust', 'node --no-warnings ./seat.mjs close x', `env FOO=1 node ${script} close x`, 'cd /x && node seat.mjs open',
       `bash -c "node ${script} close x"`, `timeout 30 /usr/bin/node ${script} trust --write`,
     ]
@@ -3174,8 +3333,8 @@ const cases = {
     assert.deepEqual(out.result, ENVELOPE_OK)
     assert.deepEqual(out.servedModels, ['claude-opus-5-5'])
     assert.deepEqual([out.turn, out.blocks, out.errors, out.reasons], [1, 0, [], []])
-    assert.deepEqual(store.readStamp(valid.id, 'closed').taskStatus, taskStatusOf(valid.id))
-    ok('valid: every stamp present and an intact result whose served models are the record\'s; the output carries the envelope and the closed stamp records the task status')
+    assert.deepEqual(store.readStamp(valid.id, 'closed').task, oneRunTask(valid.id, MESSAGE_OK))
+    ok('valid: every stamp present and an intact result whose served models are the record\'s; the output carries the envelope and the closed stamp records the task T3\'s store holds')
 
     const invalid = hookedSeat({ outcome: 'blocked', blocks: 1, errors: ['$.status: not one of the allowed values'] })
     const inv = verdict(invalid.id, 'invalid', /last final message failed/, 'invalid')
@@ -3266,15 +3425,11 @@ const cases = {
     rmSync(join(canon, 'stray.txt'))
     assert.equal(canonOut.verdict, 'tree-moved')
     assert.ok(canonOut.reasons.some((reason) => /canonical checkout changed/.test(reason)), JSON.stringify(canonOut.reasons))
-    const partial = reviewSeat(covering({ coverage: { read: ['a.txt'], partial: [], unopened: [], checksRun: [] } }))
-    const partialOut = closeReview(partial)
-    assert.equal(partialOut.verdict, 'tree-moved')
-    assert.ok(partialOut.reasons.some((reason) => /coverage misses 1 file\(s\) in the pinned diff: c\.txt/.test(reason)), JSON.stringify(partialOut.reasons))
     assert.equal(closeReview(reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })).verdict, 'capped', 'a capped review with no envelope is not judged on coverage')
     const cappedMoved = reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })
     writeFileSync(join(store.readRecord(cappedMoved.id).record.reviewWorktree, 'scratch.txt'), 'x')
     assert.equal(closeReview(cappedMoved).verdict, 'tree-moved', 'tree-moved outranks capped')
-    ok('tree-moved: the review worktree\'s HEAD moved, it is dirty, the canonical checkout changed, or the coverage misses a diffed file; it outranks capped')
+    ok('tree-moved: the review worktree\'s HEAD moved, it is dirty, or the canonical checkout changed; it outranks capped')
 
     // The canonical checkout's HEAD is part of what a review pins: a detach or a commit that leaves
     // the tree as it was still moves it.
@@ -3335,7 +3490,7 @@ const cases = {
       before()
       const seat = reviewSeat()
       move()
-      const out = seatCli(['close', seat.id, '--task-status', '-'], { input: JSON.stringify(taskStatusOf(seat.id, { summary: seat.message })), env })
+      const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message }), { env })
       const pattern = typeof why === 'function' ? why() : why
       assert.equal(out.verdict, 'tree-moved', `${label}: ${JSON.stringify(out)}`)
       assert.equal(out.reasons.length, 1, `${label}: ${JSON.stringify(out.reasons)}`)
@@ -3491,20 +3646,94 @@ process.exit(255)
     ok('close removes a review worktree only while its path, its admin directory and git\'s worktree list all still match what open recorded, and otherwise leaves the path alone and reports it in cleanupProblems')
   },
 
+  'close-coverage-gap': () => {
+    // A repository of its own whose pinned diff holds `a`, `a (b).md`, `src/x.rs` and twelve
+    // more files, so a name with a parenthesized part and a gap past ten paths can both be read.
+    const repo = gitWorktree('coverage-gap')
+    writeFileSync(join(repo, 'README'), 'r\n')
+    gitOut(repo, 'add', '-A')
+    gitOut(repo, 'commit', '-q', '-m', 'base')
+    const base = gitOut(repo, 'rev-parse', 'HEAD')
+    const MANY = Array.from({ length: 12 }, (_, at) => `many/${String(at).padStart(2, '0')}.txt`)
+    mkdirSync(join(repo, 'src'))
+    mkdirSync(join(repo, 'many'))
+    for (const file of ['a', 'a (b).md', 'src/x.rs', ...MANY]) writeFileSync(join(repo, file), `${file}\n`)
+    gitOut(repo, 'add', '-A')
+    gitOut(repo, 'commit', '-q', '-m', 'head')
+    const head = gitOut(repo, 'rev-parse', 'HEAD')
+    const envelopeOf = (read, partial = []) => ({ ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read, partial, unopened: [], checksRun: [] } })
+    const reviewSeat = (envelope, fields = {}) => {
+      const opened = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', base, '--head', head], { cwd: repo })
+      assert.equal(opened.ok, true, JSON.stringify(opened))
+      return hookedSeat({ id: opened.id, envelope, ...fields })
+    }
+    const closeReview = (seat, fields = {}) => closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message, ...fields }))
+    const gapOf = (missing) => [`the coverage misses ${missing.length} file(s) in the pinned diff`, ...missing]
+
+    const notes = closeReview(reviewSeat(envelopeOf(['a (b).md', ...MANY], ['src/x.rs (all changed hunks and surrounding evaluation paths)', 'a (whole file)'])))
+    assert.deepEqual([notes.verdict, notes.reasons], ['valid', []], JSON.stringify(notes))
+    ok('a review whose partial entries are written `path (note)` covers those paths and closes valid')
+
+    const gapEnvelope = envelopeOf(['a', 'a (b).md', ...MANY])
+    const gap = reviewSeat(gapEnvelope)
+    const gapPath = store.readRecord(gap.id).record.reviewWorktree
+    const gapOut = closeReview(gap)
+    assert.equal(gapOut.verdict, 'coverage-gap', JSON.stringify(gapOut))
+    assert.deepEqual(gapOut.reasons, gapOf(['src/x.rs']))
+    assert.deepEqual(gapOut.result, gapEnvelope, 'a coverage-gap close returns the envelope as its result')
+    assert.equal(store.readStamp(gap.id, 'closed').verdict, 'coverage-gap')
+    assert.equal(existsSync(gapPath), false, 'close removed the coverage-gap review worktree')
+    ok('a review missing one diffed file closes coverage-gap, with the envelope as result and the path in reasons')
+
+    const wide = closeReview(reviewSeat(envelopeOf(['a'])))
+    assert.equal(wide.verdict, 'coverage-gap', JSON.stringify(wide))
+    assert.deepEqual(wide.reasons, gapOf(['a (b).md', ...MANY, 'src/x.rs'].sort()), 'the reasons list every missed path, past ten')
+    ok('a coverage-gap lists one count reason, then every missed path, with no cap at ten')
+
+    const exact = closeReview(reviewSeat(envelopeOf(['src/x.rs', ...MANY], ['a (b).md'])))
+    assert.deepEqual([exact.verdict, exact.reasons], ['coverage-gap', gapOf(['a'])], JSON.stringify(exact))
+    const noted = closeReview(reviewSeat(envelopeOf(['src/x.rs', ...MANY], ['a (b).md (n)'])))
+    assert.deepEqual([noted.verdict, noted.reasons], ['coverage-gap', gapOf(['a'])], JSON.stringify(noted))
+    const both = closeReview(reviewSeat(envelopeOf(['a', 'src/x.rs', ...MANY], ['a (b).md (n)'])))
+    assert.deepEqual([both.verdict, both.reasons], ['valid', []], JSON.stringify(both))
+    ok('`a (b).md` matches itself exactly and `a (b).md (n)` covers it, and neither covers a diffed `a`')
+
+    const dirty = reviewSeat(gapEnvelope)
+    writeFileSync(join(store.readRecord(dirty.id).record.reviewWorktree, 'scratch.txt'), 'x')
+    const dirtyOut = closeReview(dirty)
+    assert.deepEqual([dirtyOut.verdict, dirtyOut.reasons, dirtyOut.result], ['tree-moved', ['the review worktree is dirty'], null], JSON.stringify(dirtyOut))
+    ok('a coverage gap with a dirty review worktree closes tree-moved, from the tree reason alone')
+
+    const stale = reviewSeat(gapEnvelope)
+    const staleOut = closeReview(stale, { summary: 'the run said something else' })
+    assert.deepEqual([staleOut.verdict, staleOut.reasons, staleOut.result], ['unknown', ['stale-turn'], null], JSON.stringify(staleOut))
+    assert.equal(store.readStamp(stale.id, 'closed').verdict, 'unknown')
+    ok('a coverage gap whose T3 text is not the message Stop recorded closes unknown with stale-turn and a null result')
+
+    const again = closeReview(gap)
+    assert.deepEqual([again.verdict, again.reasons, again.result], ['coverage-gap', gapOf(['src/x.rs']), gapEnvelope], JSON.stringify(again))
+    assert.equal(again.recorded, undefined)
+    const thread = childThreadOf(gap.id)
+    const later = closeSeat(gap.id, taskStatusOf(gap.id, { summary: gap.message, latestTerminalRunId: runIdOf(thread, 2), latestTerminalSummary: gap.message }))
+    assert.deepEqual([later.verdict, later.reasons, later.result, later.recorded], ['unknown', ['stale-turn'], null, { verdict: 'coverage-gap', turn: 1 }], JSON.stringify(later))
+    assert.equal(store.readStamp(gap.id, 'closed').verdict, 'coverage-gap', 'a repeated close rewrote the stamp')
+    ok('a repeated close of a coverage-gap seat returns its result, and a later run on the same seat reads stale-turn with the stamp on record')
+  },
+
   'close-rerun': () => {
     const writerWt = gitWorktree('close-rerun')
     const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
     const seat = hookedSeat({ id: opened.id, envelope: { ...ENVELOPE_OK, commits: [{ sha: 'a'.repeat(40), subject: 'feat: x' }] } })
     // The seat's one run answered with its final message, so every status here carries it.
     const summary = seat.message
-    const first = closeSeat(seat.id, taskStatusOf(seat.id, { run: 1, summary }))
+    const first = closeSeat(seat.id, taskStatusOf(seat.id, { summary }))
     assert.equal(first.verdict, 'valid')
     assert.equal(existsSync(join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)), false, 'close dropped the writer\'s holder')
     store.writeState(seat.id, { ...store.readState(seat.id), outcome: 'blocked', blocks: 1 })
-    const again = closeSeat(seat.id, taskStatusOf(seat.id, { status: 'failed', run: 2, summary }))
+    const again = closeSeat(seat.id, taskStatusOf(seat.id, { status: 'failed', summary }))
     assert.equal(again.verdict, 'valid', 'a second close re-judged the seat')
-    assert.deepEqual(store.readStamp(seat.id, 'closed').taskStatus, taskStatusOf(seat.id, { run: 1, summary }))
-    ok('a second close prints the verdict and reasons on record, keeps the first task status, and the first close dropped the writer\'s lease holder')
+    assert.deepEqual(store.readStamp(seat.id, 'closed').task, oneRunTask(seat.id, summary))
+    ok('a second close prints the verdict and reasons on record, keeps the first close\'s task block, and the first close dropped the writer\'s lease holder')
 
     const resultPath = join(seats, seat.id, 'result-1.json')
     const stamped = store.readStamp(seat.id, 'closed')
@@ -3528,32 +3757,18 @@ process.exit(255)
     assert.deepEqual(closeSeat(noStop.id), firstNoStop, 'a seat with no result read as changed after close')
     ok('the closed stamp pins the turn\'s result sha256 and the facts; a later close prints the same while the result\'s bytes match, whatever the verdict, and a null result with result-changed-after-close once they do not, the verdict unchanged')
 
-    // close records a seat T3 reports finished, and nothing else: a running task, a child still
-    // working or waiting on its own children, or a status that is not one of T3's terminal ones.
-    const runningWt = gitWorktree('close-running')
-    const running = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', runningWt])
-    hookedSeat({ id: running.id })
-    for (const status of [{ status: 'running' }, {}, null, [], 'completed', { status: 'completed', workState: 'working' },
-      { status: 'failed', workState: 'waiting_for_children' }, { status: 'cancelled', hasPendingChildRuns: true }, { status: 'Completed' }]) {
-      const refused = closeSeat(running.id, status)
-      assert.equal(refused.error?.kind, 'TASK_NOT_TERMINAL', `${JSON.stringify(status)}: ${JSON.stringify(refused)}`)
-      assert.equal(store.readStamp(running.id, 'closed'), null, `${JSON.stringify(status)} stamped the seat closed`)
-      assert.ok(existsSync(join(jobs.leaseDirOf(runningWt), `${running.id}.live`)), `${JSON.stringify(status)} dropped the writer's holder`)
-    }
+    // Any of T3's four terminal task statuses closes: the verdict comes from the hooks.
     for (const status of ['completed', 'failed', 'cancelled', 'interrupted']) {
       const each = hookedSeat({})
-      assert.equal(closeSeat(each.id, taskStatusOf(each.id, { status, workState: 'result_available', hasPendingChildRuns: false })).ok, true, status)
+      const out = closeSeat(each.id, taskStatusOf(each.id, { status }))
+      assert.deepEqual([out.verdict, store.readStamp(each.id, 'closed').task.status], ['valid', status], `${status}: ${JSON.stringify(out)}`)
     }
-    assert.equal(closeSeat(running.id, taskStatusOf(running.id, { workState: 'result_available', hasPendingChildRuns: false })).verdict, 'valid')
-    assert.equal(existsSync(join(jobs.leaseDirOf(runningWt), `${running.id}.live`)), false)
-    ok('close refuses TASK_NOT_TERMINAL, writing nothing and keeping the lease, unless the task status is an object whose status is completed, failed, cancelled or interrupted, whose workState is not working or waiting_for_children, and with no pending child runs')
+    ok('close records a seat whose task T3 ended completed, failed, cancelled or interrupted, and the stamp\'s task block keeps that status')
 
-    for (const [args, kind] of [
-      [['close'], 'BAD_REQUEST'], [['close', 'xyz', '--task-status', '{}'], 'BAD_REQUEST'], [['close', seat.id], 'BAD_REQUEST'],
-      [['close', seat.id, '--task-status', 'not json'], 'BAD_REQUEST'], [['close', seat.id, '--task-status', '{}', '--x', '1'], 'BAD_REQUEST'],
-      [['close', seat.id, '--task-status', JSON.stringify('x'.repeat(70_000))], 'BAD_REQUEST'],
-    ]) assert.equal(seatCli(args).error?.kind, kind, args.join(' ').slice(0, 80))
-    ok('close refuses a missing or malformed seat id, a missing, unparsable or oversized --task-status, and an unknown flag, with BAD_REQUEST')
+    for (const args of [['close'], ['close', 'xyz'], ['close', seat.id, '--x', '1'], ['close', seat.id, 'extra']]) {
+      assert.equal(seatCli(args).error?.kind, 'BAD_REQUEST', args.join(' ').slice(0, 80))
+    }
+    ok('close refuses a missing or malformed seat id, and any argument but --abandon, with BAD_REQUEST')
   },
 
   'close-rerun-later-run': async () => {
@@ -3602,7 +3817,7 @@ process.exit(255)
 
     // A valid stamp from before close recorded runId and messageSha256 reads as another run.
     const legacy = hookedSeat({})
-    assert.equal(store.stamp(legacy.id, 'closed', { verdict: 'valid', reasons: [], taskStatus: { status: 'completed', taskId: 'x' }, turn: 1, resultSha256: store.readResult(legacy.id, 1).sha256, servedModels: [MODELS.claude], blocks: 0, errors: [] }), true)
+    assert.equal(store.stamp(legacy.id, 'closed', { verdict: 'valid', reasons: [], turn: 1, resultSha256: store.readResult(legacy.id, 1).sha256, servedModels: [MODELS.claude], blocks: 0, errors: [] }), true)
     const legacyBytes = readFileSync(stampPath(legacy.id))
     const legacyOut = closeSeat(legacy.id)
     assert.deepEqual([legacyOut.verdict, legacyOut.reasons, legacyOut.result, legacyOut.recorded], ['unknown', ['stale-turn'], null, { verdict: 'valid', turn: 1 }], JSON.stringify(legacyOut))
@@ -3646,7 +3861,8 @@ process.exit(255)
     // second, which loses the stamp, prints the winner's record.
     const raced = guardedSeat()
     const gate = join(tmp, 'close-rerun-race')
-    const winner = await heldAt([SEAT_SCRIPT, 'close', raced.id, '--task-status', '-'], gate, 'closed', taskStatusOf(raced.id))
+    t3Status(raced.id)
+    const winner = await heldAt([SEAT_SCRIPT, 'close', raced.id], gate, 'closed')
     const loser = closeSeat(raced.id)
     writeFileSync(`${gate}.go`, '')
     const won = await winner.done
@@ -3654,180 +3870,6 @@ process.exit(255)
     assert.deepEqual([loser.verdict, loser.reasons, Object.hasOwn(loser, 'recorded')], ['valid', [], false], JSON.stringify(loser))
     assert.deepEqual(JSON.parse(won.out), loser, 'the racing closes printed different records')
     ok('two first closes on one status keep the write-once outcome: the one that loses the stamp prints the winner\'s valid record')
-  },
-
-  'close-task-match': () => {
-    const writerWt = gitWorktree('close-task-match')
-    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
-    const seat = hookedSeat({ id: opened.id })
-    const another = store.newId()
-    for (const status of [
-      { status: 'completed' }, taskStatusOf(seat.id, { taskId: 7 }), taskStatusOf(seat.id, { taskId: `thread-1:delegate-task%3Aflow-seat-${another}` }),
-      taskStatusOf(seat.id, { taskId: `thread-1:delegate-task%3A${seat.id}` }), taskStatusOf(seat.id, { taskId: 'task-1' }),
-    ]) {
-      const refused = closeSeat(seat.id, status)
-      assert.equal(refused.error?.kind, 'TASK_MISMATCH', `${JSON.stringify(status)}: ${JSON.stringify(refused)}`)
-      assert.match(refused.error.message, new RegExp(`flow-seat-${seat.id}`))
-      assert.equal(store.readStamp(seat.id, 'closed'), null, `${JSON.stringify(status)} stamped the seat closed`)
-      assert.ok(existsSync(join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)), `${JSON.stringify(status)} dropped the writer's holder`)
-    }
-    ok('close refuses TASK_MISMATCH, writing nothing and keeping the lease, when the task status of an admitted seat carries no taskId naming flow-seat-<id>')
-
-    for (const taskId of [`thread-1:delegate-task:flow-seat-${seat.id}`, `thread-1%3Adelegate-task%3Aflow%2Dseat%2D${seat.id}`]) {
-      const each = hookedSeat({})
-      assert.equal(closeSeat(each.id, taskStatusOf(each.id, { taskId: taskId.replace(seat.id, each.id) })).verdict, 'valid', taskId)
-    }
-    assert.equal(closeSeat(seat.id).verdict, 'valid')
-    // A seat that was never admitted has no clientRequestId to match, but its status still carries
-    // the five run keys: no seat is exempt from them.
-    const unadmitted = hookedSeat({ stamps: [], index: 'none', outcome: null })
-    const closed = closeSeat(unadmitted.id, taskStatusOf(unadmitted.id, { status: 'cancelled', taskId: 'whatever', latestTerminalStatus: 'cancelled', summary: null }))
-    assert.deepEqual([closed.ok, closed.verdict], [true, 'unknown'], JSON.stringify(closed))
-    ok('close accepts the seat\'s own task id, plain or URL-encoded, and closes a seat that was never admitted on any finished task status with its run keys, as unknown')
-  },
-
-  'close-trimmed-status': () => {
-    const writerWt = gitWorktree('close-trimmed-status')
-    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
-    const seat = hookedSeat({ id: opened.id })
-    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
-    const without = (keys, fields = {}) => {
-      const status = taskStatusOf(seat.id, fields)
-      for (const key of keys) delete status[key]
-      return status
-    }
-    const unchanged = (what) => {
-      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
-      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
-    }
-    // The incident's trimmed status: what the parent kept of T3's answer, with no run keys at all.
-    const incident = { status: 'completed', taskId: `thread-1:delegate-task%3Aflow-seat-${seat.id}`, workState: 'result_available', hasPendingChildRuns: false }
-    for (const keys of [...RUN_KEYS.map((key) => [key]), ['childRunId', 'summary'], RUN_KEYS]) {
-      const status = without(keys)
-      for (const [how, refused] of [['stdin', closeSeat(seat.id, status)], ['argv', seatCli(['close', seat.id, '--task-status', JSON.stringify(status)])]]) {
-        assert.equal(refused.error?.kind, 'TASK_INCOMPLETE', `${keys.join(', ')} on ${how}: ${JSON.stringify(refused)}`)
-        assert.deepEqual(refused.error.details?.missing, RUN_KEYS.filter((key) => keys.includes(key)), `${keys.join(', ')}: the refusal does not name what is missing`)
-        unchanged(`a status without ${keys.join(', ')} on ${how}`)
-      }
-    }
-    assert.equal(closeSeat(seat.id, incident).error?.kind, 'TASK_INCOMPLETE')
-    unchanged('the incident\'s trimmed status')
-    ok('close refuses TASK_INCOMPLETE, naming each missing key and writing nothing, a task status that lacks any of childRunId, latestTerminalRunId, latestTerminalStatus, summary and latestTerminalSummary, on stdin or argv, the incident\'s trimmed {status, taskId} included')
-
-    // The older refusals come first: a trimmed status that is not finished, or not this seat's.
-    assert.equal(closeSeat(seat.id, without(RUN_KEYS, { status: 'running' })).error?.kind, 'TASK_NOT_TERMINAL')
-    assert.equal(closeSeat(seat.id, without(RUN_KEYS, { taskId: 'task-1' })).error?.kind, 'TASK_MISMATCH')
-    unchanged('a trimmed status refused for another reason')
-    ok('a trimmed status that is not finished reads TASK_NOT_TERMINAL, and one that is not the seat\'s own task reads TASK_MISMATCH, before TASK_INCOMPLETE')
-
-    // A key that is present with a null value is not missing.
-    for (const key of ['latestTerminalStatus', 'summary', 'latestTerminalSummary']) {
-      const each = hookedSeat({})
-      const out = closeSeat(each.id, taskStatusOf(each.id, { [key]: null }))
-      assert.equal(out.ok, true, `${key}: null: ${JSON.stringify(out)}`)
-    }
-    const whole = closeSeat(seat.id)
-    assert.deepEqual([whole.verdict, existsSync(holder)], ['valid', false], JSON.stringify(whole))
-    ok('a run key present with a null value is no missing key, and the whole status then closes the seat that refused the trimmed ones')
-  },
-
-  'close-run-id-grammar': () => {
-    const writerWt = gitWorktree('close-run-id-grammar')
-    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
-    const seat = hookedSeat({ id: opened.id })
-    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
-    const thread = childThreadOf(seat.id)
-    const encoded = encodeURIComponent(thread)
-    const withOrdinal = (text) => `run:thread:${encoded}:ordinal:${text}`
-    const refuse = (status, what) => {
-      const refused = closeSeat(seat.id, status)
-      assert.equal(refused.error?.kind, 'TASK_MISMATCH', `${what}: ${JSON.stringify(refused)}`)
-      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
-      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
-    }
-    const badIds = [
-      ['null', null], ['a number', 1], ['an object', { thread, ordinal: 1 }], ['an empty string', ''],
-      ['no prefix', `${encoded}:ordinal:1`], ['another prefix', `run:node:${encoded}:ordinal:1`],
-      ['the thread not encoded', `run:thread:${thread}:ordinal:1`], ['the thread encoded twice', `run:thread:${encodeURIComponent(encoded)}:ordinal:1`],
-      ['lower-case escapes', `run:thread:${encoded.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase())}:ordinal:1`],
-      ['another thread', runIdOf(childThreadOf(store.newId()), 1)], ['no ordinal', `run:thread:${encoded}`], ['an empty ordinal', withOrdinal('')],
-      ['ordinal 0', withOrdinal('0')], ['a leading zero', withOrdinal('01')], ['a negative ordinal', withOrdinal('-1')], ['a fraction', withOrdinal('1.5')],
-      ['an exponent', withOrdinal('1e3')], ['past the safe integers', withOrdinal('9007199254740993')], ['a space', withOrdinal(' 1')],
-      ['trailing text', withOrdinal('1:x')], ['a second ordinal', `run:thread:${encoded}:ordinal:1:ordinal:1`],
-    ]
-    for (const [what, value] of badIds) {
-      for (const key of ['childRunId', 'latestTerminalRunId']) refuse(taskStatusOf(seat.id, { [key]: value }), `${key} ${what}`)
-      refuse(taskStatusOf(seat.id, { childRunId: value, latestTerminalRunId: value }), `both run ids ${what}`)
-    }
-    ok(`close refuses TASK_MISMATCH, writing nothing and keeping the lease, a child or latest run id that is not run:thread:<encodeURIComponent(childThreadId)>:ordinal:<n> with n a positive safe integer in canonical digits (${badIds.length} malformed, foreign or wrong-type forms)`)
-
-    const { childThreadId, ...noThread } = taskStatusOf(seat.id)
-    refuse(noThread, 'no childThreadId')
-    for (const [what, value] of [['empty', ''], ['a number', 7], ['null', null], ['a lone surrogate', '\ud800'], ['another thread', childThreadOf(store.newId())]]) {
-      refuse(taskStatusOf(seat.id, { childThreadId: value }), `a childThreadId that is ${what}`)
-    }
-    refuse(taskStatusOf(seat.id, { childRunId: runIdOf(thread, 3), latestTerminalRunId: runIdOf(thread, 2) }), 'a latest run before the child run')
-    ok('a missing, empty, wrong-type, unencodable or foreign childThreadId, and a latest run whose ordinal comes before the child run\'s, are refused TASK_MISMATCH too')
-
-    // Any thread id encodes, and a later latest run is in order.
-    for (const odd of ['a/b:c%d e', 'thread:été/\u{1F600}', '%%', ':ordinal:1']) {
-      const each = hookedSeat({})
-      const out = closeSeat(each.id, taskStatusOf(each.id, { childThreadId: odd, childRunId: runIdOf(odd, 1), latestTerminalRunId: runIdOf(odd, 1) }))
-      assert.equal(out.ok, true, `${odd}: ${JSON.stringify(out)}`)
-    }
-    const later = hookedSeat({})
-    assert.equal(closeSeat(later.id, taskStatusOf(later.id, { latestTerminalRunId: runIdOf(childThreadOf(later.id), 4) })).ok, true, 'a later latest run')
-    assert.equal(closeSeat(seat.id).verdict, 'valid')
-    assert.equal(existsSync(holder), false)
-    ok('a thread id with :, /, %, spaces, non-ASCII text or :ordinal: inside it is accepted through its encoded form, a latest run after the child run is accepted, and the whole status then closes the refused seat')
-  },
-
-  'close-status-size': () => {
-    // A status of exactly `bytes` UTF-8 bytes as JSON: the status with a pad field of ASCII filler.
-    const sized = (status, bytes) => {
-      const base = Buffer.byteLength(JSON.stringify({ ...status, pad: '' }))
-      assert.ok(bytes >= base, `a ${bytes}-byte status cannot hold ${base} bytes of fields`)
-      const text = JSON.stringify({ ...status, pad: 'x'.repeat(bytes - base) })
-      assert.equal(Buffer.byteLength(text), bytes)
-      return Buffer.from(text)
-    }
-    const writerWt = gitWorktree('close-status-size')
-    const opened = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt])
-    const seat = hookedSeat({ id: opened.id })
-    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
-    const STDIN_CAP = 256 * 1024
-    const ARGV_CAP = 64 * 1024
-    const stdin = (input) => seatCli(['close', seat.id, '--task-status', '-'], { input })
-    const refused = (out, pattern, what) => {
-      assert.equal(out.error?.kind, 'BAD_REQUEST', `${what}: ${JSON.stringify(out)}`)
-      if (pattern) assert.match(out.error.message, pattern, what)
-      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
-      assert.ok(existsSync(holder), `${what} dropped the writer's holder`)
-    }
-    const status = taskStatusOf(seat.id)
-    refused(stdin(sized(status, STDIN_CAP + 1)), /256 KiB/, 'one byte over 256 KiB')
-    refused(stdin(Buffer.concat([sized(status, STDIN_CAP), Buffer.from('\n')])), /256 KiB/, '256 KiB of JSON and a trailing newline')
-    refused(stdin(Buffer.alloc(STDIN_CAP * 4, 0x20)), /256 KiB/, 'a megabyte of spaces')
-    refused(stdin(Buffer.concat([Buffer.from('{"status":"completed","pad":"'), Buffer.from([0xc3, 0x28]), Buffer.from('"}')])), /UTF-8/, 'invalid UTF-8')
-    refused(stdin(''), /not JSON/, 'an empty stdin')
-    refused(stdin('{"status":'), /not JSON/, 'a torn JSON document')
-    refused(seatCli(['close', seat.id, '--task-status', sized(status, ARGV_CAP + 1).toString()]), /64 KiB/, 'an argv status one byte over 64 KiB')
-    ok('close refuses BAD_REQUEST, writing nothing and keeping the lease, a stdin status over 256 KiB of raw bytes (a trailing newline counts), stdin that is not UTF-8 or not JSON, and an argv status over 64 KiB')
-
-    // Accepted: 200 KiB whose final message carries non-ASCII text and JSON escapes, exactly 64 KiB
-    // as one argument, and exactly 256 KiB on stdin.
-    const notes = `résumé \u{1F600} "quoted" \\ back\tslash\n\u0001 `.repeat(2_500)
-    const long = hookedSeat({ envelope: { ...ENVELOPE_OK, notes } })
-    const longStatus = sized(taskStatusOf(long.id, { summary: long.message }), 200 * 1024)
-    assert.ok(long.message.length > 100_000 && /\\u0001/.test(longStatus.toString()) && /é/.test(longStatus.toString()))
-    const longOut = seatCli(['close', long.id, '--task-status', '-'], { input: longStatus })
-    assert.deepEqual([longOut.verdict, longOut.result?.notes], ['valid', notes], JSON.stringify(longOut).slice(0, 400))
-    const argvSeat = hookedSeat({})
-    assert.equal(seatCli(['close', argvSeat.id, '--task-status', sized(taskStatusOf(argvSeat.id), ARGV_CAP).toString()]).verdict, 'valid', 'exactly 64 KiB as one argument')
-    const atCap = stdin(sized(status, STDIN_CAP))
-    assert.deepEqual([atCap.verdict, existsSync(holder)], ['valid', false], JSON.stringify(atCap).slice(0, 400))
-    assert.equal(store.readStamp(seat.id, 'closed').taskStatus.pad.length > 200_000, true, 'the closed stamp does not hold the whole status')
-    ok('close accepts a 200 KiB stdin status with non-ASCII text and escapes in its final message, exactly 64 KiB as one argument, and exactly 256 KiB on stdin, which closes the seat that refused the larger ones')
   },
 
   // The stale-turn cases run their seats through the real hooks, so the state close reads (turn,
@@ -3904,7 +3946,7 @@ process.exit(255)
 
   'close-same-run-mismatch': () => {
     for (const [what, summary] of [
-      ['one byte changed', MESSAGE_OK.replace('"ok"', '"oK"')], ['one byte added', `${MESSAGE_OK} `], ['one byte dropped', MESSAGE_OK.slice(0, -1)], ['null', null], ['a number', 7],
+      ['one byte changed', MESSAGE_OK.replace('"ok"', '"oK"')], ['one byte added', `${MESSAGE_OK} `], ['one byte dropped', MESSAGE_OK.slice(0, -1)], ['null', null],
     ]) {
       const seat = guardedSeat()
       const out = closeSeat(seat.id, taskStatusOf(seat.id, { summary }))
@@ -3972,35 +4014,495 @@ process.exit(255)
     ok('a recorded follow-up followed by an unhooked run with new text closes unknown (stale-turn): the opened key of turn 2 does not vouch for run 3')
   },
 
-  'close-refusal-retry': () => {
-    // Every file in the seat's record directory, by sha256: a refusal changes none of them.
-    const files = (id) => Object.fromEntries(readdirSync(join(seats, id)).sort().map((name) => [name, sha256(readFileSync(join(seats, id, name)))]))
-    const refusals = (id) => {
-      const thread = childThreadOf(id)
-      const { summary, ...trimmed } = taskStatusOf(id)
-      return [['TASK_INCOMPLETE', trimmed], ['TASK_MISMATCH', taskStatusOf(id, { childRunId: `run:thread:${thread}:ordinal:1` })],
-        ['TASK_MISMATCH', taskStatusOf(id, { childRunId: runIdOf(thread, 2), latestTerminalRunId: runIdOf(thread, 1) })]]
+  'close-store-single-run': () => {
+    const writerWt = gitWorktree('close-store-single-run')
+    const seat = hookedSeat({ id: seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt]).id })
+    const holder = join(jobs.leaseDirOf(writerWt), `${seat.id}.live`)
+    assert.ok(existsSync(holder))
+    const { taskId, thread } = t3Seat(seat.id, [{ texts: [seat.message] }])
+    const out = seatCli(['close', seat.id])
+    assert.deepEqual([out.verdict, out.reasons, out.turn, out.result], ['valid', [], 1, ENVELOPE_OK], JSON.stringify(out))
+    const stamped = store.readStamp(seat.id, 'closed')
+    assert.deepEqual(stamped.task, {
+      taskId, ownerThreadId: T3_OWNER, childThreadId: thread, status: 'completed', childRunId: runIdOf(thread, 1), latestRunId: runIdOf(thread, 1),
+      latestRunStatus: 'completed', latestTextSha256: sha256(seat.message), closerThreadId: null, t3Migration: 76,
+    })
+    assert.deepEqual([stamped.runId, stamped.messageSha256, Object.hasOwn(stamped, 'taskStatus')], [runIdOf(thread, 1), sha256(seat.message), false])
+    assert.equal(existsSync(holder), false, 'close kept the writer\'s holder')
+    ok('close <id> with nothing else closes a single-run seat valid from T3\'s store, and the closed stamp records the task block derived from its rows (childRunId, latestRunId, latestTextSha256 among them) and no task status')
+  },
+
+  'close-store-runs': () => {
+    const derived = (id) => {
+      const { runId, task } = store.readStamp(id, 'closed')
+      return [runId, task.childRunId, task.latestRunId, task.latestRunStatus, task.latestTextSha256]
     }
-    const writerWt = gitWorktree('close-refusal-retry')
-    const writer = hookedSeat({ id: seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', writerWt]).id })
-    const holder = join(jobs.leaseDirOf(writerWt), `${writer.id}.live`)
+    const closeAs = (seat, verdict, reasons, what) => {
+      const out = seatCli(['close', seat.id])
+      assert.deepEqual([out.verdict, out.reasons], [verdict, reasons], `${what}: ${JSON.stringify(out)}`)
+      return out
+    }
+    const runOf = (id, ordinal) => runIdOf(childThreadOf(id), ordinal)
+
+    // The dc elision: one run whose final message is not the text Stop recorded.
+    const elided = '(design sheet elided in this local copy; full text in the T3 thread)'
+    const dc = hookedSeat({})
+    t3Seat(dc.id, [{ texts: [elided] }])
+    closeAs(dc, 'unknown', ['stale-turn'], 'the dc elision')
+    assert.deepEqual(derived(dc.id), [runOf(dc.id, 1), runOf(dc.id, 1), runOf(dc.id, 1), 'completed', sha256(elided)])
+    ok('a run whose newest assistant message is not the text Stop recorded (the dc elision) closes unknown (stale-turn), and the stamp records that text\'s digest')
+
+    // A follow-up the hooks recorded, then T3's run 2 completed with that turn's text.
+    const second = messageWith('run 2, recorded')
+    const followed = guardedSeat()
+    silent(followed.stop(second, followed.followUp()), 'turn 2 stop')
+    t3Seat(followed.id, [{ texts: [MESSAGE_OK] }, { texts: [second] }])
+    assert.deepEqual([closeAs(followed, 'valid', [], 'a recorded follow-up').turn, derived(followed.id)], [2, [runOf(followed.id, 2), runOf(followed.id, 1), runOf(followed.id, 2), 'completed', sha256(second)]])
+    const unprompted = guardedSeat()
+    t3Seat(unprompted.id, [{ texts: [MESSAGE_OK] }, { texts: [MESSAGE_OK] }])
+    closeAs(unprompted, 'unknown', ['stale-turn'], 'a completed follow-up with no opened key')
+    assert.deepEqual(derived(unprompted.id), [runOf(unprompted.id, 2), runOf(unprompted.id, 1), runOf(unprompted.id, 2), 'completed', sha256(MESSAGE_OK)])
+    const failed = guardedSeat()
+    silent(failed.stop(second, failed.followUp()), 'turn 2 stop')
+    t3Seat(failed.id, [{ texts: [MESSAGE_OK] }, { status: 'failed', texts: [second] }])
+    closeAs(failed, 'unknown', ['stale-turn'], 'a failed follow-up')
+    assert.deepEqual(derived(failed.id), [runOf(failed.id, 2), runOf(failed.id, 1), runOf(failed.id, 2), 'failed', null])
+    ok('a completed follow-up run with an opened key closes valid on turn 2; the same run with no opened key, even with turn 1\'s text, and a failed follow-up holding the recorded text, close unknown (stale-turn)')
+
+    // The pinned false-valid shapes: an opened key, and run 1's text the digest Stop recorded, so
+    // a reader that dropped run 2 would certify run 1.
+    const reopened = () => {
+      const seat = guardedSeat()
+      silent(seat.stop(MESSAGE_OK, seat.followUp()), 'turn 2 repeats turn 1')
+      assert.deepEqual([Object.hasOwn(store.readState(seat.id), 'opened'), store.readState(seat.id).messageSha256], [true, sha256(MESSAGE_OK)])
+      return seat
+    }
+    const unstarted = reopened()
+    const { thread } = t3Seat(unstarted.id, [{ texts: [MESSAGE_OK] }, { startedAt: null }])
+    t3MessageRow(thread, runOf(unstarted.id, 2), 'Look again at b.txt and answer again.', { role: 'user' })
+    const pinned = [
+      ['a later run with a message and no startedAt', unstarted, 'completed'],
+      ['a later rolled_back run', reopened(), 'rolled_back', [{ texts: [MESSAGE_OK] }, { status: 'rolled_back', texts: [MESSAGE_OK] }]],
+      ['a later run with startedAt and no message', reopened(), 'completed', [{ texts: [MESSAGE_OK] }, {}]],
+    ]
+    for (const [what, seat, status, runs] of pinned) {
+      if (runs) t3Seat(seat.id, runs)
+      closeAs(seat, 'unknown', ['stale-turn'], what)
+      assert.deepEqual(derived(seat.id), [runOf(seat.id, 2), runOf(seat.id, 1), runOf(seat.id, 2), status, null], what)
+    }
+    ok('each pinned shape reads stale-turn with an opened key and run 1\'s text the recorded digest: a later run with a message but no startedAt, a later rolled_back run, a later run with startedAt but no message, and (above) a completed follow-up with no opened key')
+
+    // Only a run with neither startedAt nor any message is dropped, and the child run is the
+    // lowest that counts.
+    const dropped = hookedSeat({})
+    t3Seat(dropped.id, [{ texts: [MESSAGE_OK] }, { status: 'cancelled', startedAt: null }])
+    closeAs(dropped, 'valid', [], 'a later run that never ran')
+    assert.deepEqual(derived(dropped.id), [runOf(dropped.id, 1), runOf(dropped.id, 1), runOf(dropped.id, 1), 'completed', sha256(MESSAGE_OK)])
+    const late = hookedSeat({})
+    t3Seat(late.id, [{ status: 'cancelled', startedAt: null }, { texts: [MESSAGE_OK] }])
+    closeAs(late, 'valid', [], 'a first run that never ran')
+    assert.deepEqual(derived(late.id), [runOf(late.id, 2), runOf(late.id, 2), runOf(late.id, 2), 'completed', sha256(MESSAGE_OK)])
+    ok('a run with neither startedAt nor a message is dropped, after the child run or before it, so the child run is the lowest run that ran')
+
+    // A finished task with no run that ran still closes, so a writer's lease is released.
+    const empty = writerSeat('close-store-runs-empty')
+    t3Seat(empty.id, [{ status: 'cancelled', startedAt: null }])
+    closeAs(empty, 'unknown', ['stale-turn'], 'a task with no run that ran')
+    assert.deepEqual(derived(empty.id), [null, null, null, null, null])
+    assert.equal(existsSync(empty.holder), false, 'the close kept the writer\'s holder')
+    ok('a finished task with no run that ran closes unknown (stale-turn) with null run ids and no text, and releases the writer\'s lease holder')
+  },
+
+  'close-store-text-order': () => {
+    const at = (second) => new Date(Date.UTC(2026, 10, 4, 13, 0, second)).toISOString()
+    // A seat whose turn state holds final's digest, with one completed run and no messages yet.
+    const seatWith = (final, fields = {}) => {
+      const seat = hookedSeat({ message: final })
+      const { thread } = t3Seat(seat.id, [{}], fields)
+      return { ...seat, thread, run: runIdOf(thread, 1) }
+    }
+    const closeAs = (seat, verdict, reasons, what) => {
+      const out = seatCli(['close', seat.id])
+      assert.deepEqual([out.verdict, out.reasons], [verdict, reasons], `${what}: ${JSON.stringify(out)}`)
+    }
+    // Message ids are global in T3's store, so each carries its seat's id; tail sets its order.
+    const idOf = (seat, tail) => `claudeAgent:native-item:${seat.id}-${tail}`
+    const final = messageWith('the final answer')
+    const older = messageWith('an older answer')
+
+    // The b6463d44 shape: T3's turn items put the older text at the higher ordinal. The newest
+    // message by created_at is the final one, though it was written first and its id sorts lower,
+    // and the task's payload.result holds the older text.
+    const shape = seatWith(final, { payload: { result: older } })
+    t3MessageRow(shape.thread, shape.run, final, { at: at(10), messageId: idOf(shape, 'a') })
+    t3MessageRow(shape.thread, shape.run, older, { at: at(5), messageId: idOf(shape, 'z') })
+    t3MessageRow(shape.thread, shape.run, 'thinking about it', { at: at(7), messageId: idOf(shape, 'msg_1%3Athinking%3A1') })
+    t3MessageRow(shape.thread, shape.run, 'Look again.', { role: 'user', at: at(20) })
+    const item = (ordinal, text) => t3.prepare('insert into orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json) values (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(`turn-item:${randomUUID()}`, shape.thread, shape.run, ordinal, 'assistant_message', 'completed', at(30), JSON.stringify({ text }))
+    item(1000510, final)
+    item(1000511, older)
+    closeAs(shape, 'valid', [], 'the b6463d44 shape')
+    ok('the latest text is the newest assistant message by created_at, not the higher turn-item ordinal, the higher message id, the insertion order, payload.result, a newer user message or an older thinking row')
+
+    const byUpdate = seatWith(final)
+    t3MessageRow(byUpdate.thread, byUpdate.run, older, { at: at(10), updatedAt: at(11), messageId: idOf(byUpdate, 'z') })
+    t3MessageRow(byUpdate.thread, byUpdate.run, final, { at: at(10), updatedAt: at(12), messageId: idOf(byUpdate, 'a') })
+    closeAs(byUpdate, 'valid', [], 'one created_at, a later updated_at')
+    const byId = seatWith(final)
+    t3MessageRow(byId.thread, byId.run, final, { at: at(10), messageId: idOf(byId, 'b') })
+    t3MessageRow(byId.thread, byId.run, older, { at: at(10), messageId: idOf(byId, 'a') })
+    closeAs(byId, 'valid', [], 'one created_at and updated_at, a higher message id')
+    ok('on one created_at the later updated_at wins, and on both the higher message_id')
+
+    const thinking = seatWith(final)
+    t3MessageRow(thinking.thread, thinking.run, final, { at: at(10) })
+    t3MessageRow(thinking.thread, thinking.run, 'thinking after the answer', { at: at(11), messageId: idOf(thinking, 'msg_2%3Athinking%3A1') })
+    closeAs(thinking, 'unknown', ['stale-turn'], 'a thinking row newer than the final message')
+    ok('thinking rows are not filtered: one newer than the final message is the latest text, which can only read stale-turn')
+
+    const wide = `résumé \u{1F600} "quoted" \\ back\tslash\n\u0001 `.repeat(400)
+    const raw = seatWith(wide)
+    t3MessageRow(raw.thread, raw.run, wide, { at: at(10) })
+    closeAs(raw, 'valid', [], 'non-ASCII text, escapes and a control character')
+    assert.equal(store.readStamp(raw.id, 'closed').task.latestTextSha256, sha256(wide))
+    ok('a final message with non-ASCII text, JSON escapes and a control character is hashed as T3 stored it')
+  },
+
+  'close-store-not-terminal': () => {
+    const seat = writerSeat('close-store-not-terminal')
+    const refuse = (what, runs, task = {}) => {
+      t3Seat(seat.id, runs, task)
+      return refusedClose(seat, 'TASK_NOT_TERMINAL', what)
+    }
+    for (const status of ['preparing', 'queued', 'starting', 'running', 'waiting']) {
+      const error = refuse(`a follow-up run ${status}`, [{ texts: [seat.message] }, { status }])
+      assert.match(error.message, new RegExp(`a run in its thread is ${status}`))
+    }
+    refuse('a finished task whose one run is running', [{ status: 'running', texts: [seat.message] }])
+    for (const status of ['idle', 'pending', 'running', 'waiting']) {
+      const error = refuse(`a nested task ${status}`, [{ texts: [seat.message] }], { nested: ['completed', status] })
+      assert.match(error.message, new RegExp(`a task it started is ${status}`))
+    }
+    for (const status of ['idle', 'pending', 'running', 'waiting']) {
+      const error = refuse(`a task ${status} with no child thread yet`, [], { status, child: null })
+      assert.match(error.message, new RegExp(`its task is ${status}`))
+    }
+    ok('a live follow-up run, a running run under a finished task row, a live nested task and a live task row (even one with no child thread yet) each refuse TASK_NOT_TERMINAL, writing nothing and keeping the writer\'s lease holder')
+
+    t3Seat(seat.id, [{ texts: [seat.message] }], { nested: ['completed', 'failed', 'cancelled', 'interrupted'] })
+    const out = seatCli(['close', seat.id])
+    assert.deepEqual([out.verdict, existsSync(seat.holder)], ['valid', false], JSON.stringify(out))
+    ok('once every run and nested task has ended, the same seat closes valid and drops its holder')
+  },
+
+  'close-store-moved': async () => {
+    // T3 moves the task while close judges it: close is held after its first read and judge, a
+    // follow-up run lands, and the second read must refuse rather than stamp the judged run valid.
+    // A running run fails the read itself; a run that already completed fails only the comparison.
+    const seat = writerSeat('close-store-moved')
+    const moved = async (what, run, message) => {
+      const { thread } = t3Seat(seat.id, [{ texts: [seat.message] }])
+      const before = recordFiles(seat.id)
+      const gate = join(tmp, `close-store-moved-${run.status}`)
+      const held = await heldAt([SEAT_SCRIPT, 'close', seat.id], gate, 'reread')
+      t3MessageRow(thread, t3RunRow(thread, 2, run), seat.message)
+      writeFileSync(`${gate}.go`, '')
+      const { code, out } = await held.done
+      const refused = JSON.parse(out)
+      assert.deepEqual([code === 0, refused.error?.kind], [false, 'TASK_NOT_TERMINAL'], `${what}: ${out}`)
+      assert.match(refused.error.message, message, what)
+      assert.deepEqual(recordFiles(seat.id), before, `${what} changed the record directory`)
+      assert.equal(store.readStamp(seat.id, 'closed'), null, `${what} stamped the seat closed`)
+      assert.ok(existsSync(seat.holder), `${what} released the writer's lease holder`)
+    }
+    await moved('a run started while close judged', { status: 'running' }, /a run in its thread is running/)
+    await moved('a run started and completed while close judged', { status: 'completed' }, /changed while close judged/)
+    ok('a follow-up run T3 adds while close judges, running or already completed, makes close refuse TASK_NOT_TERMINAL at its second read, writing nothing and keeping the lease holder')
+
+    // A follow-up the hooks open while close judges, before T3 projects its run row: the store holds
+    // still, and only the turn state the prompt hook wrote moves.
+    const hooked = guardedSeat()
+    t3Status(hooked.id)
+    const gate = join(tmp, 'close-store-moved-hooked')
+    const held = await heldAt([SEAT_SCRIPT, 'close', hooked.id], gate, 'reread')
+    hooked.followUp()
+    writeFileSync(`${gate}.go`, '')
+    const hookedClose = await held.done
+    const hookedOut = JSON.parse(hookedClose.out)
+    assert.deepEqual([hookedClose.code === 0, hookedOut.error?.kind], [false, 'TASK_NOT_TERMINAL'], hookedClose.out)
+    assert.match(hookedOut.error.message, /changed while close judged/)
+    assert.equal(store.readStamp(hooked.id, 'closed'), null, 'the hooked follow-up close stamped the seat closed')
+    ok('a follow-up prompt the hooks record while close judges, with T3\'s rows unchanged, makes close refuse TASK_NOT_TERMINAL and stamp nothing')
+
+    t3Seat(seat.id, [{ texts: [seat.message] }])
+    const out = seatCli(['close', seat.id])
+    assert.deepEqual([out.verdict, existsSync(seat.holder)], ['valid', false], JSON.stringify(out))
+    ok('with the store held still, the same seat closes valid')
+  },
+
+  'close-store-identity': () => {
+    // Rows that carry flow-seat-<id> and must never count as the seat's task, each running, so a
+    // match would read TASK_NOT_TERMINAL rather than pass unseen.
+    const decoys = (id) => [
+      ['thread-send', `node:delegated-task:command%3Amcp%3A${T3_SESSION}%3Athread-send%3Aflow-seat-${id}-critique`],
+      ['provider-continuation', `node:delegated-task:provider-continuation%3Amessage%3Athread%253Adelegated-task%253Acommand%25253Amcp%25253A${T3_SESSION}%25253Adelegate-task%25253Aflow-seat-${id}`],
+      ['a LIKE wildcard', `node:delegated-task:command%3Amcp%3A${T3_SESSION}%3Adelegate-taskX3Aflow-seat-${id}`],
+      ['lower-case escapes', `node:delegated-task:command%3amcp%3a${T3_SESSION}%3adelegate-task%3aflow-seat-${id}`],
+      ['an upper-case session', `node:delegated-task:command%3Amcp%3A${T3_SESSION.toUpperCase()}%3Adelegate-task%3Aflow-seat-${id}`],
+      ['36 characters that are no uuid', `node:delegated-task:command%3Amcp%3A${T3_SESSION.replaceAll('-', '')}abcd%3Adelegate-task%3Aflow-seat-${id}`],
+      ['an extra segment', `node:delegated-task:command%3Amcp%3A${T3_SESSION}%3Aextra%3Adelegate-task%3Aflow-seat-${id}`],
+      ['another seat id inside', `node:delegated-task:command%3Amcp%3A${T3_SESSION}%3Adelegate-task%3Aflow-seat-${id}${id.slice(0, 1)}`],
+    ]
+    const plant = (id) => {
+      for (const [, taskId] of decoys(id)) t3TaskRow(id, { taskId, child: childThreadOf(id), status: 'running' })
+    }
+    const seat = writerSeat('close-store-identity')
+    t3Forget(seat.id)
+    plant(seat.id)
+    const notFound = refusedClose(seat, 'TASK_NOT_FOUND', 'decoys alone')
+    assert.match(notFound.message, /--abandon/)
+    assert.match(notFound.message, /T3CODE_HOME/)
+    const { taskId } = t3Seat(seat.id, [{ texts: [seat.message] }])
+    plant(seat.id)
+    const out = seatCli(['close', seat.id])
+    assert.deepEqual([out.verdict, store.readStamp(seat.id, 'closed').task.taskId], ['valid', taskId], JSON.stringify(out))
+    ok(`no ${decoys(seat.id).map(([what]) => what).join(', ')} decoy row is the seat's task: with them alone close refuses TASK_NOT_FOUND, writing nothing, and beside the real row it closes valid on that row`)
+
+    // No row for a seat whose child bound, nor for one whose call was admitted and never bound.
+    const bound = writerSeat('close-store-identity-bound')
+    const unbound = admittedSeat('claude')
+    for (const [what, each] of [['a bound seat', bound], ['an admitted seat that never bound', { ...unbound, holder: null }]]) {
+      t3Forget(each.id)
+      refusedClose(each, 'TASK_NOT_FOUND', what, { kept: each.holder })
+    }
+    assert.equal(seatCli(['close', unbound.id, '--abandon']).verdict, 'unknown')
+    ok('a seat with no row that fits refuses TASK_NOT_FOUND whether or not it bound, writing nothing, and the unbound one then closes with --abandon')
+
+    // Two rows fit: unknown (task-ambiguous) above any other verdict, once both are finished.
+    const OTHER = 'a1b2c3d4-0000-4000-8000-00000000beef'
+    const twins = (seat) => {
+      t3Seat(seat.id, [{ texts: [seat.message] }])
+      const other = t3TaskRow(seat.id, { session: OTHER })
+      const thread = childThreadOf(seat.id, OTHER)
+      t3MessageRow(thread, t3RunRow(thread, 1), seat.message)
+      return [taskIdOf(seat.id), other].sort()
+    }
+    const live = writerSeat('close-store-identity-live')
+    twins(live)
+    t3TaskRow(live.id, { session: 'c0ffee00-0000-4000-8000-000000000001', status: 'running' })
+    refusedClose(live, 'TASK_NOT_TERMINAL', 'two finished rows and a running one')
+    const both = writerSeat('close-store-identity-twins')
+    const taskIds = twins(both)
+    for (const [what, seat, ids] of [['a writer', both, taskIds], ['a mismatched seat', hookedSeat({ served: ['claude-sonnet-5-5'] }), null], ['a void seat', hookedSeat({}), null]]) {
+      if (what === 'a void seat') store.stamp(seat.id, 'void', { reason: 'r' })
+      const expected = ids ?? twins(seat)
+      const twin = seatCli(['close', seat.id])
+      assert.deepEqual([twin.verdict, twin.reasons, twin.result], ['unknown', ['task-ambiguous'], null], `${what}: ${JSON.stringify(twin)}`)
+      const stamped = store.readStamp(seat.id, 'closed')
+      assert.deepEqual([stamped.task, stamped.runId, stamped.verdict], [{ ambiguous: true, taskIds: expected }, null, 'unknown'], what)
+    }
+    assert.equal(existsSync(both.holder), false, 'an ambiguous close kept the writer\'s holder')
+    ok('two rows that fit, one still running, refuse TASK_NOT_TERMINAL; two finished ones close unknown (task-ambiguous) above valid, model-mismatch and another unknown, stamp both task ids and no run, and release the writer\'s holder')
+
+    // An exact-grammar row another call made by reusing the seat's clientRequestId from a session
+    // the gate never saw: its prompt lacks the tag on line 1, so it is never the seat's, running or
+    // finished, alone or beside the real row.
+    const untagged = [['no tag', 'Review the diff.'], ['the tag on line 2', `Review the diff.\n${store.seatTag('0'.repeat(32))}`], ['the tag after text on line 1', `x${store.seatTag('0'.repeat(32))}`]]
+    const reused = writerSeat('close-store-identity-reused')
+    const plantReused = (status) => {
+      for (const [n, [, prompt]] of untagged.entries()) {
+        const session = `d0d0d0d0-0000-4000-8000-00000000000${n}`
+        t3TaskRow(reused.id, { session, status, payload: { prompt: prompt.replace('0'.repeat(32), reused.id) } })
+        const thread = childThreadOf(reused.id, session)
+        t3MessageRow(thread, t3RunRow(thread, 1), reused.message)
+      }
+    }
+    t3Forget(reused.id)
+    plantReused('completed')
+    refusedClose(reused, 'TASK_NOT_FOUND', 'reused clientRequestId rows alone')
+    const real = t3Seat(reused.id, [{ texts: [reused.message] }])
+    plantReused('running')
+    const reusedOut = seatCli(['close', reused.id])
+    assert.deepEqual([reusedOut.verdict, store.readStamp(reused.id, 'closed').task.taskId], ['valid', real.taskId], JSON.stringify(reusedOut))
+    ok(`an exact-grammar row whose prompt has ${untagged.map(([what]) => what).join(', ')} is not the seat's: alone, finished, close refuses TASK_NOT_FOUND, and running beside the real row it neither blocks nor makes the close ambiguous`)
+  },
+
+  'close-store-refusals': () => {
+    const writer = writerSeat('close-store-refusals')
     const covering = { ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read: ['a.txt', 'c.txt'], partial: [], unopened: [], checksRun: [] } }
     const opened = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', baseSha, '--head', headSha])
-    const review = hookedSeat({ id: opened.id, envelope: covering })
-    for (const [seat, kept] of [[writer, holder], [review, opened.reviewWorktree]]) {
-      for (const [kind, status] of refusals(seat.id)) {
-        const before = files(seat.id)
-        const refused = closeSeat(seat.id, status)
-        assert.equal(refused.error?.kind, kind, JSON.stringify(refused))
-        assert.deepEqual(files(seat.id), before, `a ${kind} refusal changed the record directory`)
-        assert.ok(existsSync(kept), `a ${kind} refusal released ${kept}`)
+    const review = { ...hookedSeat({ id: opened.id, envelope: covering }), holder: opened.reviewWorktree }
+    // The homes of their own: none, a relative one, a directory or a non-database where the store
+    // belongs, a store missing a column or a table, and one a writer holds locked.
+    const home = (name) => join(tmp, 't3-homes', name)
+    mkdirSync(home('empty'), { recursive: true })
+    mkdirSync(join(home('directory'), 'userdata', 'statev2.sqlite'), { recursive: true })
+    mkdirSync(join(home('junk'), 'userdata'), { recursive: true })
+    writeFileSync(join(home('junk'), 'userdata', 'statev2.sqlite'), 'not a database, '.repeat(64))
+    t3Store(home('no-ordinal'), { without: ['orchestration_v2_projection_runs.ordinal'] }).close()
+    t3Store(home('no-migrations'), { without: ['effect_sql_migrations'] }).close()
+    const elsewhere = [
+      ['a T3CODE_HOME with no store', home('empty'), 'T3_STORE', { cause: 'missing' }],
+      ['a relative T3CODE_HOME', 't3', 'T3_STORE', { cause: 'missing' }],
+      ['a directory where the store belongs', home('directory'), 'T3_STORE', { cause: 'missing' }],
+      ['a file that is no database', home('junk'), 'T3_STORE', { cause: 'missing', code: 26 }],
+      ['a store without runs.ordinal', home('no-ordinal'), 'T3_STORE', { cause: 'schema', missing: ['orchestration_v2_projection_runs.ordinal'] }],
+      ['a store without effect_sql_migrations', home('no-migrations'), 'T3_STORE', { cause: 'schema', missing: ['effect_sql_migrations'] }],
+    ]
+    // What the shared store holds for the seat: rows close reads as a value T3 doesn't write.
+    const values = (seat) => {
+      const thread = childThreadOf(seat.id)
+      const run = (fields, message = {}) => () => {
+        t3Seat(seat.id, [])
+        t3MessageRow(thread, t3RunRow(thread, 1, fields), seat.message, message)
       }
-      const retried = closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message }))
-      assert.deepEqual([retried.verdict, retried.reasons], ['valid', []], JSON.stringify(retried))
-      assert.equal(existsSync(kept), false, `the retry kept ${kept}`)
+      return [
+        ['a run status outside T3\'s', () => t3Seat(seat.id, [{ status: 'done', texts: [seat.message] }])],
+        ['a task status outside T3\'s', () => t3Seat(seat.id, [{ texts: [seat.message] }], { status: 'Completed' })],
+        ['a nested task status outside T3\'s', () => t3Seat(seat.id, [{ texts: [seat.message] }], { nested: ['stopped'] })],
+        ['a finished task with no child thread', () => t3Seat(seat.id, [], { child: null })],
+        ['a child thread not named after the task', () => t3Seat(seat.id, [], { child: childThreadOf(seat.id, T3_SESSION.replace('0b6c', '1b6c')) })],
+        ['a run id whose thread is not encoded', run({ runId: `run:thread:${thread}:ordinal:1` })],
+        ['a run id whose ordinal is not its column', run({ runId: runIdOf(thread, 2) })],
+        ['a run payload that is no JSON', run({ payloadJson: '{"startedAt":' })],
+        ['a run payload that is no object', run({ payloadJson: '[]' })],
+        ['a message payload that is no object', run({}, { payloadJson: 'null' })],
+        ['a task payload that is no object', () => {
+          t3Seat(seat.id, [{ texts: [seat.message] }])
+          t3.prepare('update orchestration_v2_projection_subagents set payload_json = ? where subagent_id = ?').run('[]', taskIdOf(seat.id))
+        }],
+        ['a task prompt that is no string', () => t3Seat(seat.id, [{ texts: [seat.message] }], { payload: { prompt: 7 } })],
+        ['a message payload with no text', run({}, { payloadJson: JSON.stringify({ role: 'assistant' }) })],
+        ['a message text that is no string', run({}, { payloadJson: JSON.stringify({ role: 'assistant', text: 7 }) })],
+        ['a message time with other precision', run({}, { at: '2026-11-04T12:00:00Z' })],
+        ['an updated_at with other precision', run({}, { updatedAt: '2026-11-04T12:00:00.0001Z' })],
+        // node:sqlite throws ERR_OUT_OF_RANGE reading an integer past JavaScript's safe range.
+        ['a run ordinal past 2^53', () => {
+          t3Seat(seat.id, [])
+          t3RunRow(thread, 9223372036854775807n, { payloadJson: JSON.stringify({ startedAt: t3Time() }) })
+        }],
+      ]
     }
+    for (const seat of [writer, review]) {
+      t3Seat(seat.id, [{ texts: [seat.message] }])
+      for (const [what, t3Home, kind, details] of elsewhere) {
+        const error = refusedClose(seat, kind, what, { options: { env: { T3CODE_HOME: t3Home } } })
+        assert.deepEqual(error.details, details, what)
+      }
+      for (const [what, arrange] of values(seat)) {
+        arrange()
+        assert.deepEqual(refusedClose(seat, 'T3_STORE', what).details, { cause: 'value' }, what)
+      }
+      // A migration id past 2^53, written on a connection of its own: the id is its rowid, and a
+      // connection whose last insert rowid is past the safe range throws on every later run().
+      t3Seat(seat.id, [{ texts: [seat.message] }])
+      const huge = new DatabaseSync(join(t3Home, 'userdata', 'statev2.sqlite'))
+      huge.exec("insert into effect_sql_migrations (migration_id, name) values (9223372036854775807, 'past-safe')")
+      try {
+        assert.deepEqual(refusedClose(seat, 'T3_STORE', 'a migration id past 2^53').details, { cause: 'value' })
+      } finally { huge.exec('delete from effect_sql_migrations where migration_id = 9223372036854775807'); huge.close() }
+      // A writer holding the store locked past close's 2 s busy timeout.
+      const locker = t3Store(home(`busy-${seat.id}`))
+      t3Seat(seat.id, [{ texts: [seat.message] }], { db: locker })
+      locker.exec("pragma locking_mode = exclusive; begin exclusive; insert into effect_sql_migrations (migration_id, name) values (77, 'held')")
+      try {
+        const error = refusedClose(seat, 'T3_STORE_BUSY', 'a store a writer holds locked', { options: { env: { T3CODE_HOME: home(`busy-${seat.id}`) } } })
+        assert.deepEqual(error.details, { code: 5 })
+      } finally { locker.exec('rollback'); locker.close() }
+      assert.equal(closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message })).verdict, 'valid')
+      assert.equal(existsSync(seat.holder), false, `the retry kept ${seat.holder}`)
+    }
+    assert.deepEqual([readdirSync(home('empty')), existsSync(join(canon, 't3'))], [[], false], 'close created a store directory')
     assert.ok(!gitOut(canon, 'worktree', 'list', '--porcelain').includes(opened.reviewWorktree), 'git still lists the review worktree')
-    ok('a TASK_INCOMPLETE or TASK_MISMATCH refusal changes no file of the record, keeps the writer\'s lease holder and the review worktree, and a retry with the whole status closes the seat valid and releases both')
+    ok(`a missing store (${elsewhere.slice(0, 4).map(([what]) => what).join(', ')}) refuses T3_STORE missing, a dropped column or table T3_STORE schema naming it, ${values(writer).length} values T3 doesn't write T3_STORE value, a migration id past 2^53 T3_STORE value, and a held write lock T3_STORE_BUSY; each changes no file of the record, keeps the writer's lease holder and the review worktree, and names no path and no SQLite text, close creates no store directory, and a retry against the store closes both seats valid`)
+
+    // With T3CODE_HOME unset or empty, the store is ~/.t3's.
+    const fakeHome = join(tmp, 'fake-home')
+    mkdirSync(fakeHome)
+    for (const value of ['', undefined]) {
+      const seat = hookedSeat({})
+      const env = { HOME: fakeHome, T3CODE_HOME: value }
+      assert.deepEqual(refusedClose(seat, 'T3_STORE', `T3CODE_HOME ${JSON.stringify(value)} and no ~/.t3`, { kept: null, options: { env } }).details, { cause: 'missing' })
+      const db = t3Store(join(fakeHome, '.t3'))
+      t3Seat(seat.id, [{ texts: [seat.message] }], { db })
+      db.close()
+      assert.equal(seatCli(['close', seat.id], { env }).verdict, 'valid', `T3CODE_HOME ${JSON.stringify(value)}`)
+      rmSync(join(fakeHome, '.t3'), { recursive: true })
+    }
+    ok('with T3CODE_HOME unset or empty, close reads ~/.t3/userdata/statev2.sqlite, and refuses T3_STORE missing when there is none')
+  },
+
+  'close-store-interface': () => {
+    const writer = writerSeat('close-store-interface')
+    t3Seat(writer.id, [{ texts: [writer.message] }])
+    const before = recordFiles(writer.id)
+    const removed = seatCli(['close', writer.id, '--task-status', '-'], { input: JSON.stringify(taskStatusOf(writer.id)) })
+    assert.deepEqual([removed.error?.kind, recordFiles(writer.id), existsSync(writer.holder)], ['BAD_REQUEST', before, true], JSON.stringify(removed))
+    assert.match(removed.error.message, /^Unknown argument/)
+    ok('close refuses the removed status flag as an unknown argument, BAD_REQUEST, writing nothing and keeping the holder')
+
+    // A seat whose call was admitted and made no task closes with --abandon and no store at all.
+    const at = gitWorktree('close-store-interface-abandon')
+    const unbound = seatCli(['open', '--access', 'workspace-write', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--worktree', at])
+    silent(guard('pre', 'claude', preCall('claude', randomUUID(), SPELLING.claude, delegateInput(store.readRecord(unbound.id).record, unbound.id))), 'the parent\'s gate')
+    const nowhere = join(tmp, 'no-t3-home')
+    const abandoned = seatCli(['close', unbound.id, '--abandon'], { env: { T3CODE_HOME: nowhere } })
+    assert.deepEqual([abandoned.verdict, abandoned.reasons, store.readStamp(unbound.id, 'closed').task, existsSync(nowhere)], ['unknown', ['abandoned-before-bind'], null, false], JSON.stringify(abandoned))
+    assert.equal(existsSync(join(jobs.leaseDirOf(at), `${unbound.id}.live`)), false, 'abandon kept the holder')
+    ok('close --abandon never reads the store: with no T3 home at all it records unknown (abandoned-before-bind) with task null and drops the holder')
+
+    // A takeover: a thread other than the one that made the call closes the seat.
+    const closer = 'f00dfeed-0000-4000-8000-00000000c105'
+    const taken = seatCli(['close', writer.id], { env: { T3CODE_THREAD_ID: closer } })
+    assert.deepEqual([taken.verdict, existsSync(writer.holder)], ['valid', false], JSON.stringify(taken))
+    assert.deepEqual(store.readStamp(writer.id, 'closed').task, oneRunTask(writer.id, writer.message, { closerThreadId: closer }))
+    assert.notEqual(closer, T3_OWNER)
+    ok('a closer whose T3CODE_THREAD_ID is not the owning thread closes normally, and the stamp records the owner and the closer')
+
+    for (const [what, value, recorded] of [
+      ['unset', undefined, null], ['empty', '', null], ['a control character', 'thread\u0001x', null], ['257 bytes', 't'.repeat(257), null],
+      ['258 bytes of 129 two-byte characters', 'é'.repeat(129), null], ['exactly 256 bytes', 't'.repeat(256), 't'.repeat(256)],
+    ]) {
+      const seat = hookedSeat({})
+      assert.equal(closeSeat(seat.id, taskStatusOf(seat.id), { env: { T3CODE_THREAD_ID: value } }).verdict, 'valid', what)
+      assert.equal(store.readStamp(seat.id, 'closed').task.closerThreadId, recorded, what)
+    }
+    ok('the closer thread is recorded only as 1 to 256 bytes with no control character, and is null otherwise')
+  },
+
+  'close-store-repeat': () => {
+    const stampPath = (id) => join(seats, id, 'closed.json')
+    const closedValid = () => {
+      const seat = hookedSeat({})
+      const rows = t3Seat(seat.id, [{ texts: [seat.message] }])
+      const first = seatCli(['close', seat.id])
+      assert.deepEqual([first.verdict, first.reasons], ['valid', []], JSON.stringify(first))
+      return { ...seat, ...rows, first, bytes: readFileSync(stampPath(seat.id)) }
+    }
+    const later = closedValid()
+    // T3 runs the child again after the close, with no hook on record, here with the same text.
+    t3MessageRow(later.thread, t3RunRow(later.thread, 2), later.message)
+    const again = seatCli(['close', later.id])
+    assert.deepEqual(again, { ...later.first, verdict: 'unknown', reasons: ['stale-turn'], result: null, recorded: { verdict: 'valid', turn: 1 } }, JSON.stringify(again))
+    assert.ok(readFileSync(stampPath(later.id)).equals(later.bytes), 'the repeated close rewrote the stamp')
+    assert.deepEqual(store.readStamp(later.id, 'closed').task, oneRunTask(later.id, later.message))
+    ok('a repeated close after T3 added a completed run prints unknown (stale-turn) with recorded {verdict, turn}, the stamp and its task block unchanged')
+
+    const doubled = closedValid()
+    const thread = childThreadOf(doubled.id, 'a1b2c3d4-0000-4000-8000-00000000beef')
+    t3TaskRow(doubled.id, { session: 'a1b2c3d4-0000-4000-8000-00000000beef' })
+    t3MessageRow(thread, t3RunRow(thread, 1), doubled.message)
+    const twin = seatCli(['close', doubled.id])
+    assert.deepEqual([twin.verdict, twin.reasons, twin.result, twin.recorded], ['unknown', ['task-ambiguous'], null, { verdict: 'valid', turn: 1 }], JSON.stringify(twin))
+    assert.ok(readFileSync(stampPath(doubled.id)).equals(doubled.bytes))
+    ok('a repeated close that finds a second task for the seat prints unknown (task-ambiguous) with recorded, the stamp unchanged')
+
+    const pruned = closedValid()
+    t3Forget(pruned.id)
+    assert.equal(seatCli(['close', pruned.id]).error?.kind, 'TASK_NOT_FOUND')
+    assert.ok(readFileSync(stampPath(pruned.id)).equals(pruned.bytes))
+    ok('a repeated close after T3 pruned the task refuses TASK_NOT_FOUND, the stamp unchanged')
   },
 
   'close-abandon': () => {
@@ -4015,19 +4517,19 @@ process.exit(255)
     }
     const writer = openWriter('close-abandon')
     assert.ok(existsSync(writer.holder))
-    for (const args of [['--abandon', '--task-status', JSON.stringify(taskStatusOf(writer.id))], ['--task-status', JSON.stringify(taskStatusOf(writer.id)), '--abandon'], ['--abandon', '--abandon'], ['--abandon', 'x']]) {
+    for (const args of [['--abandon', '--x', '1'], ['--x', '1', '--abandon'], ['--abandon', '--abandon'], ['--abandon', 'x']]) {
       const refused = seatCli(['close', writer.id, ...args])
       assert.equal(refused.error?.kind, 'BAD_REQUEST', `${args.join(' ')}: ${JSON.stringify(refused)}`)
       assert.equal(store.readStamp(writer.id, 'closed'), null, `${args.join(' ')} stamped the seat closed`)
       assert.ok(existsSync(writer.holder), `${args.join(' ')} dropped the holder`)
     }
-    ok('close takes --abandon alone: beside --task-status, twice or with a value it is BAD_REQUEST, writing nothing and keeping the holder')
+    ok('close takes --abandon alone: beside another flag, twice or with a value it is BAD_REQUEST, writing nothing and keeping the holder')
 
     const abandoned = seatCli(['close', writer.id, '--abandon'])
     const expected = { ok: true, id: writer.id, verdict: 'unknown', reasons: ['abandoned-before-bind'], turn: null, result: null, servedModels: [], blocks: 0, errors: [] }
     assert.deepEqual(abandoned, expected)
     const stamped = store.readStamp(writer.id, 'closed')
-    assert.deepEqual({ ...stamped, at: undefined }, { at: undefined, verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, taskStatus: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
+    assert.deepEqual({ ...stamped, at: undefined }, { at: undefined, verdict: 'unknown', reasons: ['abandoned-before-bind'], abandoned: true, task: null, turn: null, resultSha256: null, servedModels: [], blocks: 0, errors: [] })
     assert.equal(existsSync(writer.holder), false, 'abandon kept the writer\'s holder')
     const taker = jobRecord(writer.at, 'queued')
     jobs.acquireLease(taker)
@@ -4051,7 +4553,7 @@ process.exit(255)
     assert.notEqual(store.readStamp(bound.id, 'bound'), null)
     const refused = seatCli(['close', bound.id, '--abandon'])
     assert.equal(refused.error?.kind, 'BAD_REQUEST', JSON.stringify(refused))
-    assert.match(refused.error.message, /a bound seat closes with its task status/i)
+    assert.match(refused.error.message, /a bound seat closes from T3's store/i)
     assert.equal(store.readStamp(bound.id, 'closed'), null, 'abandon stamped a bound seat closed')
     assert.ok(existsSync(bound.holder), 'abandon dropped a bound seat\'s holder')
     assert.equal(closeSeat(bound.id).verdict, 'unknown')
@@ -4572,7 +5074,7 @@ process.exit(255)
     // The two scans at close: a tree that changes between them reads hooks-changed even though
     // the first scan matched what open recorded.
     const scanned = rootedCodexSeat('close-hooks-changed-scan')
-    const scanOut = seatCli(['close', scanned.id, '--task-status', '-'], { input: JSON.stringify(taskStatusOf(scanned.id)), nodeArgs: ['--import', pathToFileURL(scanGate).href], env: { SCAN_ROOT: scanned.root } })
+    const scanOut = closeSeat(scanned.id, taskStatusOf(scanned.id), { nodeArgs: ['--import', pathToFileURL(scanGate).href], env: { SCAN_ROOT: scanned.root } })
     assert.equal(readFileSync(README(scanned), 'utf8'), 'flow\nx', 'the scan gate never fired, so close scanned the root once')
     assert.deepEqual([scanOut.verdict, scanOut.reasons], ['unknown', ['hooks-changed']], JSON.stringify(scanOut))
     ok('close scans the root twice in a row, and a root that changes between the scans reads hooks-changed')
@@ -4780,6 +5282,7 @@ try {
   }
 } finally {
   for (const child of heldChildren) child.kill('SIGKILL')
+  t3.close()
   rmSync(tmp, { recursive: true, force: true })
 }
 

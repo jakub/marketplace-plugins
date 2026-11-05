@@ -385,8 +385,8 @@ export async function admit(input, { host, roots, signal }) {
 //     renames first, the seat's own rename finds no file, and the seat voids its record;
 //   - a closed seat's holder, and a taken file a dead job left behind, are dropped, except the
 //     holder of a seat that seat.mjs close --abandon closed and a bind still reached (it has a bound
-//     stamp): its child may still be running, so the holder keeps write jobs out until close runs
-//     with the task's status and drops it.
+//     stamp): its child may still be running, so the holder keeps write jobs out until a plain
+//     close reads the finished task from T3's store and drops it.
 // seat.mjs also checks for a live job after writing its holder, so of a seat and a job racing for
 // one worktree, at most one goes on.
 export const leaseDirOf = (worktree) => join(stateDir(), 'leases', createHash('sha256').update(worktree).digest('hex'))

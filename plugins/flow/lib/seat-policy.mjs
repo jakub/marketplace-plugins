@@ -13,8 +13,10 @@
 //                      what the record names: the runtime mode, the provider instance id, the
 //                      model, the effort under the option id of the record's provider family, and
 //                      clientRequestId flow-seat-<id>, which T3 builds the task id from, so close
-//                      can tell this seat's task from another. The admitted stamp pins the digest
-//                      of the record it admitted, which the bind and close compare.
+//                      can tell this seat's task from another. An untagged call that names a
+//                      flow-seat- clientRequestId is denied, so no other call makes a task row close
+//                      would read as the seat's. The admitted stamp pins the digest of the record it
+//                      admitted, which the bind and close compare.
 //   bindProblem        the child's UserPromptSubmit: whether this session may bind the record. A
 //                      record that fails seatIdentityProblem, or whose bytes are not the ones the
 //                      admitted stamp pinned, is never bound. A failed bind makes a void seat,
@@ -124,7 +126,12 @@ export function gateDelegateTask(toolInput, { store, toolUseId } = {}) {
   if (typeof task !== 'string') return deny('the delegate_task task is not a string, so the call is refused.')
 
   const tag = store.parseTag(task)
-  if (tag === null) return null
+  if (tag === null) {
+    if (typeof toolInput.clientRequestId === 'string' && toolInput.clientRequestId.startsWith('flow-seat-')) {
+      return deny('clientRequestId flow-seat-<id> is reserved for the seat call `seat open` printed, which carries its seat tag alone on line 1. Use another clientRequestId, or send the seat call as printed.')
+    }
+    return null
+  }
   if (tag.void) return deny('a seat tag appears in the task but not as the whole of line 1. Put the tag `seat open` printed alone on line 1.')
 
   const { id } = tag
@@ -796,7 +803,7 @@ export function seatContext(record, schema = null, schemaPath = null) {
     '',
     'Your final message is one JSON object in the flow envelope and nothing else, alone or as the whole of one fenced block:',
     envelopeFor(record.access),
-    'coverage lists the files you read whole, read in part and left unopened, and the checks you ran. A stop hook checks the message and returns any problem to you to fix.',
+    'coverage lists the files you read whole, read in part and left unopened, and the checks you ran. Name each file by its path in the worktree, one entry per file, with any note after the path in parentheses, as `src/a.rs (changed hunks only)`; a review accounts for every file in its diff. A stop hook checks the message and returns any problem to you to fix.',
   )
   if (record.access === 'workspace-write') lines.push('commits lists every commit you made, each with its full SHA.')
   if (schema === null) {

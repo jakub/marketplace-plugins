@@ -128,19 +128,23 @@ To give a finished seat another round, on either family, send it a message with 
 
 ### 4. Wait
 
-A finished child wakes your thread, so end your turn instead of polling. On the wake, make the one `task_status` call that close needs (step 5). Otherwise, use `task_status` only when you need the outcome mid-turn. **Never take the answer from `summary`.** After a Stop block, it's the child's last message, not its answer. `task_cancel` stops a seat you don't need.
+A finished child wakes your thread, so end your turn instead of polling. Use `task_status` only when you need the outcome mid-turn, because `close` reads the task itself. **Never take the answer from `summary`.** After a Stop block, it's the child's last message, not its answer. `task_cancel` stops a seat you don't need.
 
 ### 5. Close and act on the verdict
 
-Keep the `taskId` that `delegate_task` returned, and never rebuild it from a seat id or an old connection prefix. `close` checks only that the status's `taskId` contains the seat's `clientRequestId`, not that it's the id `delegate_task` returned. When that task's `task_status` says it finished (`completed`, `failed`, `cancelled` or `interrupted`, not `working` or `waiting_for_children`, and no pending child runs), write that whole answer, unchanged, to a file with your file tool, then pass the file to `close` on stdin:
+On the wake, close the seat by its id:
 
 ```sh
-node <plugin-root>/scripts/seat.mjs close <seat-id> --task-status - < <file>
+node <plugin-root>/scripts/seat.mjs close <seat-id>
 ```
 
-Don't send it through a heredoc or `$(cat)`. Both put the bytes back on the command line, and a long status fails there with `E2BIG`.
+`close` reads the task from T3's own store, so nothing passes through you, and any thread on this machine can close a seat it didn't start, a takeover thread included.
 
-If `delegate_task` errored or never returned a `taskId`, close with `--abandon` instead.
+- `TASK_NOT_TERMINAL` or `T3_STORE_BUSY`: retry up to 3 times with backoff. T3 can wake you a moment before its rows settle, and a busy store frees up. If it still refuses, treat it as `T3_STORE`.
+- `T3_STORE`: this flow can't read T3's store. Fall back on the work, and leave the seat open until flow is fixed.
+- `TASK_NOT_FOUND`: if `delegate_task` errored or never returned a `taskId`, close with `--abandon` instead. Otherwise check `T3CODE_HOME`.
+
+No refusal writes anything, so a retry can still close the seat. `reference.md` lists every refusal.
 
 Close every seat you open, cancelled ones included. An unclosed T3 writer keeps its worktree lease, and `flow_delegate` refuses writers there until it closes.
 
@@ -149,6 +153,7 @@ Act on the verdict alone:
 | Verdict | Do this |
 |---|---|
 | `valid` | Use the envelope. A writer's envelope is still a claim, so check its commits against git. |
+| `coverage-gap` | The hooks held the review, but its coverage misses files in the diff, and `reasons` lists them. Use its findings, and never count the missed files as reviewed. Open one more review seat on the same head, scoped to the missed files. A second gap on those files goes up a rung. It isn't a fallback. |
 | `invalid`, `capped` | The hooks worked, but the final message failed the envelope or the schema. Rerun once with the errors on the same rung, then go up a rung. |
 | `model-mismatch` | The wrong model served it. Discard the answer. It isn't a refusal, so the refusal rule doesn't count it. |
 | `unknown`, `tree-moved` | Nothing proves the hooks held the seat. Fall back. |

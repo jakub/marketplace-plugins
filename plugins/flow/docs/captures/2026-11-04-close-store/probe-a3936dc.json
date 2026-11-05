@@ -1,0 +1,85 @@
+{
+  "what": "Issue #51 live probe, rerun at the reviewed head: a T3 seat opened and started from one thread is closed by seat.mjs close <id> run in a different T3 thread, with no task_status call and no pasted status. close reads the task from T3 store, including the round 1-5 checks (both re-reads, the seat tag on the task prompt, string message text).",
+  "when": "2026-11-05",
+  "t3": "0.1.6 (migration 76)",
+  "node": "v26.10.0",
+  "flowHead": "a3936dcd26ebf8d87f5631509643aa5b54feb8ea",
+  "steps": [
+    "seat.mjs open --access read-only --provider claude --model claude-sonnet-5-5 --effort low, run in the canonical checkout from the orchestrator thread (ownerThreadId below), using the worktree seat.mjs at flowHead",
+    "delegate_task with the seat tag, clientRequestId and target that open printed; the seat ran one git command and stopped with an envelope",
+    "a separate, untagged T3 child thread (closerThreadId below) ran: node <worktree>/plugins/flow/scripts/seat.mjs close 98d608cd617f634cb9af7eb5a7dbc3ca and reported exit 0 with closeStdout"
+  ],
+  "open": {
+    "ok": true,
+    "id": "98d608cd617f634cb9af7eb5a7dbc3ca",
+    "tag": "<flow-seat id=98d608cd617f634cb9af7eb5a7dbc3ca>",
+    "clientRequestId": "flow-seat-98d608cd617f634cb9af7eb5a7dbc3ca",
+    "runtimeMode": "auto",
+    "provider": "claude",
+    "providerInstanceId": "claudeAgent",
+    "model": "claude-sonnet-5-5",
+    "expectedServedModel": "claude-sonnet-5-5",
+    "effort": "low",
+    "worktree": "/home/jakub/code/marketplace-plugins",
+    "reviewWorktree": null
+  },
+  "closeStdout": {
+    "ok": true,
+    "id": "98d608cd617f634cb9af7eb5a7dbc3ca",
+    "verdict": "valid",
+    "reasons": [],
+    "turn": 1,
+    "result": {
+      "status": "done",
+      "coverage": {
+        "read": [],
+        "partial": [],
+        "unopened": [],
+        "checksRun": [
+          "git rev-parse --abbrev-ref HEAD -> main"
+        ]
+      },
+      "notes": "c5 probe at a3936dc",
+      "answer": {}
+    },
+    "servedModels": [
+      "claude-sonnet-5-5"
+    ],
+    "blocks": 0,
+    "errors": []
+  },
+  "closedStamp": {
+    "at": "2026-11-05T14:23:37.232Z",
+    "verdict": "valid",
+    "reasons": [],
+    "task": {
+      "taskId": "node:delegated-task:command%3Amcp%3Aaea25311-0f51-4293-b134-a91d0a78e8e0%3Adelegate-task%3Aflow-seat-98d608cd617f634cb9af7eb5a7dbc3ca",
+      "ownerThreadId": "790cb7fd-de35-4fcb-9885-690333bec8d2",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3Aaea25311-0f51-4293-b134-a91d0a78e8e0%3Adelegate-task%3Aflow-seat-98d608cd617f634cb9af7eb5a7dbc3ca",
+      "status": "completed",
+      "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Aaea25311-0f51-4293-b134-a91d0a78e8e0%253Adelegate-task%253Aflow-seat-98d608cd617f634cb9af7eb5a7dbc3ca:ordinal:1",
+      "latestRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Aaea25311-0f51-4293-b134-a91d0a78e8e0%253Adelegate-task%253Aflow-seat-98d608cd617f634cb9af7eb5a7dbc3ca:ordinal:1",
+      "latestRunStatus": "completed",
+      "latestTextSha256": "0f9cb7446ae710d357bb3c8b1098d4427ee41bdd9da517dcd2b49ad0f8b9c96a",
+      "closerThreadId": "thread:delegated-task:command%3Amcp%3Aaea25311-0f51-4293-b134-a91d0a78e8e0%3Adelegate-task%3A13a106e2-bff1-40af-bcac-9d53d8fb0a24",
+      "t3Migration": 76
+    },
+    "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Aaea25311-0f51-4293-b134-a91d0a78e8e0%253Adelegate-task%253Aflow-seat-98d608cd617f634cb9af7eb5a7dbc3ca:ordinal:1",
+    "turn": 1,
+    "resultSha256": "809801c445c41386f9a686a04526057ecf9a3016e558ce2d94220c8c5adaa6d7",
+    "messageSha256": "0f9cb7446ae710d357bb3c8b1098d4427ee41bdd9da517dcd2b49ad0f8b9c96a",
+    "servedModels": [
+      "claude-sonnet-5-5"
+    ],
+    "blocks": 0,
+    "errors": []
+  },
+  "stopMessageSha256": "0f9cb7446ae710d357bb3c8b1098d4427ee41bdd9da517dcd2b49ad0f8b9c96a",
+  "derived": "checks are computed from closedStamp and the seat turn state: closerIsNotOwner compares closedStamp.task.closerThreadId with task.ownerThreadId, latestTextMatchesStop compares task.latestTextSha256 with stopMessageSha256 (the turn state messageSha256 the Stop hook wrote), noPastedStatusStored is closedStamp having no taskStatus key, and stampVerdictValid is closedStamp.verdict",
+  "checks": {
+    "closerIsNotOwner": true,
+    "latestTextMatchesStop": true,
+    "noPastedStatusStored": true,
+    "stampVerdictValid": true
+  }
+}

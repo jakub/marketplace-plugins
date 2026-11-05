@@ -1,0 +1,76 @@
+{
+  "what": "Issue #51 live probe: a T3 seat opened and started from one thread is closed by seat.mjs close <id> run in a different T3 thread, with no task_status call and no pasted status. close reads the task from T3 store.",
+  "when": "2026-11-04",
+  "t3": "0.1.6 (migration 76)",
+  "node": "v26.10.0",
+  "flowHead": "f01109f9470574d724c76a593bc5ef08932fe9a6",
+  "steps": [
+    "seat.mjs open --access read-only --provider claude --model claude-sonnet-5-5 --effort low, run in the canonical checkout from the orchestrator thread (ownerThreadId below)",
+    "delegate_task with the seat tag, clientRequestId and target that open printed; the seat ran one git command and stopped with an envelope",
+    "a separate, untagged T3 child thread (closerThreadId below) ran: node <worktree>/plugins/flow/scripts/seat.mjs close 0aec7f3ad57e4598c1e06334c3c9f272"
+  ],
+  "open": {
+    "ok": true,
+    "id": "0aec7f3ad57e4598c1e06334c3c9f272",
+    "tag": "<flow-seat id=0aec7f3ad57e4598c1e06334c3c9f272>",
+    "clientRequestId": "flow-seat-0aec7f3ad57e4598c1e06334c3c9f272",
+    "runtimeMode": "auto",
+    "provider": "claude",
+    "providerInstanceId": "claudeAgent",
+    "model": "claude-sonnet-5-5",
+    "expectedServedModel": "claude-sonnet-5-5",
+    "effort": "low",
+    "worktree": "/home/jakub/code/marketplace-plugins",
+    "reviewWorktree": null
+  },
+  "closeStdout": {
+    "ok": true,
+    "id": "0aec7f3ad57e4598c1e06334c3c9f272",
+    "verdict": "valid",
+    "reasons": [],
+    "turn": 1,
+    "result": {
+      "status": "done",
+      "coverage": {
+        "read": [],
+        "partial": [],
+        "unopened": [],
+        "checksRun": [
+          "git rev-parse --abbrev-ref HEAD -> main"
+        ]
+      },
+      "notes": "c5 probe",
+      "answer": {}
+    },
+    "servedModels": [
+      "claude-sonnet-5-5"
+    ],
+    "blocks": 0,
+    "errors": []
+  },
+  "closedStamp": {
+    "verdict": "valid",
+    "reasons": [],
+    "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Aaea25311-0f51-4293-b134-a91d0a78e8e0%253Adelegate-task%253Aflow-seat-0aec7f3ad57e4598c1e06334c3c9f272:ordinal:1",
+    "messageSha256": "824e58992ba20b7ba37ee6fdd2b84f743ce108afffd7f7361d6cf159e8d9101a",
+    "task": {
+      "taskId": "node:delegated-task:command%3Amcp%3Aaea25311-0f51-4293-b134-a91d0a78e8e0%3Adelegate-task%3Aflow-seat-0aec7f3ad57e4598c1e06334c3c9f272",
+      "ownerThreadId": "790cb7fd-de35-4fcb-9885-690333bec8d2",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3Aaea25311-0f51-4293-b134-a91d0a78e8e0%3Adelegate-task%3Aflow-seat-0aec7f3ad57e4598c1e06334c3c9f272",
+      "status": "completed",
+      "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Aaea25311-0f51-4293-b134-a91d0a78e8e0%253Adelegate-task%253Aflow-seat-0aec7f3ad57e4598c1e06334c3c9f272:ordinal:1",
+      "latestRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Aaea25311-0f51-4293-b134-a91d0a78e8e0%253Adelegate-task%253Aflow-seat-0aec7f3ad57e4598c1e06334c3c9f272:ordinal:1",
+      "latestRunStatus": "completed",
+      "latestTextSha256": "824e58992ba20b7ba37ee6fdd2b84f743ce108afffd7f7361d6cf159e8d9101a",
+      "closerThreadId": "thread:delegated-task:command%3Amcp%3Aaea25311-0f51-4293-b134-a91d0a78e8e0%3Adelegate-task%3Ace5e5d51-6919-41ac-be16-3d842486c863",
+      "t3Migration": 76
+    },
+    "hasTaskStatus": false
+  },
+  "stopMessageSha256": "824e58992ba20b7ba37ee6fdd2b84f743ce108afffd7f7361d6cf159e8d9101a",
+  "checks": {
+    "closerIsNotOwner": true,
+    "latestTextMatchesStop": true,
+    "noPastedStatusStored": true
+  }
+}
