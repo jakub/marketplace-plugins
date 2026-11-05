@@ -118,9 +118,13 @@
 //                   router to the model behind it, so the parent declares it at open.
 //   tree-moved      for a review: the review worktree's HEAD left the head SHA or its tree is
 //                   dirty, the canonical checkout's snapshot changed, its HEAD commit or branch
-//                   changed other than by the fast-forward below, or the coverage (read,
-//                   partial and unopened together) misses a file in `git diff --name-only base
-//                   head`, the last only when there is an envelope to read it from
+//                   changed other than by the fast-forward below, or, with an envelope to check,
+//                   `git diff --name-only base head` could not be read
+//   coverage-gap    for a review with an envelope: the coverage (read, partial and unopened
+//                   together) misses a file in that diff. An entry covers a file when it is the
+//                   file's path, or that path, a space and a parenthesized note (see uncovered).
+//                   The reasons are one count, then every missed path, uncapped; result is the
+//                   envelope Stop recorded
 //   capped          the last turn was capped
 //   invalid         the last stop in the last turn was blocked
 //   valid           otherwise; result is the envelope Stop recorded
@@ -147,9 +151,9 @@
 //     HEAD, so a close after that merge and before that sibling's land pulls reads tree-moved;
 //   - an HTTPS origin that needs a credential helper fails closed, because no global or system
 //     configuration is read.
-// close then checks a valid verdict against the task status, as negative evidence only. T3's
-// text can withhold a valid, and the result is still the envelope Stop recorded, never T3's
-// summary. The latest run's text is summary when latestTerminalRunId is childRunId. Otherwise,
+// close then checks a valid or coverage-gap verdict against the task status, as negative evidence
+// only. T3's text can withhold either, and the result is still the envelope Stop recorded, never
+// T3's summary. The latest run's text is summary when latestTerminalRunId is childRunId. Otherwise,
 // when latestTerminalStatus is completed, it is latestTerminalSummary when that is a string and
 // summary when it is null (T3 0.1.6 nulls it when it repeats summary), and for any other status
 // there is none. Reason stale-turn comes first, for no text, for text whose store.textDigest (the
@@ -161,8 +165,9 @@
 // codexPluginDigest or two unequal digests is a change. A Codex record with neither key predates
 // the check and is not scanned, one with a single key or a malformed digest reads hooks-changed,
 // and a Claude record is never scanned. Either reason makes the verdict unknown and the result
-// null, and keeps turn, servedModels, blocks and errors. close checks only a valid verdict, so the
-// two reasons only ever turn valid into unknown, and every verdict above keeps its precedence.
+// null, and keeps turn, servedModels, blocks and errors. close checks only those two verdicts, so
+// the two reasons only ever turn valid or coverage-gap into unknown, and every verdict above keeps
+// its precedence.
 // Two gaps are known and not fixed:
 //   - a later run whose hooks were dark and whose text is byte-identical to the recorded message
 //     passes when the turn state already holds an opened key, from an earlier follow-up or steer;
@@ -180,11 +185,11 @@
 // and facts, with the result read again from the pinned turn: that result while its bytes still
 // hash to the pinned sha256, and otherwise null, with result-changed-after-close among the
 // reasons and the verdict unchanged. It also retries the cleanup. Cleanup that fails is listed in
-// cleanupProblems and does not change the verdict. A stamp that holds valid and is not an abandon
-// is first checked against the status this close was given, so a later close never certifies a
-// run the stamp did not judge. A latest run id other than the stamp's runId adds stale-turn, and a
-// stamp written before close recorded runId has none, so it reads as another run. The same run with
-// text whose store.textDigest is not the stamp's messageSha256 adds stale-turn too, and the root
+// cleanupProblems and does not change the verdict. A stamp that holds valid or coverage-gap and is
+// not an abandon is first checked against the status this close was given, so a later close never
+// certifies a run the stamp did not judge. A latest run id other than the stamp's runId adds
+// stale-turn, and a stamp written before close recorded runId has none, so it reads as another
+// run. The same run with text whose store.textDigest is not the stamp's messageSha256 adds stale-turn too, and the root
 // scan above adds hooks-changed. With either reason, close prints verdict unknown with those
 // reasons, result null and, last, recorded: {verdict, turn} from the stamp. It never rewrites the
 // stamp, judges the seat again or reads its trees, because a review's worktree is gone by then. A
@@ -768,17 +773,42 @@ async function seatTrust(cwd) {
 
 const STAMPS = ['admitted', 'bound', 'receipt']
 
-// A coverage entry as a path relative to the review worktree: `./a`, `a` and `<worktree>/a` are
-// one file.
-function covered(envelope, worktree) {
-  const lists = ['read', 'partial', 'unopened'].flatMap((key) => envelope?.coverage?.[key] ?? [])
-  return new Set(lists.filter((entry) => typeof entry === 'string').map((entry) => {
-    const path = isAbsolute(entry) && inside(worktree, entry) ? relative(worktree, entry) : entry
-    return path.replace(/^(?:\.\/)+/, '').split(sep).join('/')
-  }))
+// The verdicts whose result is the envelope Stop recorded, and the only ones freshness checks.
+const RESULTS = new Set(['valid', 'coverage-gap'])
+
+// The files in the pinned diff, `git diff --name-only base head` in the review worktree, or null
+// when the list can't be read.
+function pinnedDiff(record) {
+  if (typeof record.reviewWorktree !== 'string') return null
+  const diff = git(record.reviewWorktree, ['diff', '--no-ext-diff', '--name-only', '-z', record.baseSha, record.headSha])
+  return diff.ok ? diff.stdout.split('\0').filter(Boolean) : null
 }
 
-function treeReasons(record, envelope) {
+// The files in the diff that the coverage (read, partial and unopened together) doesn't cover.
+// An entry is first made a path relative to the review worktree, so `./a`, `a` and `<worktree>/a`
+// are one file. It covers diff path P when it is P, or when it is P, a space, and a note in
+// parentheses. An exact match wins, and otherwise only the longest such P is covered, so
+// `a (b).md` is that file, `a (b).md (n)` covers it, and neither covers a diffed `a`.
+function uncovered(envelope, worktree, files) {
+  const inDiff = new Set(files)
+  const seen = new Set()
+  for (const entry of ['read', 'partial', 'unopened'].flatMap((key) => envelope?.coverage?.[key] ?? [])) {
+    if (typeof entry !== 'string') continue
+    const path = (isAbsolute(entry) && inside(worktree, entry) ? relative(worktree, entry) : entry).replace(/^(?:\.\/)+/, '').split(sep).join('/')
+    if (inDiff.has(path)) { seen.add(path); continue }
+    if (!path.endsWith(')')) continue
+    let longest = null
+    for (const file of files) {
+      if (path.startsWith(`${file} (`) && (longest === null || file.length > longest.length)) longest = file
+    }
+    if (longest !== null) seen.add(longest)
+  }
+  return files.filter((file) => !seen.has(file))
+}
+
+// The reasons a review's trees read tree-moved. With an envelope to check coverage against, a
+// diff list that can't be read is one too, since the coverage can't be checked without it.
+function treeReasons(record, envelope, files) {
   const reasons = []
   const at = record.reviewWorktree
   const head = typeof at === 'string' ? gitLine(at, ['rev-parse', '--verify', 'HEAD']) : null
@@ -798,15 +828,7 @@ function treeReasons(record, envelope) {
       }
     }
   }
-  if (envelope && typeof at === 'string') {
-    const diff = git(at, ['diff', '--no-ext-diff', '--name-only', '-z', record.baseSha, record.headSha])
-    if (!diff.ok) reasons.push('the pinned diff\'s file list could not be read')
-    else {
-      const seen = covered(envelope, at)
-      const missing = diff.stdout.split('\0').filter(Boolean).filter((file) => !seen.has(file))
-      if (missing.length > 0) reasons.push(`the coverage misses ${missing.length} file(s) in the pinned diff: ${missing.slice(0, 10).join(', ')}`)
-    }
-  }
+  if (envelope && typeof at === 'string' && files === null) reasons.push('the pinned diff\'s file list could not be read')
   return reasons
 }
 
@@ -872,8 +894,13 @@ function judge(id, loaded) {
   }
   if (mismatches.length > 0) return { verdict: 'model-mismatch', reasons: mismatches, facts }
   if (record.access === 'review') {
-    const reasons = treeReasons(record, envelope)
+    const files = envelope ? pinnedDiff(record) : null
+    const reasons = treeReasons(record, envelope, files)
     if (reasons.length > 0) return { verdict: 'tree-moved', reasons, facts }
+    // Every missed path is its own reason, uncapped, because the parent scopes the next review
+    // from that list.
+    const missing = files === null ? [] : uncovered(envelope, record.reviewWorktree, files)
+    if (missing.length > 0) return { verdict: 'coverage-gap', reasons: [`the coverage misses ${missing.length} file(s) in the pinned diff`, ...missing], facts }
   }
   if (state.outcome === 'capped') return { verdict: 'capped', reasons: [`turn ${state.turn} was blocked ${facts.blocks} times and then let stop`], facts }
   if (state.outcome === 'blocked') return { verdict: 'invalid', reasons: [`turn ${state.turn}'s last final message failed the envelope or the schema`], facts }
@@ -935,7 +962,7 @@ function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
     : Array.isArray(recorded.reasons) ? [...recorded.reasons] : []
   let result = null
   if ((now?.sha256 ?? null) !== pinned) reasons.push('result-changed-after-close')
-  else if (recorded.verdict === 'valid') result = now?.body?.envelope ?? null
+  else if (RESULTS.has(recorded.verdict)) result = now?.body?.envelope ?? null
   return {
     ok: true, id, verdict: recorded.verdict, reasons, turn, result,
     servedModels: Array.isArray(recorded.servedModels) ? recorded.servedModels : [],
@@ -945,16 +972,16 @@ function onRecord(id, recorded, bound = store.readStamp(id, 'bound') !== null) {
 }
 
 // A later close's output once the stamp is on record: onRecord's, unless the stamp certified a
-// valid verdict that this close's task status or the seat's hooks now contradict. A latest run
-// other than the one the stamp judged (a stamp written before close recorded runId reads as another
-// run), or the same run with text other than the message the stamp judged, is stale-turn, and a
-// changed plugin root is hooks-changed: the verdict is unknown, with those reasons, no result and
+// valid or coverage-gap verdict that this close's task status or the seat's hooks now contradict.
+// A latest run other than the one the stamp judged (a stamp written before close recorded runId
+// reads as another run), or the same run with text other than the message the stamp judged, is
+// stale-turn, and a changed plugin root is hooks-changed: the verdict is unknown, with those reasons, no result and
 // what the stamp recorded beside them. The stamp is never rewritten, so a later close never
 // certifies a run the stamp did not judge. A stamp that certified nothing prints as it is, and
 // judge's tree checks never run again here, since the first close removed the review worktree.
 function repeated(id, recorded, run, record) {
   const shown = onRecord(id, recorded)
-  if (recorded.verdict !== 'valid' || recorded.abandoned === true) return shown
+  if (!RESULTS.has(recorded.verdict) || recorded.abandoned === true) return shown
   const reasons = []
   if (run.latestRunId !== recorded.runId || store.textDigest(run.latestText) !== recorded.messageSha256) reasons.push('stale-turn')
   if (hooksChanged(record)) reasons.push('hooks-changed')
@@ -1073,9 +1100,10 @@ function hooksChanged(record) {
   return first.digest === undefined || first.digest !== record.codexPluginDigest || second.digest !== first.digest
 }
 
-// Why a seat judge read valid is not proven to have answered T3's latest finished run under its
-// hooks, as reasons in this order, none when it is. T3's text is negative evidence only: it can
-// turn a valid into unknown, and the answer still comes from the result Stop wrote. stale-turn:
+// Why a seat judge read valid or coverage-gap is not proven to have answered T3's latest finished
+// run under its hooks, as reasons in this order, none when it is. T3's text is negative evidence
+// only: it can turn either into unknown, and the answer still comes from the result Stop wrote.
+// stale-turn:
 // the latest run left no text, its text is not byte for byte the final message Stop recorded, or it
 // is a later run than the child's while no follow-up prompt is on record. hooks-changed: see
 // hooksChanged.
@@ -1108,14 +1136,14 @@ function close(argv) {
 
   const loaded = store.readRecord(id)
   const judged = judge(id, loaded)
-  // Only a valid verdict is checked against T3's latest run, so every other verdict keeps its
-  // precedence, and the check can only turn a valid into unknown.
-  const doubts = judged.verdict === 'valid' ? freshness(judged.facts, run, loaded.record) : []
+  // Only a verdict with a result is checked against T3's latest run, so every other verdict keeps
+  // its precedence, and the check can only turn valid or coverage-gap into unknown.
+  const doubts = RESULTS.has(judged.verdict) ? freshness(judged.facts, run, loaded.record) : []
   const { verdict, reasons } = doubts.length > 0 ? { verdict: 'unknown', reasons: doubts } : judged
   const { facts } = judged
   const { turn, resultSha256, servedModels, blocks, errors, messageSha256 } = facts
   const closed = { verdict, reasons, taskStatus, runId: run.latestRunId, turn, resultSha256, messageSha256, servedModels, blocks, errors }
-  let out = { ok: true, id, verdict, reasons, turn, result: verdict === 'valid' ? facts.envelope : null, servedModels, blocks, errors }
+  let out = { ok: true, id, verdict, reasons, turn, result: RESULTS.has(verdict) ? facts.envelope : null, servedModels, blocks, errors }
   if (!store.stamp(id, 'closed', closed)) {
     // An earlier or racing close holds the stamp, and its record stands; or the record directory
     // is gone, and nothing can be recorded.

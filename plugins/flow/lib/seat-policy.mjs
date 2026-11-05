@@ -796,7 +796,7 @@ export function seatContext(record, schema = null, schemaPath = null) {
     '',
     'Your final message is one JSON object in the flow envelope and nothing else, alone or as the whole of one fenced block:',
     envelopeFor(record.access),
-    'coverage lists the files you read whole, read in part and left unopened, and the checks you ran. A stop hook checks the message and returns any problem to you to fix.',
+    'coverage lists the files you read whole, read in part and left unopened, and the checks you ran. Name each file by its path in the worktree, one entry per file, with any note after the path in parentheses, as `src/a.rs (changed hunks only)`; a review accounts for every file in its diff. A stop hook checks the message and returns any problem to you to fix.',
   )
   if (record.access === 'workspace-write') lines.push('commits lists every commit you made, each with its full SHA.')
   if (schema === null) {

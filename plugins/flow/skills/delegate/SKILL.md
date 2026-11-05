@@ -149,6 +149,7 @@ Act on the verdict alone:
 | Verdict | Do this |
 |---|---|
 | `valid` | Use the envelope. A writer's envelope is still a claim, so check its commits against git. |
+| `coverage-gap` | The hooks held the review, but its coverage misses files in the diff, and `reasons` lists them. Use its findings, and never count the missed files as reviewed. Open one more review seat on the same head, scoped to the missed files. A second gap on those files goes up a rung. It isn't a fallback. |
 | `invalid`, `capped` | The hooks worked, but the final message failed the envelope or the schema. Rerun once with the errors on the same rung, then go up a rung. |
 | `model-mismatch` | The wrong model served it. Discard the answer. It isn't a refusal, so the refusal rule doesn't count it. |
 | `unknown`, `tree-moved` | Nothing proves the hooks held the seat. Fall back. |

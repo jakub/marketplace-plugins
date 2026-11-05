@@ -3266,15 +3266,11 @@ const cases = {
     rmSync(join(canon, 'stray.txt'))
     assert.equal(canonOut.verdict, 'tree-moved')
     assert.ok(canonOut.reasons.some((reason) => /canonical checkout changed/.test(reason)), JSON.stringify(canonOut.reasons))
-    const partial = reviewSeat(covering({ coverage: { read: ['a.txt'], partial: [], unopened: [], checksRun: [] } }))
-    const partialOut = closeReview(partial)
-    assert.equal(partialOut.verdict, 'tree-moved')
-    assert.ok(partialOut.reasons.some((reason) => /coverage misses 1 file\(s\) in the pinned diff: c\.txt/.test(reason)), JSON.stringify(partialOut.reasons))
     assert.equal(closeReview(reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })).verdict, 'capped', 'a capped review with no envelope is not judged on coverage')
     const cappedMoved = reviewSeat(covering(), { outcome: 'capped', blocks: 3, errors: ['$: x'] })
     writeFileSync(join(store.readRecord(cappedMoved.id).record.reviewWorktree, 'scratch.txt'), 'x')
     assert.equal(closeReview(cappedMoved).verdict, 'tree-moved', 'tree-moved outranks capped')
-    ok('tree-moved: the review worktree\'s HEAD moved, it is dirty, the canonical checkout changed, or the coverage misses a diffed file; it outranks capped')
+    ok('tree-moved: the review worktree\'s HEAD moved, it is dirty, or the canonical checkout changed; it outranks capped')
 
     // The canonical checkout's HEAD is part of what a review pins: a detach or a commit that leaves
     // the tree as it was still moves it.
@@ -3489,6 +3485,80 @@ process.exit(255)
     assert.ok(plainOut.cleanupProblems?.length > 0, JSON.stringify(plainOut))
     rmSync(plainPath, { recursive: true })
     ok('close removes a review worktree only while its path, its admin directory and git\'s worktree list all still match what open recorded, and otherwise leaves the path alone and reports it in cleanupProblems')
+  },
+
+  'close-coverage-gap': () => {
+    // A repository of its own whose pinned diff holds `a`, `a (b).md`, `src/x.rs` and twelve
+    // more files, so a name with a parenthesized part and a gap past ten paths can both be read.
+    const repo = gitWorktree('coverage-gap')
+    writeFileSync(join(repo, 'README'), 'r\n')
+    gitOut(repo, 'add', '-A')
+    gitOut(repo, 'commit', '-q', '-m', 'base')
+    const base = gitOut(repo, 'rev-parse', 'HEAD')
+    const MANY = Array.from({ length: 12 }, (_, at) => `many/${String(at).padStart(2, '0')}.txt`)
+    mkdirSync(join(repo, 'src'))
+    mkdirSync(join(repo, 'many'))
+    for (const file of ['a', 'a (b).md', 'src/x.rs', ...MANY]) writeFileSync(join(repo, file), `${file}\n`)
+    gitOut(repo, 'add', '-A')
+    gitOut(repo, 'commit', '-q', '-m', 'head')
+    const head = gitOut(repo, 'rev-parse', 'HEAD')
+    const envelopeOf = (read, partial = []) => ({ ...ENVELOPE_OK, answer: { findings: [] }, coverage: { read, partial, unopened: [], checksRun: [] } })
+    const reviewSeat = (envelope, fields = {}) => {
+      const opened = seatCli(['open', '--access', 'review', '--provider', 'claude', '--model', 'claude-opus-5-5', '--effort', 'high', '--base', base, '--head', head], { cwd: repo })
+      assert.equal(opened.ok, true, JSON.stringify(opened))
+      return hookedSeat({ id: opened.id, envelope, ...fields })
+    }
+    const closeReview = (seat, fields = {}) => closeSeat(seat.id, taskStatusOf(seat.id, { summary: seat.message, ...fields }))
+    const gapOf = (missing) => [`the coverage misses ${missing.length} file(s) in the pinned diff`, ...missing]
+
+    const notes = closeReview(reviewSeat(envelopeOf(['a (b).md', ...MANY], ['src/x.rs (all changed hunks and surrounding evaluation paths)', 'a (whole file)'])))
+    assert.deepEqual([notes.verdict, notes.reasons], ['valid', []], JSON.stringify(notes))
+    ok('a review whose partial entries are written `path (note)` covers those paths and closes valid')
+
+    const gapEnvelope = envelopeOf(['a', 'a (b).md', ...MANY])
+    const gap = reviewSeat(gapEnvelope)
+    const gapPath = store.readRecord(gap.id).record.reviewWorktree
+    const gapOut = closeReview(gap)
+    assert.equal(gapOut.verdict, 'coverage-gap', JSON.stringify(gapOut))
+    assert.deepEqual(gapOut.reasons, gapOf(['src/x.rs']))
+    assert.deepEqual(gapOut.result, gapEnvelope, 'a coverage-gap close returns the envelope as its result')
+    assert.equal(store.readStamp(gap.id, 'closed').verdict, 'coverage-gap')
+    assert.equal(existsSync(gapPath), false, 'close removed the coverage-gap review worktree')
+    ok('a review missing one diffed file closes coverage-gap, with the envelope as result and the path in reasons')
+
+    const wide = closeReview(reviewSeat(envelopeOf(['a'])))
+    assert.equal(wide.verdict, 'coverage-gap', JSON.stringify(wide))
+    assert.deepEqual(wide.reasons, gapOf(['a (b).md', ...MANY, 'src/x.rs'].sort()), 'the reasons list every missed path, past ten')
+    ok('a coverage-gap lists one count reason, then every missed path, with no cap at ten')
+
+    const exact = closeReview(reviewSeat(envelopeOf(['src/x.rs', ...MANY], ['a (b).md'])))
+    assert.deepEqual([exact.verdict, exact.reasons], ['coverage-gap', gapOf(['a'])], JSON.stringify(exact))
+    const noted = closeReview(reviewSeat(envelopeOf(['src/x.rs', ...MANY], ['a (b).md (n)'])))
+    assert.deepEqual([noted.verdict, noted.reasons], ['coverage-gap', gapOf(['a'])], JSON.stringify(noted))
+    const both = closeReview(reviewSeat(envelopeOf(['a', 'src/x.rs', ...MANY], ['a (b).md (n)'])))
+    assert.deepEqual([both.verdict, both.reasons], ['valid', []], JSON.stringify(both))
+    ok('`a (b).md` matches itself exactly and `a (b).md (n)` covers it, and neither covers a diffed `a`')
+
+    const dirty = reviewSeat(gapEnvelope)
+    writeFileSync(join(store.readRecord(dirty.id).record.reviewWorktree, 'scratch.txt'), 'x')
+    const dirtyOut = closeReview(dirty)
+    assert.deepEqual([dirtyOut.verdict, dirtyOut.reasons, dirtyOut.result], ['tree-moved', ['the review worktree is dirty'], null], JSON.stringify(dirtyOut))
+    ok('a coverage gap with a dirty review worktree closes tree-moved, from the tree reason alone')
+
+    const stale = reviewSeat(gapEnvelope)
+    const staleOut = closeReview(stale, { summary: 'the run said something else' })
+    assert.deepEqual([staleOut.verdict, staleOut.reasons, staleOut.result], ['unknown', ['stale-turn'], null], JSON.stringify(staleOut))
+    assert.equal(store.readStamp(stale.id, 'closed').verdict, 'unknown')
+    ok('a coverage gap whose T3 text is not the message Stop recorded closes unknown with stale-turn and a null result')
+
+    const again = closeReview(gap)
+    assert.deepEqual([again.verdict, again.reasons, again.result], ['coverage-gap', gapOf(['src/x.rs']), gapEnvelope], JSON.stringify(again))
+    assert.equal(again.recorded, undefined)
+    const thread = childThreadOf(gap.id)
+    const later = closeSeat(gap.id, taskStatusOf(gap.id, { summary: gap.message, latestTerminalRunId: runIdOf(thread, 2), latestTerminalSummary: gap.message }))
+    assert.deepEqual([later.verdict, later.reasons, later.result, later.recorded], ['unknown', ['stale-turn'], null, { verdict: 'coverage-gap', turn: 1 }], JSON.stringify(later))
+    assert.equal(store.readStamp(gap.id, 'closed').verdict, 'coverage-gap', 'a repeated close rewrote the stamp')
+    ok('a repeated close of a coverage-gap seat returns its result, and a later run on the same seat reads stale-turn with the stamp on record')
   },
 
   'close-rerun': () => {
