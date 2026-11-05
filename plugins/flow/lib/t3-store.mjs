@@ -12,7 +12,8 @@
 //
 // What is read (T3 0.1.6, migration 76), every column checked with pragma table_info inside the
 // transaction before any query; a missing table or column is T3_STORE (schema), naming it:
-//   orchestration_v2_projection_subagents  subagent_id, thread_id, child_thread_id, status
+//   orchestration_v2_projection_subagents  subagent_id, thread_id, child_thread_id, status,
+//                                          payload_json (prompt)
 //   orchestration_v2_projection_runs       run_id, thread_id, ordinal, status, payload_json (startedAt)
 //   orchestration_v2_projection_messages   message_id, run_id, role, created_at, updated_at,
 //                                          payload_json (text)
@@ -25,7 +26,12 @@
 // narrows the candidates to the command%3Amcp%3A range of the primary key ending in the exact
 // suffix, and the grammar decides in JS. LIKE is no identity test here: it reads the % of %3A as a
 // wildcard and ignores case, and thread-send and provider-continuation rows carry flow-seat-<id>
-// too. No row fits: TASK_NOT_FOUND. The checks run in this order, each over every row that fits:
+// too. A row also fits only when its payload.prompt has the seat tag alone on line 1, as the one
+// call the delegate_task gate admits does (T3 0.1.6 stores the prompt unchanged for role general).
+// Another call can reuse the seat's clientRequestId, from a session where the gate never runs, and
+// T3 names its row in the same grammar; without the tag it is not the seat's. A payload that is no
+// object, or whose prompt is not a string, is T3_STORE (value). No row fits: TASK_NOT_FOUND. The
+// checks run in this order, each over every row that fits:
 //   - its status is one T3 writes (idle pending running waiting completed failed cancelled
 //     interrupted) and one of the last four, or it is TASK_NOT_TERMINAL; this comes before the
 //     child thread, which a task that has not started has none of;
@@ -56,7 +62,7 @@ import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { textDigest } from './seat-store.mjs'
+import { seatTag, textDigest } from './seat-store.mjs'
 
 const BUSY_MS = 2_000
 const SUBAGENTS = 'orchestration_v2_projection_subagents'
@@ -64,7 +70,7 @@ const RUNS = 'orchestration_v2_projection_runs'
 const MESSAGES = 'orchestration_v2_projection_messages'
 const MIGRATIONS = 'effect_sql_migrations'
 const COLUMNS = {
-  [SUBAGENTS]: ['subagent_id', 'thread_id', 'child_thread_id', 'status'],
+  [SUBAGENTS]: ['subagent_id', 'thread_id', 'child_thread_id', 'status', 'payload_json'],
   [RUNS]: ['run_id', 'thread_id', 'ordinal', 'status', 'payload_json'],
   [MESSAGES]: ['message_id', 'run_id', 'role', 'created_at', 'updated_at', 'payload_json'],
   [MIGRATIONS]: ['migration_id'],
@@ -187,8 +193,14 @@ function snapshot(db, id) {
   if (missing.length > 0) refuse('T3_STORE', `T3's store lacks ${missing.join(', ')}, so T3 changed its store and this flow can't read it. ${FALL_BACK}`, { cause: 'schema', missing })
   const suffix = `%3Adelegate-task%3Aflow-seat-${id}`
   const grammar = new RegExp(`^${TASK_RANGE[0]}${UUID}${suffix}$`)
-  const rows = db.prepare(`select subagent_id, thread_id, child_thread_id, status from ${SUBAGENTS} where subagent_id >= ? and subagent_id < ? and substr(subagent_id, ?) = ? order by subagent_id`)
-    .all(...TASK_RANGE, -suffix.length, suffix).filter((row) => typeof row.subagent_id === 'string' && grammar.test(row.subagent_id))
+  const tag = seatTag(id)
+  const tagged = (row) => {
+    const { prompt } = payloadOf(row.payload_json, 'a task')
+    if (typeof prompt !== 'string') unreadable('a task whose prompt is not a string')
+    return prompt.split('\n', 1)[0] === tag
+  }
+  const rows = db.prepare(`select subagent_id, thread_id, child_thread_id, status, payload_json from ${SUBAGENTS} where subagent_id >= ? and subagent_id < ? and substr(subagent_id, ?) = ? order by subagent_id`)
+    .all(...TASK_RANGE, -suffix.length, suffix).filter((row) => typeof row.subagent_id === 'string' && grammar.test(row.subagent_id) && tagged(row))
   if (rows.length === 0) {
     refuse('TASK_NOT_FOUND', 'T3\'s store holds no delegate_task task for this seat, so close wrote nothing. If the seat\'s delegate_task call errored or returned no taskId, close it with --abandon; otherwise check that T3CODE_HOME names the home of the T3 server that ran the seat.')
   }

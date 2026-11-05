@@ -401,10 +401,11 @@ const childThreadOf = (id, session = T3_SESSION) => `thread:delegated-task:comma
 // and the run's ordinal.
 const runIdOf = (thread, ordinal) => `run:thread:${encodeURIComponent(thread)}:ordinal:${ordinal}`
 // One row as T3 writes it, with only what a case varies as options. A task row's owner is the
-// thread that made the call, and a nested task's owner is the child thread it runs under.
+// thread that made the call, and a nested task's owner is the child thread it runs under. Its
+// prompt is the seat call's, the seat tag alone on line 1, unless payload names another.
 function t3TaskRow(id, { db = t3, session = T3_SESSION, taskId = taskIdOf(id, session), owner = T3_OWNER, child = childThreadOf(id, session), status = 'completed', payload = {} } = {}) {
   db.prepare('insert into orchestration_v2_projection_subagents (subagent_id, thread_id, run_id, parent_node_id, provider, child_thread_id, origin, status, updated_at, payload_json, driver, provider_instance_id) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(taskId, owner, `run:thread:${owner}:ordinal:1`, `node:run:${owner}:root`, 'claudeAgent', child, 'app_owned', status, t3Time(), JSON.stringify({ id: taskId, threadId: owner, childThreadId: child, status, ...payload }), 'claudeAgent', 'claudeAgent')
+    .run(taskId, owner, `run:thread:${owner}:ordinal:1`, `node:run:${owner}:root`, 'claudeAgent', child, 'app_owned', status, t3Time(), JSON.stringify({ id: taskId, threadId: owner, childThreadId: child, status, prompt: `${store.seatTag(id)}\nReview the diff.`, ...payload }), 'claudeAgent', 'claudeAgent')
   return taskId
 }
 function t3RunRow(thread, ordinal, { db = t3, status = 'completed', startedAt = t3Time(), runId = runIdOf(thread, ordinal), payloadJson = null } = {}) {
@@ -4303,6 +4304,28 @@ process.exit(255)
     }
     assert.equal(existsSync(both.holder), false, 'an ambiguous close kept the writer\'s holder')
     ok('two rows that fit, one still running, refuse TASK_NOT_TERMINAL; two finished ones close unknown (task-ambiguous) above valid, model-mismatch and another unknown, stamp both task ids and no run, and release the writer\'s holder')
+
+    // An exact-grammar row another call made by reusing the seat's clientRequestId from a session
+    // the gate never saw: its prompt lacks the tag on line 1, so it is never the seat's, running or
+    // finished, alone or beside the real row.
+    const untagged = [['no tag', 'Review the diff.'], ['the tag on line 2', `Review the diff.\n${store.seatTag('0'.repeat(32))}`], ['the tag after text on line 1', `x${store.seatTag('0'.repeat(32))}`]]
+    const reused = writerSeat('close-store-identity-reused')
+    const plantReused = (status) => {
+      for (const [n, [, prompt]] of untagged.entries()) {
+        const session = `d0d0d0d0-0000-4000-8000-00000000000${n}`
+        t3TaskRow(reused.id, { session, status, payload: { prompt: prompt.replace('0'.repeat(32), reused.id) } })
+        const thread = childThreadOf(reused.id, session)
+        t3MessageRow(thread, t3RunRow(thread, 1), reused.message)
+      }
+    }
+    t3Forget(reused.id)
+    plantReused('completed')
+    refusedClose(reused, 'TASK_NOT_FOUND', 'reused clientRequestId rows alone')
+    const real = t3Seat(reused.id, [{ texts: [reused.message] }])
+    plantReused('running')
+    const reusedOut = seatCli(['close', reused.id])
+    assert.deepEqual([reusedOut.verdict, store.readStamp(reused.id, 'closed').task.taskId], ['valid', real.taskId], JSON.stringify(reusedOut))
+    ok(`an exact-grammar row whose prompt has ${untagged.map(([what]) => what).join(', ')} is not the seat's: alone, finished, close refuses TASK_NOT_FOUND, and running beside the real row it neither blocks nor makes the close ambiguous`)
   },
 
   'close-store-refusals': () => {
@@ -4345,6 +4368,11 @@ process.exit(255)
         ['a run payload that is no JSON', run({ payloadJson: '{"startedAt":' })],
         ['a run payload that is no object', run({ payloadJson: '[]' })],
         ['a message payload that is no object', run({}, { payloadJson: 'null' })],
+        ['a task payload that is no object', () => {
+          t3Seat(seat.id, [{ texts: [seat.message] }])
+          t3.prepare('update orchestration_v2_projection_subagents set payload_json = ? where subagent_id = ?').run('[]', taskIdOf(seat.id))
+        }],
+        ['a task prompt that is no string', () => t3Seat(seat.id, [{ texts: [seat.message] }], { payload: { prompt: 7 } })],
         ['a message payload with no text', run({}, { payloadJson: JSON.stringify({ role: 'assistant' }) })],
         ['a message text that is no string', run({}, { payloadJson: JSON.stringify({ role: 'assistant', text: 7 }) })],
         ['a message time with other precision', run({}, { at: '2026-11-04T12:00:00Z' })],
