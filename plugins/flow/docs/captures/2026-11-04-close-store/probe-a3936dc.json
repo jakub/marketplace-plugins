@@ -49,10 +49,9 @@
     "errors": []
   },
   "closedStamp": {
+    "at": "2026-11-05T14:23:37.232Z",
     "verdict": "valid",
     "reasons": [],
-    "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Aaea25311-0f51-4293-b134-a91d0a78e8e0%253Adelegate-task%253Aflow-seat-98d608cd617f634cb9af7eb5a7dbc3ca:ordinal:1",
-    "messageSha256": "0f9cb7446ae710d357bb3c8b1098d4427ee41bdd9da517dcd2b49ad0f8b9c96a",
     "task": {
       "taskId": "node:delegated-task:command%3Amcp%3Aaea25311-0f51-4293-b134-a91d0a78e8e0%3Adelegate-task%3Aflow-seat-98d608cd617f634cb9af7eb5a7dbc3ca",
       "ownerThreadId": "790cb7fd-de35-4fcb-9885-690333bec8d2",
@@ -65,9 +64,18 @@
       "closerThreadId": "thread:delegated-task:command%3Amcp%3Aaea25311-0f51-4293-b134-a91d0a78e8e0%3Adelegate-task%3A13a106e2-bff1-40af-bcac-9d53d8fb0a24",
       "t3Migration": 76
     },
-    "hasTaskStatus": false
+    "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Aaea25311-0f51-4293-b134-a91d0a78e8e0%253Adelegate-task%253Aflow-seat-98d608cd617f634cb9af7eb5a7dbc3ca:ordinal:1",
+    "turn": 1,
+    "resultSha256": "809801c445c41386f9a686a04526057ecf9a3016e558ce2d94220c8c5adaa6d7",
+    "messageSha256": "0f9cb7446ae710d357bb3c8b1098d4427ee41bdd9da517dcd2b49ad0f8b9c96a",
+    "servedModels": [
+      "claude-sonnet-5-5"
+    ],
+    "blocks": 0,
+    "errors": []
   },
   "stopMessageSha256": "0f9cb7446ae710d357bb3c8b1098d4427ee41bdd9da517dcd2b49ad0f8b9c96a",
+  "derived": "checks are computed from closedStamp and the seat turn state: closerIsNotOwner compares closedStamp.task.closerThreadId with task.ownerThreadId, latestTextMatchesStop compares task.latestTextSha256 with stopMessageSha256 (the turn state messageSha256 the Stop hook wrote), noPastedStatusStored is closedStamp having no taskStatus key, and stampVerdictValid is closedStamp.verdict",
   "checks": {
     "closerIsNotOwner": true,
     "latestTextMatchesStop": true,
