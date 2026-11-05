@@ -4207,6 +4207,21 @@ process.exit(255)
     await moved('a run started and completed while close judged', { status: 'completed' }, /changed while close judged/)
     ok('a follow-up run T3 adds while close judges, running or already completed, makes close refuse TASK_NOT_TERMINAL at its second read, writing nothing and keeping the lease holder')
 
+    // A follow-up the hooks open while close judges, before T3 projects its run row: the store holds
+    // still, and only the turn state the prompt hook wrote moves.
+    const hooked = guardedSeat()
+    t3Status(hooked.id)
+    const gate = join(tmp, 'close-store-moved-hooked')
+    const held = await heldAt([SEAT_SCRIPT, 'close', hooked.id], gate, 'reread')
+    hooked.followUp()
+    writeFileSync(`${gate}.go`, '')
+    const hookedClose = await held.done
+    const hookedOut = JSON.parse(hookedClose.out)
+    assert.deepEqual([hookedClose.code === 0, hookedOut.error?.kind], [false, 'TASK_NOT_TERMINAL'], hookedClose.out)
+    assert.match(hookedOut.error.message, /changed while close judged/)
+    assert.equal(store.readStamp(hooked.id, 'closed'), null, 'the hooked follow-up close stamped the seat closed')
+    ok('a follow-up prompt the hooks record while close judges, with T3\'s rows unchanged, makes close refuse TASK_NOT_TERMINAL and stamp nothing')
+
     t3Seat(seat.id, [{ texts: [seat.message] }])
     const out = seatCli(['close', seat.id])
     assert.deepEqual([out.verdict, existsSync(seat.holder)], ['valid', false], JSON.stringify(out))

@@ -170,7 +170,7 @@ No refusal writes anything. A writer keeps its lease and a review keeps its work
 | Kind | Meaning | Action |
 |---|---|---|
 | `TASK_NOT_FOUND` | No task row in the store fits the seat's task-id grammar. | If `delegate_task` errored or never returned a `taskId`, close with `--abandon`. Otherwise check that `T3CODE_HOME` names the home of the T3 server that ran the seat. |
-| `TASK_NOT_TERMINAL` | The task, a run in its child thread, or a task it started is not finished, or the task changed while `close` judged the seat. `close` reads the store again just before it stamps. | T3 can wake you a moment before its rows settle, so retry up to 3 times with backoff. |
+| `TASK_NOT_TERMINAL` | The task, a run in its child thread, or a task it started is not finished, or the task or the seat's turn state changed while `close` judged the seat. `close` reads both again just before it stamps. | T3 can wake you a moment before its rows settle, so retry up to 3 times with backoff. |
 | `T3_STORE_BUSY` | A writer held the store past the 2 s busy timeout (`SQLITE_BUSY` or `SQLITE_LOCKED`). `details.code` is the SQLite code. | Retry up to 3 times with backoff, then treat it as `T3_STORE`. |
 | `T3_STORE` | This flow can't read the store. `details.cause` is `missing` (no file, a relative `T3CODE_HOME`, or an open that failed), `schema` (a table or column is gone, named in `details.missing`), or `value` (a status, run id, time or `payload_json` this flow doesn't read, or an integer past JavaScript's safe range). | T3 changed under flow. Fall back on the work, and leave the seat open until flow is fixed. |
 
@@ -200,7 +200,7 @@ A refusal's message carries the SQLite error code, never SQLite's text or a path
 - **The latest run's text.** It is the text of the latest run's newest assistant message in T3's store, as "T3's store" below says. A later run that didn't complete has no text. `close` compares raw bytes, with nothing trimmed and no fence stripped.
 - **The ordinal.** A latest ordinal above the child's with no later prompt on record is `stale-turn` too. An ordinal is never a turn count: a failed run takes one and leaves no Stop, and a steer adds no run.
 - **The plugin root.** `close` scans a Codex seat's recorded root twice. A root that is gone, a digest unlike the one `open` recorded, or two scans that differ read `hooks-changed`. A Codex record from an older flow has no root and closes without the check. A Claude seat never has it.
-- **Two known gaps.** A later run whose hooks were dark and whose text is byte-identical to the recorded message passes when an earlier follow-up or steer already recorded a prompt. A plugin change restored byte for byte before `close` passes, because the scan sees only the end state.
+- **Three known gaps.** A later run whose hooks were dark and whose text is byte-identical to the recorded message passes when an earlier follow-up or steer already recorded a prompt. A plugin change restored byte for byte before `close` passes, because the scan sees only the end state. A follow-up whose prompt hook fires in the instant between `close`'s last re-read and its stamp isn't seen, and a tool call allowed before the stamp can still run after it. Don't send a seat new work while you close it.
 
 A seat that made no tool call has no `receipt`, so it reads `unknown`. On Codex, the served-model check covers the model the hooks saw at UserPromptSubmit and at Stop. On Claude, it reads every model the transcript records for the seat's own turns.
 
