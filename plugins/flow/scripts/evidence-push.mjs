@@ -48,6 +48,7 @@
 // stderr, exit 2.
 
 import { closeSync, constants, fstatSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -59,7 +60,7 @@ import { originUrl as originOfOneUrl, pushStatus, readRef } from './issue-claim.
 
 const BRANCH = 'flow-evidence'
 const REF = `refs/heads/${BRANCH}`
-const TRACKING = `refs/remotes/origin/${BRANCH}`
+const SCRATCH_REFS = 'refs/flow-evidence-push'
 const EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
 const MAX_BYTES = 10 * 1024 * 1024
 const ATTEMPTS = 3
@@ -150,13 +151,28 @@ function run({ repoArg, pr, files, env, scratch }) {
   })
   const message = `evidence: #${pr} ${blobs.map((b) => b.name).join(', ')}`
 
-  // origin's tip after a fetch, or null when origin has no flow-evidence.
+  // origin's tip after a fetch, or null when origin has no flow-evidence. The fetch lands in a ref
+  // this run alone owns, deleted once read: linked worktrees share refs, so a shared tracking ref
+  // could be rewound by a slower concurrent fetch between this run's fetch and its read. An empty
+  // --refmap stops git also updating origin's tracking ref from the configured fetch refspec.
   const fetchTip = () => {
     const listed = readRef(ctx, REF)
     if (listed.state === 'unknown') refuse(listed.detail)
     if (listed.state === 'absent') return null
-    must(['fetch', '--quiet', '--no-tags', 'origin', `+${REF}:${TRACKING}`], `git fetch origin ${BRANCH}`, { timeoutMs: 120_000 })
-    return must(['rev-parse', '--verify', '--quiet', `${TRACKING}^{commit}`], `reading ${TRACKING} after its fetch`)
+    const mine = `${SCRATCH_REFS}/${process.pid}-${randomBytes(6).toString('hex')}`
+    try {
+      must(['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--refmap=', 'origin', `+${REF}:${mine}`], `git fetch origin ${BRANCH}`, { timeoutMs: 120_000 })
+      return must(['rev-parse', '--verify', '--quiet', `${mine}^{commit}`], `reading ${BRANCH} after its fetch`)
+    } finally {
+      git(['update-ref', '-d', mine])
+    }
+  }
+  // Whether sha is reachable from tip: true, false, or null when git couldn't answer. rev-list
+  // prints the commits of sha not in tip, so an empty answer with exit 0 is the only proof, and any
+  // failure, a timeout included, stays unknown rather than reading as "not landed".
+  const reaches = (tip, sha) => {
+    const r = git(['rev-list', '--max-count=1', sha, '--not', tip])
+    return r.code === 0 ? r.stdout.trim() === '' : null
   }
   // Whether origin's flow-evidence holds sha. A refusal from the read carries sha and says the
   // outcome is unknown, because by then a push may have landed.
@@ -166,7 +182,10 @@ function run({ repoArg, pr, files, env, scratch }) {
       if (error instanceof Refusal) refuse(`${unknownReason}: ${error.reason}`, { commit: sha, landed: 'unknown' })
       throw error
     }
-    return { holds: tip !== null && git(['merge-base', '--is-ancestor', sha, tip]).code === 0, tip }
+    if (tip === null) return { holds: false, tip }
+    const holds = reaches(tip, sha)
+    if (holds === null) refuse(`${unknownReason}: git could not say whether ${tip.slice(0, 12)} contains ${sha.slice(0, 12)}`, { commit: sha, landed: 'unknown' })
+    return { holds, tip }
   }
   const build = (tip) => {
     const index = join(scratch, `index-${Date.now()}-${Math.random().toString(16).slice(2)}`)
