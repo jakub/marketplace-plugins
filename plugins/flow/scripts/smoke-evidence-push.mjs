@@ -7,7 +7,10 @@
 // `git` wrapper first on the executor's PATH records every git command it runs before handing it
 // to the real git, so each push's arguments can be checked for a force. The ssh shim can plant a
 // rival commit on flow-evidence the moment a push connects, after the executor's fetch and before
-// origin answers, which is exactly a concurrent run winning the race. GitHub is a fake `gh` that
+// origin answers, which is exactly a concurrent run winning the race. A reference-transaction hook
+// in origin can do the same just after origin commits this run's push, and can kill receive-pack
+// before it reports, so the push's answer is lost after it landed; and the shim can fail origin's
+// reads after a push, so a landed commit cannot be confirmed. GitHub is a fake `gh` that
 // answers from a JSON state file and the bare repository, records every call, and fails any call
 // not pinned to github.com/jakub/demo or made with GH_REPO or GH_HOST in its environment.
 //
@@ -43,13 +46,13 @@ const fail = (m, counted = true) => { if (counted) st.unpinned = (st.unpinned ||
 if (process.env.GH_REPO || process.env.GH_HOST) fail('GH_REPO or GH_HOST reached gh')
 const at = (flag) => argv[argv.indexOf(flag) + 1]
 if (argv[0] === 'repo' && argv[1] === 'view') {
-  if (argv[2] !== 'github.com/jakub/demo') fail('unpinned: ' + argv.join(' '))
+  if (argv[2] !== (st.host || 'github.com') + '/jakub/demo') fail('unpinned: ' + argv.join(' '))
   const fields = String(at('--json')).split(',')
   const all = { visibility: st.visibility, nameWithOwner: st.nameWithOwner || 'jakub/demo' }
   out(JSON.stringify(Object.fromEntries(fields.filter((f) => f in all).map((f) => [f, all[f]]))))
 }
 if (argv[0] === 'api') {
-  if (at('--hostname') !== 'github.com') fail('api off the pin: ' + argv.join(' '))
+  if (at('--hostname') !== (st.host || 'github.com')) fail('api off the pin: ' + argv.join(' '))
   const m = String(argv.find((a) => a.startsWith('repos/'))).match(/^repos\\/jakub\\/demo\\/contents\\/([^?]+)\\?ref=([0-9a-f]+)$/)
   if (!m || at('--jq') !== '.sha') fail('unexpected api ' + argv.join(' '))
   const path = m[1].split('/').map(decodeURIComponent).join('/')
@@ -77,13 +80,16 @@ const makeWorld = (state = {}) => {
   for (const d of [join(base, 'jakub'), bin]) mkdirSync(d, { recursive: true })
   const log = join(workspace, 'git.log')
   const race = join(workspace, 'race')
+  const failReads = join(workspace, 'fail-reads')
+  const hookMode = join(workspace, 'hook-mode')
   writeFileSync(log, '')
   writeFileSync(race, '0')
   // A rival run's commit on flow-evidence: origin's tree plus one file, parented on origin's tip.
   const rival = join(bin, 'rival.sh')
   writeFileSync(rival, `#!/bin/sh
 set -e
-export GIT_AUTHOR_NAME=rival GIT_AUTHOR_EMAIL=r@example.invalid GIT_COMMITTER_NAME=rival GIT_COMMITTER_EMAIL=r@example.invalid
+export GIT_AUTHOR_NAME=rival GIT_AUTHOR_EMAIL=r@example.invalid GIT_COMMITTER_NAME=rival GIT_COMMITTER_EMAIL=r@example.invalid SMOKE_RIVAL=1
+unset GIT_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH GIT_INDEX_FILE
 G="${REAL_GIT} --git-dir=${origin}"
 idx=${workspace}/rival.index
 rm -f "$idx"
@@ -103,12 +109,20 @@ cd ${base} || exit 1
 for a; do last=$a; done
 case "$last" in
   git-receive-pack*)
+    if [ -f ${failReads} ]; then : > ${workspace}/pushed; echo 0 > ${workspace}/reads; fi
     n=$(cat ${race})
     if [ "$n" -gt 0 ]; then echo $((n - 1)) > ${race}; ${rival} >/dev/null || exit 1; fi ;;
+  git-upload-pack*)
+    if [ -f ${workspace}/pushed ]; then
+      k=$(($(cat ${workspace}/reads) + 1)); echo $k > ${workspace}/reads
+      want=$(cat ${failReads})
+      if [ "$want" = all ] || [ "$want" = "$k" ]; then echo 'fatal: smoke: origin is unreachable' >&2; exit 1; fi
+    fi ;;
 esac
 exec /bin/sh -c "$last"
 `)
-  writeFileSync(join(bin, 'git'), `#!/bin/sh\n{ for a; do printf '%s\\037' "$a"; done; printf '\\n'; } >> ${log}\nexec ${REAL_GIT} "$@"\n`)
+  // Each push's exit code goes to push-exits, so a case can tell a lost answer from a clean one.
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\n{ for a; do printf '%s\\037' "$a"; done; printf '\\n'; } >> ${log}\n${REAL_GIT} "$@"\ns=$?\ncase " $* " in *" push "*) echo $s >> ${workspace}/push-exits ;; esac\nexit $s\n`)
   writeFileSync(join(bin, 'gh'), FAKE_GH)
   for (const f of [rival, ssh, join(bin, 'git'), join(bin, 'gh')]) chmodSync(f, 0o755)
   const env = { ...baseEnv, GIT_SSH_COMMAND: ssh, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: join(workspace, '.gh.json'), FAKE_REAL_GIT: REAL_GIT }
@@ -117,6 +131,20 @@ exec /bin/sh -c "$last"
   const og = (...args) => execFileSync(REAL_GIT, ['--git-dir', origin, ...args], { encoding: 'utf8', env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   execFileSync(REAL_GIT, ['init', '-q', '--bare', '-b', 'main', origin], { env: hostEnv })
   og('config', 'core.logAllRefUpdates', 'always')
+  // One-shot, armed by writing hook-mode: once origin commits an update to flow-evidence, `rival`
+  // fast-forwards a rival commit on top and `kill` kills receive-pack before it reports.
+  const hook = join(origin, 'hooks', 'reference-transaction')
+  writeFileSync(hook, `#!/bin/sh
+[ "$1" = committed ] || exit 0
+[ -z "$SMOKE_RIVAL" ] || exit 0
+[ -f ${hookMode} ] || exit 0
+grep -q ' refs/heads/flow-evidence$' || exit 0
+mode=$(cat ${hookMode}); rm -f ${hookMode}
+case "$mode" in *rival*) ${rival} >/dev/null 2>&1 ;; esac
+case "$mode" in *kill*) kill -9 $PPID ;; esac
+exit 0
+`)
+  chmodSync(hook, 0o755)
   execFileSync(REAL_GIT, ['init', '-q', '-b', 'main', repo], { env: hostEnv })
   git(repo, 'config', 'user.name', 'Configured User')
   git(repo, 'config', 'user.email', 'configured@example.invalid')
@@ -126,7 +154,7 @@ exec /bin/sh -c "$last"
   git(repo, 'remote', 'add', 'origin', 'git@github.com:jakub/demo.git')
   git(repo, 'push', '-q', '-u', 'origin', 'main')
   writeFileSync(env.FAKE_GH_STATE, JSON.stringify({ calls: [], contents: [], origin, visibility: 'PUBLIC', ...state }))
-  return { workspace, origin, repo, env, git, og, log, race }
+  return { workspace, origin, repo, env, git, og, log, race, failReads, hookMode }
 }
 
 const w = makeWorld()
@@ -137,6 +165,7 @@ const file = (rel, content = rel) => { const p = join(files, rel); writeFileSync
 const state = () => JSON.parse(readFileSync(w.env.FAKE_GH_STATE, 'utf8'))
 const setState = (patch) => writeFileSync(w.env.FAKE_GH_STATE, JSON.stringify({ ...state(), ...patch }))
 const gitLog = () => readFileSync(w.log, 'utf8').split('\n').filter(Boolean).map((l) => l.split('\x1f').slice(0, -1))
+const lastPushExit = () => Number(readFileSync(join(w.workspace, 'push-exits'), 'utf8').trim().split('\n').at(-1))
 const pushesIn = (lines) => lines.filter((args) => args.includes('push'))
 const tipOf = () => { try { return w.og('rev-parse', '--verify', '--quiet', 'refs/heads/flow-evidence') } catch { return null } }
 const blobAt = (rev, path) => { try { return w.og('rev-parse', '--verify', '--quiet', `${rev}:${path}`) } catch { return null } }
@@ -148,7 +177,7 @@ const run = (args, extra = {}) => {
   let json = null
   try { json = JSON.parse(r.stdout) } catch {}
   const st = state()
-  return { code: r.status, json, stderr: r.stderr, pushes: pushesIn(gitLog().slice(logBefore)), calls: st.calls.slice(callsBefore), contents: st.contents.slice(contentsBefore), st }
+  return { code: r.status, json, stdout: r.stdout, stderr: r.stderr, pushes: pushesIn(gitLog().slice(logBefore)), calls: st.calls.slice(callsBefore), contents: st.contents.slice(contentsBefore), st }
 }
 const push = (pr, paths, extra) => run([w.repo, '--pr', String(pr), ...paths], extra)
 const detail = (r) => `${r.code} ${JSON.stringify(r.json)} ${r.stderr}`
@@ -238,10 +267,86 @@ for (const visibility of ['PRIVATE', 'INTERNAL']) {
   setState({ visibility })
   const r = push(11, [file(`one/${visibility.toLowerCase()}.jpg`, visibility)])
   const c = r.json?.commit
-  const url = `https://github.com/jakub/demo/blob/${c}/pr-11/${visibility.toLowerCase()}.jpg?raw=true`
-  check(`${visibility}: a github.com blob URL with ?raw=true`, r.code === 0 && r.json?.files?.[0]?.url === url && r.json.files[0].markdown === `![${visibility.toLowerCase()}](${url})`, detail(r))
+  const url = `https://github.com/jakub/demo/raw/${c}/pr-11/${visibility.toLowerCase()}.jpg`
+  check(`${visibility}: a github.com /raw/ URL pinned to the commit`, r.code === 0 && r.json?.files?.[0]?.url === url && r.json.files[0].markdown === `![${visibility.toLowerCase()}](${url})`, detail(r))
 }
 setState({ visibility: 'PUBLIC' })
+
+console.log('an enterprise host allowlisted through FLOW_GH_HOSTS gets its own /raw/ URLs')
+{
+  const host = 'github.internal.example'
+  w.git(w.repo, 'remote', 'set-url', 'origin', `git@${host}:jakub/demo.git`)
+  setState({ host })
+  for (const visibility of ['PUBLIC', 'PRIVATE']) {
+    setState({ visibility })
+    const name = `ghe-${visibility.toLowerCase()}.png`
+    const r = push(14, [file(`one/${name}`, name)], { FLOW_GH_HOSTS: host })
+    const c = r.json?.commit
+    const url = `https://${host}/jakub/demo/raw/${c}/pr-14/${name}`
+    check(`${visibility}: ${url.replace(c, '<commit>')}`, r.code === 0 && r.json?.files?.[0]?.url === url && r.json.files[0].markdown === `![ghe-${visibility.toLowerCase()}](${url})`, detail(r))
+    check(`${visibility}: neither github.com nor raw.githubusercontent.com appears`, r.code === 0 && !/github\.com|githubusercontent/.test(r.stdout ?? JSON.stringify(r.json)), JSON.stringify(r.json))
+    check(`${visibility}: every gh call pinned to ${host}`, !r.st.unpinned && r.calls.length > 0, JSON.stringify(r.calls))
+  }
+  w.git(w.repo, 'remote', 'set-url', 'origin', 'git@github.com:jakub/demo.git')
+  setState({ host: 'github.com', visibility: 'PUBLIC' })
+}
+
+console.log('characters that would end a markdown link are percent-encoded')
+{
+  const names = ['shot).png', 'a(b.png', "it's.png", 'wow!.png', 'star*.png']
+  const want = { 'shot).png': 'shot%29.png', 'a(b.png': 'a%28b.png', "it's.png": 'it%27s.png', 'wow!.png': 'wow%21.png', 'star*.png': 'star%2A.png' }
+  mkdirSync(join(files, 'odd'), { recursive: true })
+  const r = push(15, names.map((n) => file(`odd/${n}`, n)))
+  const c = r.json?.commit
+  check('exit 0, ok, every file read back', r.code === 0 && r.json?.ok === true && r.contents.length === names.length && r.contents.map((x) => x.path).join('|') === names.map((n) => `pr-15/${n}`).join('|'), detail(r))
+  for (const [i, n] of names.entries()) {
+    const f = r.json?.files?.[i]
+    const url = `https://raw.githubusercontent.com/jakub/demo/${c}/pr-15/${want[n]}`
+    const dest = f?.markdown?.slice(f.markdown.indexOf('](') + 2, -1)
+    check(`${n}: the URL holds ${want[n]}`, f?.url === url, f?.url)
+    check(`${n}: the markdown destination is that URL, with no raw parenthesis`, dest === url && !/[()]/.test(dest) && f.markdown.endsWith(`](${url})`), f?.markdown)
+  }
+}
+
+console.log('a lost push answer, with a rival commit fast-forwarded on top, still counts as landed')
+{
+  writeFileSync(w.hookMode, 'rival kill')
+  const before = tipOf()
+  const r = push(16, [file('one/lost.png', 'png lost')])
+  const c = r.json?.commit
+  const rival = readFileSync(join(w.workspace, 'rival-commits'), 'utf8').trim().split('\n').at(-1)
+  check('one push went out, and it landed', r.pushes.length === 1 && c && w.og('rev-parse', `${c}^`) === before, `${r.pushes.length} ${detail(r)}`)
+  check('and its answer was lost: the push exited non-zero', lastPushExit() !== 0, String(lastPushExit()))
+  check('origin moved on to a rival commit on top of it', tipOf() === rival && w.og('rev-parse', `${rival}^`) === c, `${tipOf()} ${rival}`)
+  check('exit 0, ok, with the original commit, read back at it', r.code === 0 && r.json?.ok === true && r.contents.length === 1 && r.contents[0].ref === c, detail(r))
+}
+
+console.log('a read-back fetch that fails after a push landed under a rival refuses with landed: unknown')
+{
+  writeFileSync(w.hookMode, 'rival')
+  writeFileSync(w.failReads, '2')
+  const before = tipOf()
+  const r = push(17, [file('one/unread.png', 'png unread')])
+  for (const f of [w.failReads, join(w.workspace, 'pushed'), join(w.workspace, 'reads')]) rmSync(f, { force: true })
+  const landed = w.og('rev-parse', `${tipOf()}^`)
+  check('the push itself answered cleanly', lastPushExit() === 0, String(lastPushExit()))
+  check('the push landed, under a rival commit', w.og('rev-parse', `${landed}^`) === before && blobAt(landed, 'pr-17/unread.png') !== null)
+  check('exit 1, ok false, landed: "unknown", carrying the landed commit', r.code === 1 && r.json?.ok === false && r.json.landed === 'unknown' && r.json.commit === landed, detail(r))
+  check('and the read that failed is the fetch', r.json?.reason?.includes('git fetch origin flow-evidence failed'), r.json?.reason)
+  check('and no contents read-back ran', r.contents.length === 0, JSON.stringify(r.contents))
+}
+
+console.log('a lost push answer with origin unreadable refuses with landed: unknown')
+{
+  writeFileSync(w.hookMode, 'kill')
+  writeFileSync(w.failReads, 'all')
+  const r = push(18, [file('one/dark.png', 'png dark')])
+  for (const f of [w.failReads, join(w.workspace, 'pushed'), join(w.workspace, 'reads')]) rmSync(f, { force: true })
+  const pushed = r.pushes[0]?.at(-1)?.split(':')[0]
+  check('one push went out, and origin holds it', r.pushes.length === 1 && tipOf() === pushed, `${r.pushes.length} ${tipOf()} ${pushed}`)
+  check('and its answer was lost: the push exited non-zero', lastPushExit() !== 0, String(lastPushExit()))
+  check('exit 1, ok false, landed: "unknown", commit is the attempted commit', r.code === 1 && r.json?.ok === false && r.json.landed === 'unknown' && r.json.commit === pushed, detail(r))
+}
 
 console.log('refusals before any push')
 {

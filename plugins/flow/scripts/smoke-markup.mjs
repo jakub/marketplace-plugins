@@ -4,7 +4,11 @@
 //
 // The inputs are synthetic PNGs written here with node:zlib: a white 600x400 before, and the same
 // with one solid red 80x40 rectangle as the after. The usage and spec cases always run, because
-// markup.mjs decides them before it looks for Playwright. The render cases need Playwright, which
+// markup.mjs decides them before it looks for Playwright. So do the discovery-trust cases: a
+// throwaway repository holds a fake playwright that writes a marker file when it is loaded and
+// whose chromium.launch throws, once committed under node_modules (it must be skipped and never
+// loaded) and once only present there (it must be loaded, proving the skip is about tracking and
+// not about where the module sits). The render cases need Playwright, which
 // this repository does not ship: they run when markup.mjs resolves one by its own rules from the
 // repository root (FLOW_MARKUP_PLAYWRIGHT included), and are skipped otherwise, with the reason on
 // the last stdout line. With FLOW_MARKUP_PLAYWRIGHT set, an install that does not resolve or launch
@@ -13,8 +17,8 @@
 // Run: node plugins/flow/scripts/smoke-markup.mjs
 //      FLOW_MARKUP_PLAYWRIGHT=<dir|package.json> node plugins/flow/scripts/smoke-markup.mjs
 
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -67,7 +71,7 @@ const encodePng = (width, height, pixel) => {
 
 const RECT = { x: 300, y: 200, w: 80, h: 40 }
 const inRect = (x, y) => x >= RECT.x && x < RECT.x + RECT.w && y >= RECT.y && y < RECT.y + RECT.h
-const tmp = mkdtempSync(join(tmpdir(), 'flow-markup-'))
+const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-markup-')))
 const before = join(tmp, 'before.png')
 const after = join(tmp, 'after.png')
 writeFileSync(before, encodePng(600, 400, () => [255, 255, 255]))
@@ -107,6 +111,36 @@ console.log('a bad spec exits 2 with a message, before any Playwright lookup')
   check('a three-number crop, even under --auto: exit 2', c.status === 2 && c.stderr.includes('spec.crop must be'), `${c.status} ${c.stderr}`)
   const missing = run([...io, '--out', join(tmp, 'x.png')], noPw)
   check('a pointer that resolves no Playwright: exit 3, naming the pointer', missing.status === 3 && missing.stderr.includes('FLOW_MARKUP_PLAYWRIGHT points at'), `${missing.status} ${missing.stderr}`)
+}
+
+console.log('discovery skips a playwright committed under node_modules, and loads an untracked one')
+{
+  const discoveryEnv = { ...process.env, GIT_CONFIG_GLOBAL: join(tmp, 'none'), GIT_CONFIG_SYSTEM: join(tmp, 'none') }
+  for (const key of ['FLOW_MARKUP_PLAYWRIGHT', 'NODE_PATH']) delete discoveryEnv[key]
+  /** A repository with a tracked pkg/package.json and a fake pkg/node_modules/playwright, committed or not. */
+  const plant = (label, { trackModules }) => {
+    const repo = join(tmp, label)
+    const mod = join(repo, 'pkg', 'node_modules', 'playwright')
+    const marker = join(tmp, `${label}.loaded`)
+    mkdirSync(mod, { recursive: true })
+    writeFileSync(join(repo, 'pkg', 'package.json'), '{ "name": "pkg", "private": true }\n')
+    writeFileSync(join(mod, 'package.json'), '{ "name": "playwright", "version": "0.0.0", "main": "index.js" }\n')
+    writeFileSync(join(mod, 'index.js'), `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'loaded')\n` +
+      "module.exports = { chromium: { launch: async () => { throw new Error('fake playwright: no browser here') } } }\n")
+    const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=s', '-c', 'user.email=s@example.invalid', ...args], { env: discoveryEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    git('init', '-q')
+    git('add', '-f', '--', 'pkg/package.json', ...(trackModules ? ['pkg/node_modules'] : []))
+    git('commit', '-q', '-m', 'plant')
+    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, `${label}.png`)], { cwd: repo, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
+    return { r, marker, modules: join(repo, 'pkg', 'node_modules') }
+  }
+  const tracked = plant('tracked', { trackModules: true })
+  check('tracked: exit 3', tracked.r.status === 3, `${tracked.r.status} ${tracked.r.stderr}`)
+  check('tracked: stderr names the skipped node_modules', tracked.r.stderr.includes(`Skipped, because git tracks files under them: ${tracked.modules}`), tracked.r.stderr)
+  check('tracked: the planted module never ran', !existsSync(tracked.marker))
+  const untracked = plant('untracked', { trackModules: false })
+  check('untracked: the module is loaded (its marker is written)', existsSync(untracked.marker))
+  check('untracked: exit 3 on its throwing launch', untracked.r.status === 3 && untracked.r.stderr.includes('did not launch: fake playwright: no browser here'), `${untracked.r.status} ${untracked.r.stderr}`)
 }
 
 let skipped = null
