@@ -113,7 +113,7 @@ export const originUrl = (cwd, env) => {
 }
 
 /** The one `git push --porcelain` status line naming this ref, or null when there is not exactly one. */
-const pushStatus = (stdout, ref) => {
+export const pushStatus = (stdout, ref) => {
   const lines = String(stdout).split('\n').map((l) => l.split('\t'))
     .filter((p) => p.length >= 2 && p[1].slice(p[1].lastIndexOf(':') + 1) === ref)
   return lines.length === 1 ? { flag: lines[0][0], summary: (lines[0][2] ?? '').trim() } : null
