@@ -24,7 +24,9 @@
 // --force-with-lease. The land stage promises that branch is never rewritten (land/SKILL.md step
 // 6), because merged PR bodies embed its SHAs, and a forced push is how a run would drop another
 // run's commit. A non-fast-forward rejection means a concurrent run pushed first, so this one
-// re-reads the tip, rebuilds on it and pushes again, three attempts in all, then refuses. Pushes
+// re-reads the tip, rebuilds on it and pushes again, three attempts in all, then refuses. Any
+// failed push counts as that race when origin's tip moved off the one the commit was built on,
+// because git words a rival that landed after the advertisement as a remote rejection. Pushes
 // carry the same blobs every time, so a retry costs one small commit.
 //
 // Read-back: origin's flow-evidence, fetched, must be the pushed commit or a descendant of it,
@@ -164,7 +166,7 @@ function run({ repoArg, pr, files, env, scratch }) {
       if (error instanceof Refusal) refuse(`${unknownReason}: ${error.reason}`, { commit: sha, landed: 'unknown' })
       throw error
     }
-    return tip !== null && git(['merge-base', '--is-ancestor', sha, tip]).code === 0
+    return { holds: tip !== null && git(['merge-base', '--is-ancestor', sha, tip]).code === 0, tip }
   }
   const build = (tip) => {
     const index = join(scratch, `index-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -183,17 +185,19 @@ function run({ repoArg, pr, files, env, scratch }) {
     const push = git(['push', '--porcelain', 'origin', `${built}:${REF}`], { timeoutMs: 120_000 })
     const status = pushStatus(push.stdout, REF)
     if (push.code === 0 && (status?.flag === ' ' || status?.flag === '*')) { commit = built; break }
-    const rejected = status?.flag === '!' && /non-fast-forward|fetch first/.test(status.summary)
-    if (!rejected) {
-      // An answer lost on the way back reads like a failure; origin says whether it landed.
-      if (originHolds(built, `the push of ${built.slice(0, 12)} to ${BRANCH} may have landed, and origin could not be read to tell`)) { commit = built; break }
-      refuse(`the push of ${built.slice(0, 12)} to ${BRANCH} did not land: ${status === null ? said(push) : `${JSON.stringify(status.flag)} ${redact(status.summary)}`}`)
-    }
+    // Whatever the failure looked like, origin says what happened. An answer lost on the way back
+    // can hide a push that landed. A tip that moved off the one this commit was built on is a
+    // concurrent run, however git worded it: a client-side non-fast-forward, or a remote
+    // "incorrect old value" when the rival landed after the advertisement. Anything else is a
+    // real failure, and retrying it would only repeat it.
+    const seen = originHolds(built, `the push of ${built.slice(0, 12)} to ${BRANCH} may have landed, and origin could not be read to tell`)
+    if (seen.holds) { commit = built; break }
+    if (seen.tip === tip) refuse(`the push of ${built.slice(0, 12)} to ${BRANCH} did not land: ${status === null ? said(push) : `${JSON.stringify(status.flag)} ${redact(status.summary)}`}`)
     if (attempt >= ATTEMPTS) refuse(`${BRANCH} moved under each of ${ATTEMPTS} pushes, so concurrent runs keep winning; nothing of this run is on origin`)
   }
 
   // Read back: origin holds the commit, and GitHub serves each blob at it.
-  if (!originHolds(commit, 'the push landed but origin could not be read back')) {
+  if (!originHolds(commit, 'the push landed but origin could not be read back').holds) {
     refuse(`origin's ${BRANCH} does not contain the pushed commit ${commit.slice(0, 12)}`, { commit })
   }
   const segment = (part) => encodeURIComponent(part).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)

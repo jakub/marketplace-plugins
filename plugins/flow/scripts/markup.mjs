@@ -32,8 +32,9 @@
 // silent fallback would render with a Playwright the caller did not choose.
 //
 // Discovery (3 and 4) loads code from the checkout, so it trusts only an install git doesn't
-// track: a candidate whose enclosing node_modules holds any tracked file is skipped, because a
-// pull request can commit a planted playwright there and no install would ever have put it in
+// track: a candidate is skipped when its entry, followed through symlinks, leaves node_modules, or
+// when any node_modules on its logical or real path holds a tracked file, or when git can't say,
+// because a pull request can commit a planted playwright and no install would ever put one in
 // git. An untracked install is the code the repository's own browser tests run, so markup adds no
 // trust the stage hadn't already given by running them. For a pull request from someone outside
 // the repository's writers, point 1 or 2 at an install outside the checkout.
@@ -44,7 +45,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -101,21 +102,37 @@ const requireAt = (pointer) => {
   try { isDir = statSync(abs).isDirectory() } catch {}
   return createRequire(isDir ? path.join(abs, 'package.json') : abs)
 }
-/** The node_modules directory a resolved module sits in, when git tracks any file under it. */
-const trackedModules = (resolved) => {
-  const parts = resolved.split(path.sep)
-  const at = parts.lastIndexOf('node_modules')
-  const dir = at === -1 ? path.dirname(resolved) : parts.slice(0, at + 1).join(path.sep)
-  let listed = ''
-  try { listed = execFileSync('git', ['-C', path.dirname(dir), 'ls-files', '-z', '--', dir], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 }) } catch {}
-  return listed.length > 0 ? dir : null
+/**
+ * Why a discovered module isn't trusted, or null when it is. The entry, followed through every
+ * symlink, must sit inside a node_modules directory, and no node_modules on the way to it, by its
+ * logical path or its real one, may hold a file git tracks. A git that can't answer is a refusal,
+ * never a pass, except outside any repository, where nothing a pull request commits can be.
+ */
+const untrusted = (resolved) => {
+  let real
+  try { real = realpathSync(resolved) } catch { return `${resolved} does not resolve` }
+  const modulesOf = (file) => {
+    const parts = file.split(path.sep)
+    const at = parts.lastIndexOf('node_modules')
+    return at === -1 ? null : parts.slice(0, at + 1).join(path.sep)
+  }
+  if (modulesOf(real) === null) return `${resolved} resolves to ${real}, outside any node_modules`
+  const git = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 })
+  for (const dir of new Set([modulesOf(resolved), modulesOf(real)].filter(Boolean))) {
+    const parent = path.dirname(dir)
+    try { git(parent, ['rev-parse', '--git-dir']) } catch { continue }
+    let listed
+    try { listed = git(parent, ['ls-files', '-z', '--', dir]) } catch { return `git could not say whether it tracks files under ${dir}` }
+    if (listed.length > 0) return `git tracks files under ${dir}`
+  }
+  return null
 }
 const loadFrom = (req, { discovered = false, skipped = [] } = {}) => {
   for (const name of PACKAGES) {
     let resolved
     try { resolved = req.resolve(name) } catch { continue }
-    const tracked = discovered ? trackedModules(resolved) : null
-    if (tracked !== null) { skipped.push(tracked); continue }
+    const why = discovered ? untrusted(resolved) : null
+    if (why !== null) { skipped.push(why); continue }
     return { chromium: req(resolved).chromium, from: resolved }
   }
   return null
@@ -146,7 +163,7 @@ function resolvePlaywright(opts, env) {
   }
   throw new Exit(3, `markup: no Playwright found. Tried Node resolution of ${PACKAGES.join(' and ')} from ${cwd} upward` +
     `${top ? `, and every git-tracked package.json under ${top} with either in its node_modules` : ', and no git repository holds that directory'}. ` +
-    `${skipped.length ? `Skipped, because git tracks files under them: ${[...new Set(skipped)].join(', ')}. ` : ''}` +
+    `${skipped.length ? `Skipped as untrusted: ${[...new Set(skipped)].join('; ')}. ` : ''}` +
     'Point at an install with --playwright <dir|package.json> or FLOW_MARKUP_PLAYWRIGHT, or run `npm install @playwright/test && npx playwright install chromium` somewhere and point there.')
 }
 
