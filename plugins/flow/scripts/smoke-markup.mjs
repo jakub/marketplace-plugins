@@ -160,16 +160,53 @@ console.log('discovery trusts only an untracked install inside node_modules')
     check(`${c.label}: the planted code never ran`, !existsSync(c.marker))
   }
   const tracked = { label: 'tracked', ...plant('tracked', { track: ['pkg/node_modules'] }) }
-  skippedFor(tracked, `Skipped as untrusted: git tracks files under ${tracked.modules}`)
+  skippedFor(tracked, 'named or under node_modules in')
   const escaped = { label: 'main outside node_modules', ...plant('escaped', { main: '../../../payload.cjs', entry: 'payload', track: ['pkg/node_modules', 'payload.cjs'] }) }
-  skippedFor(escaped, 'outside any node_modules')
+  skippedFor(escaped, 'named or under node_modules in')
   const linked = { label: 'entry symlinked outside node_modules', ...plant('linked', { entry: 'symlink', track: ['pkg/node_modules', 'payload.cjs'] }) }
-  skippedFor(linked, 'outside any node_modules')
+  skippedFor(linked, 'named or under node_modules in')
   const blind = { label: 'git cannot answer', ...plant('blind', { fakeGit: true, cwd: 'pkg' }) }
-  skippedFor(blind, `git could not say whether it tracks files under ${blind.modules}`)
+  skippedFor(blind, 'git could not list')
   // git refuses a repository it distrusts, and that refusal must not read as "outside any repository".
   const distrusted = { label: 'git distrusts the repository', ...plant('distrusted', { track: ['pkg/node_modules'], markupEnv: { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' }, cwd: 'pkg' }) }
-  skippedFor(distrusted, `git could not say whether it tracks files under ${distrusted.modules}`)
+  skippedFor(distrusted, 'git could not list')
+  // pnpm: the playwright entry is an untracked install, and only a sibling playwright-core in the
+  // store is committed. Checking the entry's own node_modules would miss it; the repository-wide
+  // rule doesn't.
+  {
+    const repo = join(tmp, 'pnpm')
+    const marker = join(tmp, 'pnpm.loaded')
+    const store = join(repo, 'node_modules', '.pnpm')
+    const entry = join(store, 'playwright@1', 'node_modules', 'playwright')
+    const core = join(store, 'playwright-core@1', 'node_modules', 'playwright-core')
+    mkdirSync(entry, { recursive: true })
+    mkdirSync(core, { recursive: true })
+    writeFileSync(join(repo, 'package.json'), '{ "name": "root", "private": true }\n')
+    writeFileSync(join(entry, 'package.json'), '{ "name": "playwright", "version": "0.0.0", "main": "index.js" }\n')
+    writeFileSync(join(entry, 'index.js'), "module.exports = require('playwright-core')\n")
+    symlinkSync('../../playwright-core@1/node_modules/playwright-core', join(store, 'playwright@1', 'node_modules', 'playwright-core'))
+    symlinkSync('.pnpm/playwright@1/node_modules/playwright', join(repo, 'node_modules', 'playwright'))
+    writeFileSync(join(core, 'package.json'), '{ "name": "playwright-core", "version": "0.0.0", "main": "index.js" }\n')
+    writeFileSync(join(core, 'index.js'), payload(marker))
+    const git = (...args) => execFileSync(REAL_GIT, ['-C', repo, '-c', 'user.name=s', '-c', 'user.email=s@example.invalid', ...args], { env: discoveryEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    git('init', '-q')
+    git('add', '-f', '--', 'package.json', 'node_modules/.pnpm/playwright-core@1')
+    git('commit', '-q', '-m', 'plant')
+    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, 'pnpm.png')], { cwd: repo, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
+    skippedFor({ label: 'pnpm sibling dependency committed', r, marker }, 'named or under node_modules in')
+  }
+  // Outside any repository the per-entry rule still holds: an entry that escapes node_modules is
+  // skipped even though nothing there can be tracked.
+  {
+    const dir = join(tmp, 'loose')
+    const marker = join(tmp, 'loose.loaded')
+    const mod = join(dir, 'node_modules', 'playwright')
+    mkdirSync(mod, { recursive: true })
+    writeFileSync(join(mod, 'package.json'), '{ "name": "playwright", "version": "0.0.0", "main": "../../payload.cjs" }\n')
+    writeFileSync(join(dir, 'payload.cjs'), payload(marker))
+    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, 'loose.png')], { cwd: dir, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
+    skippedFor({ label: 'outside a repository, an entry outside node_modules', r, marker }, 'outside any node_modules')
+  }
   const untracked = plant('untracked')
   check('untracked: the module is loaded (its marker is written)', existsSync(untracked.marker))
   check('untracked: exit 3 on its throwing launch', untracked.r.status === 3 && untracked.r.stderr.includes('did not launch: fake playwright: no browser here'), `${untracked.r.status} ${untracked.r.stderr}`)

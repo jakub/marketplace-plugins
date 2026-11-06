@@ -32,10 +32,13 @@
 // silent fallback would render with a Playwright the caller did not choose.
 //
 // Discovery (3 and 4) loads code from the checkout, so it trusts only an install git doesn't
-// track: a candidate is skipped when its entry, followed through symlinks, leaves node_modules, or
-// when any node_modules on its logical or real path holds a tracked file, or when git can't say,
-// because a pull request can commit a planted playwright and no install would ever put one in
-// git. An untracked install is the code the repository's own browser tests run, so markup adds no
+// track, because a pull request can commit a planted playwright, or a dependency it requires, and
+// no install ever puts one in git. Two rules. When git tracks anything named node_modules, or
+// anything under one, anywhere in the working directory's repository, discovery refuses outright,
+// whatever path resolution would take; a git that can't list the repository refuses too. And
+// each candidate's entry, followed through symlinks, must sit inside node_modules, with the
+// outermost node_modules on its logical and its real path holding no tracked file, which covers
+// resolution that climbs out of this repository. An untracked install is the code the repository's own browser tests run, so markup adds no
 // trust the stage hadn't already given by running them. For a pull request from someone outside
 // the repository's writers, point 1 or 2 at an install outside the checkout.
 //
@@ -102,10 +105,21 @@ const requireAt = (pointer) => {
   try { isDir = statSync(abs).isDirectory() } catch {}
   return createRequire(isDir ? path.join(abs, 'package.json') : abs)
 }
+/** The nearest directory at or above dir holding a .git entry, or null. Read from the filesystem,
+ * because git also refuses a repository it distrusts, and that must not read as "no repository". */
+const repoTopOf = (dir) => {
+  for (let at = dir; ; at = path.dirname(at)) {
+    if (existsSync(path.join(at, '.git'))) return at
+    if (path.dirname(at) === at) return null
+  }
+}
+const gitIn = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 })
+
 /**
  * Why a discovered module isn't trusted, or null when it is. The entry, followed through every
- * symlink, must sit inside a node_modules directory, and no node_modules on the way to it, by its
- * logical path or its real one, may hold a file git tracks. A git that can't answer is a refusal,
+ * symlink, must sit inside a node_modules directory, and the outermost node_modules on its logical
+ * path and on its real one may hold no file git tracks, so a sibling dependency planted elsewhere
+ * in that tree (a pnpm store, say) is covered too. A git that can't answer is a refusal,
  * never a pass. "Outside any repository" is read from the filesystem, a `.git` entry in no
  * directory above, never from a git error, because git also refuses a repository it distrusts,
  * such as one with dubious ownership, and that refusal must not read as "nothing is tracked".
@@ -115,21 +129,15 @@ const untrusted = (resolved) => {
   try { real = realpathSync(resolved) } catch { return `${resolved} does not resolve` }
   const modulesOf = (file) => {
     const parts = file.split(path.sep)
-    const at = parts.lastIndexOf('node_modules')
+    const at = parts.indexOf('node_modules')
     return at === -1 ? null : parts.slice(0, at + 1).join(path.sep)
   }
   if (modulesOf(real) === null) return `${resolved} resolves to ${real}, outside any node_modules`
-  const git = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 })
   for (const dir of new Set([modulesOf(resolved), modulesOf(real)].filter(Boolean))) {
     const parent = path.dirname(dir)
-    let inRepo = false
-    for (let at = parent; ; at = path.dirname(at)) {
-      if (existsSync(path.join(at, '.git'))) { inRepo = true; break }
-      if (path.dirname(at) === at) break
-    }
-    if (!inRepo) continue
+    if (repoTopOf(parent) === null) continue
     let listed
-    try { listed = git(parent, ['ls-files', '-z', '--', dir]) } catch { return `git could not say whether it tracks files under ${dir}` }
+    try { listed = gitIn(parent, ['ls-files', '-z', '--', dir]) } catch { return `git could not say whether it tracks files under ${dir}` }
     if (listed.length > 0) return `git tracks files under ${dir}`
   }
   return null
@@ -153,6 +161,18 @@ function resolvePlaywright(opts, env) {
     return hit
   }
   const cwd = process.cwd()
+  const home = repoTopOf(cwd)
+  if (home !== null) {
+    let planted
+    try { planted = gitIn(home, ['ls-files', '-z', '--', ':(glob)**/node_modules', ':(glob)**/node_modules/**']) } catch {
+      throw new Exit(3, `markup: git could not list ${home}, so discovery can't tell a planted Playwright from an install there. Point at one with --playwright <dir|package.json> or FLOW_MARKUP_PLAYWRIGHT.`)
+    }
+    const names = planted.split('\0').filter(Boolean)
+    if (names.length > 0) {
+      throw new Exit(3, `markup: git tracks ${names.length} path(s) named or under node_modules in ${home} (${names.slice(0, 3).join(', ')}${names.length > 3 ? ', ...' : ''}), so discovery trusts no install there. ` +
+        'Point at one outside the checkout with --playwright <dir|package.json> or FLOW_MARKUP_PLAYWRIGHT.')
+    }
+  }
   const skipped = []
   const fromCwd = loadFrom(createRequire(path.join(cwd, 'noop.js')), { discovered: true, skipped })
   if (fromCwd !== null) return fromCwd
