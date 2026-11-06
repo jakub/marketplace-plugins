@@ -106,7 +106,9 @@ const requireAt = (pointer) => {
  * Why a discovered module isn't trusted, or null when it is. The entry, followed through every
  * symlink, must sit inside a node_modules directory, and no node_modules on the way to it, by its
  * logical path or its real one, may hold a file git tracks. A git that can't answer is a refusal,
- * never a pass, except outside any repository, where nothing a pull request commits can be.
+ * never a pass. "Outside any repository" is read from the filesystem, a `.git` entry in no
+ * directory above, never from a git error, because git also refuses a repository it distrusts,
+ * such as one with dubious ownership, and that refusal must not read as "nothing is tracked".
  */
 const untrusted = (resolved) => {
   let real
@@ -120,7 +122,12 @@ const untrusted = (resolved) => {
   const git = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 })
   for (const dir of new Set([modulesOf(resolved), modulesOf(real)].filter(Boolean))) {
     const parent = path.dirname(dir)
-    try { git(parent, ['rev-parse', '--git-dir']) } catch { continue }
+    let inRepo = false
+    for (let at = parent; ; at = path.dirname(at)) {
+      if (existsSync(path.join(at, '.git'))) { inRepo = true; break }
+      if (path.dirname(at) === at) break
+    }
+    if (!inRepo) continue
     let listed
     try { listed = git(parent, ['ls-files', '-z', '--', dir]) } catch { return `git could not say whether it tracks files under ${dir}` }
     if (listed.length > 0) return `git tracks files under ${dir}`

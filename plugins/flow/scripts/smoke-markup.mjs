@@ -126,10 +126,10 @@ console.log('discovery trusts only an untracked install inside node_modules')
    * A repository with a tracked pkg/package.json and a fake pkg/node_modules/playwright. `main` is
    * its package.json entry; `entry` is 'file' (a real index.js), 'payload' (no index.js, the entry
    * points at a root payload.cjs) or 'symlink' (index.js links to that payload.cjs). `track` adds
-   * paths to the commit; `fakeGit` puts a git first on PATH whose ls-files fails; `cwd` is where
-   * markup runs, relative to the repository.
+   * paths to the commit; `fakeGit` puts a git first on PATH whose ls-files fails; `markupEnv` adds
+   * variables to markup's environment alone; `cwd` is where markup runs, relative to the repository.
    */
-  const plant = (label, { main = 'index.js', entry = 'file', track = [], fakeGit = false, cwd = '.' } = {}) => {
+  const plant = (label, { main = 'index.js', entry = 'file', track = [], fakeGit = false, markupEnv = {}, cwd = '.' } = {}) => {
     const repo = join(tmp, label)
     const mod = join(repo, 'pkg', 'node_modules', 'playwright')
     const marker = join(tmp, `${label}.loaded`)
@@ -151,7 +151,7 @@ console.log('discovery trusts only an untracked install inside node_modules')
       chmodSync(join(bin, 'git'), 0o755)
       env = { ...discoveryEnv, PATH: `${bin}:${discoveryEnv.PATH}` }
     }
-    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, `${label}.png`)], { cwd: join(repo, cwd), encoding: 'utf8', env, timeout: 120_000 })
+    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, `${label}.png`)], { cwd: join(repo, cwd), encoding: 'utf8', env: { ...env, ...markupEnv }, timeout: 120_000 })
     return { r, marker, modules: join(repo, 'pkg', 'node_modules') }
   }
   const skippedFor = (c, text) => {
@@ -167,6 +167,9 @@ console.log('discovery trusts only an untracked install inside node_modules')
   skippedFor(linked, 'outside any node_modules')
   const blind = { label: 'git cannot answer', ...plant('blind', { fakeGit: true, cwd: 'pkg' }) }
   skippedFor(blind, `git could not say whether it tracks files under ${blind.modules}`)
+  // git refuses a repository it distrusts, and that refusal must not read as "outside any repository".
+  const distrusted = { label: 'git distrusts the repository', ...plant('distrusted', { track: ['pkg/node_modules'], markupEnv: { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' }, cwd: 'pkg' }) }
+  skippedFor(distrusted, `git could not say whether it tracks files under ${distrusted.modules}`)
   const untracked = plant('untracked')
   check('untracked: the module is loaded (its marker is written)', existsSync(untracked.marker))
   check('untracked: exit 3 on its throwing launch', untracked.r.status === 3 && untracked.r.stderr.includes('did not launch: fake playwright: no browser here'), `${untracked.r.status} ${untracked.r.stderr}`)
