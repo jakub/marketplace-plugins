@@ -82,6 +82,7 @@ const makeWorld = (state = {}) => {
   const race = join(workspace, 'race')
   const failReads = join(workspace, 'fail-reads')
   const hookMode = join(workspace, 'hook-mode')
+  const preMode = join(workspace, 'pre-mode')
   writeFileSync(log, '')
   writeFileSync(race, '0')
   // A rival run's commit on flow-evidence: origin's tree plus one file, parented on origin's tip.
@@ -121,8 +122,15 @@ case "$last" in
 esac
 exec /bin/sh -c "$last"
 `)
-  // Each push's exit code goes to push-exits, so a case can tell a lost answer from a clean one.
-  writeFileSync(join(bin, 'git'), `#!/bin/sh\n{ for a; do printf '%s\\037' "$a"; done; printf '\\n'; } >> ${log}\n${REAL_GIT} "$@"\ns=$?\ncase " $* " in *" push "*) echo $s >> ${workspace}/push-exits ;; esac\nexit $s\n`)
+  // Each push's exit code goes to push-exits and its stdout (the porcelain status) to push-out, so
+  // a case can tell a lost answer from a clean one and read how a rejection was worded.
+  writeFileSync(join(bin, 'git'), `#!/bin/sh
+{ for a; do printf '%s\\037' "$a"; done; printf '\\n'; } >> ${log}
+case " $* " in
+  *" push "*) out=$(${REAL_GIT} "$@"); s=$?; printf '%s\\n' "$out"; printf '%s\\n' "$out" >> ${workspace}/push-out; echo $s >> ${workspace}/push-exits; exit $s ;;
+esac
+exec ${REAL_GIT} "$@"
+`)
   writeFileSync(join(bin, 'gh'), FAKE_GH)
   for (const f of [rival, ssh, join(bin, 'git'), join(bin, 'gh')]) chmodSync(f, 0o755)
   const env = { ...baseEnv, GIT_SSH_COMMAND: ssh, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: join(workspace, '.gh.json'), FAKE_REAL_GIT: REAL_GIT }
@@ -145,6 +153,20 @@ case "$mode" in *kill*) kill -9 $PPID ;; esac
 exit 0
 `)
   chmodSync(hook, 0o755)
+  // Armed by writing pre-mode: `rival` (one-shot) advances flow-evidence after origin advertised
+  // its refs and received this push, so origin itself rejects the stale old value; `decline`
+  // (until removed) refuses every push without moving anything.
+  const preReceive = join(origin, 'hooks', 'pre-receive')
+  writeFileSync(preReceive, `#!/bin/sh
+cat >/dev/null
+[ -f ${preMode} ] || exit 0
+case "$(cat ${preMode})" in
+  rival) rm -f ${preMode}; ${rival} >/dev/null 2>&1; exit 0 ;;
+  decline) echo 'smoke: declined by policy' >&2; exit 1 ;;
+esac
+exit 0
+`)
+  chmodSync(preReceive, 0o755)
   execFileSync(REAL_GIT, ['init', '-q', '-b', 'main', repo], { env: hostEnv })
   git(repo, 'config', 'user.name', 'Configured User')
   git(repo, 'config', 'user.email', 'configured@example.invalid')
@@ -154,7 +176,7 @@ exit 0
   git(repo, 'remote', 'add', 'origin', 'git@github.com:jakub/demo.git')
   git(repo, 'push', '-q', '-u', 'origin', 'main')
   writeFileSync(env.FAKE_GH_STATE, JSON.stringify({ calls: [], contents: [], origin, visibility: 'PUBLIC', ...state }))
-  return { workspace, origin, repo, env, git, og, log, race, failReads, hookMode }
+  return { workspace, origin, repo, env, git, og, log, race, failReads, hookMode, preMode }
 }
 
 const w = makeWorld()
@@ -346,6 +368,35 @@ console.log('a lost push answer with origin unreadable refuses with landed: unkn
   check('one push went out, and origin holds it', r.pushes.length === 1 && tipOf() === pushed, `${r.pushes.length} ${tipOf()} ${pushed}`)
   check('and its answer was lost: the push exited non-zero', lastPushExit() !== 0, String(lastPushExit()))
   check('exit 1, ok false, landed: "unknown", commit is the attempted commit', r.code === 1 && r.json?.ok === false && r.json.landed === 'unknown' && r.json.commit === pushed, detail(r))
+}
+
+console.log('a rival that lands after the advertisement is retried, whatever git calls the rejection')
+{
+  const before = tipOf()
+  writeFileSync(w.preMode, 'rival')
+  const r = push(19, [file('one/late.png', 'png late')])
+  const c = r.json?.commit
+  const rival = readFileSync(join(w.workspace, 'rival-commits'), 'utf8').trim().split('\n').at(-1)
+  const exits = readFileSync(join(w.workspace, 'push-exits'), 'utf8').trim().split('\n').slice(-2).map(Number)
+  check('two pushes went out, the first refused by origin itself', r.pushes.length === 2 && exits[0] !== 0 && exits[1] === 0, `${r.pushes.length} ${exits}`)
+  check('the rival landed on the old tip', w.og('rev-parse', `${rival}^`) === before)
+  check('exit 0, ok, with this run\'s commit on top of the rival', r.code === 0 && r.json?.ok === true && c && w.og('rev-parse', `${c}^`) === rival && tipOf() === c, detail(r))
+  const k = readFileSync(join(w.workspace, 'rivals'), 'utf8').trim()
+  check('both files are on origin', c && blobAt(c, `pr-99/rival-${k}.png`) !== null && blobAt(c, 'pr-19/late.png') !== null)
+  const said = readFileSync(join(w.workspace, 'push-out'), 'utf8').split('\n').filter((l) => l.startsWith('!\t'))
+  console.log(`    first push: ${JSON.stringify(said.at(-1))}`)
+  check('the first push was a remote rejection, not a client-side non-fast-forward', /\[remote rejected\]/.test(said.at(-1) ?? '') && !/non-fast-forward|fetch first/.test(said.at(-1) ?? ''), JSON.stringify(said))
+}
+
+console.log('a remote rejection that leaves the tip alone refuses without a retry')
+{
+  const before = tipOf()
+  writeFileSync(w.preMode, 'decline')
+  const r = push(20, [file('one/declined.png', 'png declined')])
+  rmSync(w.preMode, { force: true })
+  check('exit 1, ok false, "did not land"', r.code === 1 && r.json?.ok === false && r.json.reason.includes('did not land'), detail(r))
+  check('exactly one push went out', r.pushes.length === 1, String(r.pushes.length))
+  check('origin unmoved', tipOf() === before)
 }
 
 console.log('refusals before any push')

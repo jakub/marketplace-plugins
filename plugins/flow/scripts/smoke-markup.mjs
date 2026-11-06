@@ -6,9 +6,10 @@
 // with one solid red 80x40 rectangle as the after. The usage and spec cases always run, because
 // markup.mjs decides them before it looks for Playwright. So do the discovery-trust cases: a
 // throwaway repository holds a fake playwright that writes a marker file when it is loaded and
-// whose chromium.launch throws, once committed under node_modules (it must be skipped and never
-// loaded) and once only present there (it must be loaded, proving the skip is about tracking and
-// not about where the module sits). The render cases need Playwright, which
+// whose chromium.launch throws. It must be skipped, and never loaded, when it is committed under
+// node_modules, when its entry (by `main` or by a symlink) leaves node_modules, and when git can't
+// say whether it is tracked; and it must be loaded when it is only present there, which proves
+// the skip is about trust and not about where the module sits. The render cases need Playwright, which
 // this repository does not ship: they run when markup.mjs resolves one by its own rules from the
 // repository root (FLOW_MARKUP_PLAYWRIGHT included), and are skipped otherwise, with the reason on
 // the last stdout line. With FLOW_MARKUP_PLAYWRIGHT set, an install that does not resolve or launch
@@ -18,7 +19,7 @@
 //      FLOW_MARKUP_PLAYWRIGHT=<dir|package.json> node plugins/flow/scripts/smoke-markup.mjs
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -113,32 +114,60 @@ console.log('a bad spec exits 2 with a message, before any Playwright lookup')
   check('a pointer that resolves no Playwright: exit 3, naming the pointer', missing.status === 3 && missing.stderr.includes('FLOW_MARKUP_PLAYWRIGHT points at'), `${missing.status} ${missing.stderr}`)
 }
 
-console.log('discovery skips a playwright committed under node_modules, and loads an untracked one')
+console.log('discovery trusts only an untracked install inside node_modules')
 {
   const discoveryEnv = { ...process.env, GIT_CONFIG_GLOBAL: join(tmp, 'none'), GIT_CONFIG_SYSTEM: join(tmp, 'none') }
   for (const key of ['FLOW_MARKUP_PLAYWRIGHT', 'NODE_PATH']) delete discoveryEnv[key]
-  /** A repository with a tracked pkg/package.json and a fake pkg/node_modules/playwright, committed or not. */
-  const plant = (label, { trackModules }) => {
+  const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+  // Code that writes the marker when it is loaded, and a chromium whose launch throws.
+  const payload = (marker) => `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'loaded')\n` +
+    "module.exports = { chromium: { launch: async () => { throw new Error('fake playwright: no browser here') } } }\n"
+  /**
+   * A repository with a tracked pkg/package.json and a fake pkg/node_modules/playwright. `main` is
+   * its package.json entry; `entry` is 'file' (a real index.js), 'payload' (no index.js, the entry
+   * points at a root payload.cjs) or 'symlink' (index.js links to that payload.cjs). `track` adds
+   * paths to the commit; `fakeGit` puts a git first on PATH whose ls-files fails; `cwd` is where
+   * markup runs, relative to the repository.
+   */
+  const plant = (label, { main = 'index.js', entry = 'file', track = [], fakeGit = false, cwd = '.' } = {}) => {
     const repo = join(tmp, label)
     const mod = join(repo, 'pkg', 'node_modules', 'playwright')
     const marker = join(tmp, `${label}.loaded`)
     mkdirSync(mod, { recursive: true })
     writeFileSync(join(repo, 'pkg', 'package.json'), '{ "name": "pkg", "private": true }\n')
-    writeFileSync(join(mod, 'package.json'), '{ "name": "playwright", "version": "0.0.0", "main": "index.js" }\n')
-    writeFileSync(join(mod, 'index.js'), `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'loaded')\n` +
-      "module.exports = { chromium: { launch: async () => { throw new Error('fake playwright: no browser here') } } }\n")
-    const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=s', '-c', 'user.email=s@example.invalid', ...args], { env: discoveryEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    writeFileSync(join(mod, 'package.json'), `{ "name": "playwright", "version": "0.0.0", "main": ${JSON.stringify(main)} }\n`)
+    if (entry === 'file') writeFileSync(join(mod, 'index.js'), payload(marker))
+    else writeFileSync(join(repo, 'payload.cjs'), payload(marker))
+    if (entry === 'symlink') symlinkSync('../../../payload.cjs', join(mod, 'index.js'))
+    const git = (...args) => execFileSync(REAL_GIT, ['-C', repo, '-c', 'user.name=s', '-c', 'user.email=s@example.invalid', ...args], { env: discoveryEnv, stdio: ['ignore', 'pipe', 'pipe'] })
     git('init', '-q')
-    git('add', '-f', '--', 'pkg/package.json', ...(trackModules ? ['pkg/node_modules'] : []))
+    git('add', '-f', '--', 'pkg/package.json', ...track)
     git('commit', '-q', '-m', 'plant')
-    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, `${label}.png`)], { cwd: repo, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
+    let env = discoveryEnv
+    if (fakeGit) {
+      const bin = join(tmp, `${label}-bin`)
+      mkdirSync(bin)
+      writeFileSync(join(bin, 'git'), `#!/bin/sh\nfor a; do [ "$a" = ls-files ] && { echo 'fatal: fake git: ls-files is broken' >&2; exit 128; }; done\nexec ${REAL_GIT} "$@"\n`)
+      chmodSync(join(bin, 'git'), 0o755)
+      env = { ...discoveryEnv, PATH: `${bin}:${discoveryEnv.PATH}` }
+    }
+    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, `${label}.png`)], { cwd: join(repo, cwd), encoding: 'utf8', env, timeout: 120_000 })
     return { r, marker, modules: join(repo, 'pkg', 'node_modules') }
   }
-  const tracked = plant('tracked', { trackModules: true })
-  check('tracked: exit 3', tracked.r.status === 3, `${tracked.r.status} ${tracked.r.stderr}`)
-  check('tracked: stderr names the skipped node_modules', tracked.r.stderr.includes(`Skipped, because git tracks files under them: ${tracked.modules}`), tracked.r.stderr)
-  check('tracked: the planted module never ran', !existsSync(tracked.marker))
-  const untracked = plant('untracked', { trackModules: false })
+  const skippedFor = (c, text) => {
+    check(`${c.label}: exit 3`, c.r.status === 3, `${c.r.status} ${c.r.stderr}`)
+    check(`${c.label}: stderr says ${text}`, c.r.stderr.includes(text), c.r.stderr)
+    check(`${c.label}: the planted code never ran`, !existsSync(c.marker))
+  }
+  const tracked = { label: 'tracked', ...plant('tracked', { track: ['pkg/node_modules'] }) }
+  skippedFor(tracked, `Skipped as untrusted: git tracks files under ${tracked.modules}`)
+  const escaped = { label: 'main outside node_modules', ...plant('escaped', { main: '../../../payload.cjs', entry: 'payload', track: ['pkg/node_modules', 'payload.cjs'] }) }
+  skippedFor(escaped, 'outside any node_modules')
+  const linked = { label: 'entry symlinked outside node_modules', ...plant('linked', { entry: 'symlink', track: ['pkg/node_modules', 'payload.cjs'] }) }
+  skippedFor(linked, 'outside any node_modules')
+  const blind = { label: 'git cannot answer', ...plant('blind', { fakeGit: true, cwd: 'pkg' }) }
+  skippedFor(blind, `git could not say whether it tracks files under ${blind.modules}`)
+  const untracked = plant('untracked')
   check('untracked: the module is loaded (its marker is written)', existsSync(untracked.marker))
   check('untracked: exit 3 on its throwing launch', untracked.r.status === 3 && untracked.r.stderr.includes('did not launch: fake playwright: no browser here'), `${untracked.r.status} ${untracked.r.stderr}`)
 }
