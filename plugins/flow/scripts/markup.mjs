@@ -31,6 +31,13 @@
 // A pointer given by 1 or 2 that resolves nothing is an error, never a fall-through, because a
 // silent fallback would render with a Playwright the caller did not choose.
 //
+// Discovery (3 and 4) loads code from the checkout, so it trusts only an install git doesn't
+// track: a candidate whose enclosing node_modules holds any tracked file is skipped, because a
+// pull request can commit a planted playwright there and no install would ever have put it in
+// git. An untracked install is the code the repository's own browser tests run, so markup adds no
+// trust the stage hadn't already given by running them. For a pull request from someone outside
+// the repository's writers, point 1 or 2 at an install outside the checkout.
+//
 // Exit codes: 0 rendered; 2 usage, or a spec that is not JSON or not the shape above; 3 no
 // Playwright resolves, or its browser does not launch (Playwright's own message, which names the
 // install command); 1 anything else, such as an unreadable or undecodable image.
@@ -94,10 +101,21 @@ const requireAt = (pointer) => {
   try { isDir = statSync(abs).isDirectory() } catch {}
   return createRequire(isDir ? path.join(abs, 'package.json') : abs)
 }
-const loadFrom = (req) => {
+/** The node_modules directory a resolved module sits in, when git tracks any file under it. */
+const trackedModules = (resolved) => {
+  const parts = resolved.split(path.sep)
+  const at = parts.lastIndexOf('node_modules')
+  const dir = at === -1 ? path.dirname(resolved) : parts.slice(0, at + 1).join(path.sep)
+  let listed = ''
+  try { listed = execFileSync('git', ['-C', path.dirname(dir), 'ls-files', '-z', '--', dir], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 }) } catch {}
+  return listed.length > 0 ? dir : null
+}
+const loadFrom = (req, { discovered = false, skipped = [] } = {}) => {
   for (const name of PACKAGES) {
     let resolved
     try { resolved = req.resolve(name) } catch { continue }
+    const tracked = discovered ? trackedModules(resolved) : null
+    if (tracked !== null) { skipped.push(tracked); continue }
     return { chromium: req(resolved).chromium, from: resolved }
   }
   return null
@@ -111,7 +129,8 @@ function resolvePlaywright(opts, env) {
     return hit
   }
   const cwd = process.cwd()
-  const fromCwd = loadFrom(createRequire(path.join(cwd, 'noop.js')))
+  const skipped = []
+  const fromCwd = loadFrom(createRequire(path.join(cwd, 'noop.js')), { discovered: true, skipped })
   if (fromCwd !== null) return fromCwd
   let top = null
   try { top = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
@@ -121,12 +140,13 @@ function resolvePlaywright(opts, env) {
     for (const rel of listed.split('\0').filter((p) => path.basename(p) === 'package.json')) {
       const dir = path.join(top, path.dirname(rel))
       if (!PACKAGES.some((name) => existsSync(path.join(dir, 'node_modules', name, 'package.json')))) continue
-      const hit = loadFrom(createRequire(path.join(dir, 'package.json')))
+      const hit = loadFrom(createRequire(path.join(dir, 'package.json')), { discovered: true, skipped })
       if (hit !== null) return hit
     }
   }
   throw new Exit(3, `markup: no Playwright found. Tried Node resolution of ${PACKAGES.join(' and ')} from ${cwd} upward` +
     `${top ? `, and every git-tracked package.json under ${top} with either in its node_modules` : ', and no git repository holds that directory'}. ` +
+    `${skipped.length ? `Skipped, because git tracks files under them: ${[...new Set(skipped)].join(', ')}. ` : ''}` +
     'Point at an install with --playwright <dir|package.json> or FLOW_MARKUP_PLAYWRIGHT, or run `npm install @playwright/test && npx playwright install chromium` somewhere and point there.')
 }
 

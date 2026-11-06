@@ -27,18 +27,23 @@
 // re-reads the tip, rebuilds on it and pushes again, three attempts in all, then refuses. Pushes
 // carry the same blobs every time, so a retry costs one small commit.
 //
-// Read-back: origin's flow-evidence must be the pushed commit or, after a fetch, contain it, and
-// for every file `gh api repos/<o>/<r>/contents/<path>?ref=<commit> --jq .sha` must name the blob.
-// URLs follow the repository's visibility, read once with gh repo view before anything is pushed:
-// PUBLIC gets https://raw.githubusercontent.com/<o>/<r>/<commit>/<path>; PRIVATE and INTERNAL get
-// https://github.com/<o>/<r>/blob/<commit>/<path>?raw=true, which renders for a signed-in viewer
-// with access. origin must fetch from and push to one GitHub URL, every gh call is pinned to the
+// Read-back: origin's flow-evidence, fetched, must be the pushed commit or a descendant of it,
+// since another run may push on top before this one looks, and for every file `gh api
+// repos/<o>/<r>/contents/<path>?ref=<commit> --jq .sha` must name the blob. A push whose answer is
+// lost goes through the same ancestry test, so a commit that landed under a later one still counts.
+// URLs follow the repository's visibility, read once with gh repo view before anything is pushed: a
+// PUBLIC repository on github.com gets https://raw.githubusercontent.com/<o>/<r>/<commit>/<path>;
+// anything else gets https://<host>/<o>/<r>/raw/<commit>/<path> on the host origin names, which
+// renders for a signed-in viewer with access. Path segments are percent-encoded, `!'()*` included,
+// so a filename with a parenthesis can't end a markdown link early. origin must fetch from and push to one GitHub URL, every gh call is pinned to the
 // repository it parses to (GH_REPO and GH_HOST never reach gh), and GitHub must name that
 // repository the same way, since a renamed one would leave the URLs on the old name.
 //
 // stdout is one JSON line: { ok: true, commit, branch: "flow-evidence", files: [{ path, blob, url,
 // markdown }] } with markdown `![<basename without extension>](<url>)`, exit 0; { ok: false,
-// reason } on a refusal, exit 1, carrying `commit` once one reached origin; usage on stderr, exit 2.
+// reason } on a refusal, exit 1, carrying `commit` once one reached origin, and `landed: "unknown"`
+// with the attempted `commit` when origin could not be read to say whether it did; usage on
+// stderr, exit 2.
 
 import { closeSync, constants, fstatSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -151,6 +156,16 @@ function run({ repoArg, pr, files, env, scratch }) {
     must(['fetch', '--quiet', '--no-tags', 'origin', `+${REF}:${TRACKING}`], `git fetch origin ${BRANCH}`, { timeoutMs: 120_000 })
     return must(['rev-parse', '--verify', '--quiet', `${TRACKING}^{commit}`], `reading ${TRACKING} after its fetch`)
   }
+  // Whether origin's flow-evidence holds sha. A refusal from the read carries sha and says the
+  // outcome is unknown, because by then a push may have landed.
+  const originHolds = (sha, unknownReason) => {
+    let tip
+    try { tip = fetchTip() } catch (error) {
+      if (error instanceof Refusal) refuse(`${unknownReason}: ${error.reason}`, { commit: sha, landed: 'unknown' })
+      throw error
+    }
+    return tip !== null && git(['merge-base', '--is-ancestor', sha, tip]).code === 0
+  }
   const build = (tip) => {
     const index = join(scratch, `index-${Date.now()}-${Math.random().toString(16).slice(2)}`)
     const opts = { extraEnv: { GIT_INDEX_FILE: index } }
@@ -171,23 +186,18 @@ function run({ repoArg, pr, files, env, scratch }) {
     const rejected = status?.flag === '!' && /non-fast-forward|fetch first/.test(status.summary)
     if (!rejected) {
       // An answer lost on the way back reads like a failure; origin says whether it landed.
-      const after = readRef(ctx, REF)
-      if (after.state === 'present' && after.sha === built) { commit = built; break }
+      if (originHolds(built, `the push of ${built.slice(0, 12)} to ${BRANCH} may have landed, and origin could not be read to tell`)) { commit = built; break }
       refuse(`the push of ${built.slice(0, 12)} to ${BRANCH} did not land: ${status === null ? said(push) : `${JSON.stringify(status.flag)} ${redact(status.summary)}`}`)
     }
     if (attempt >= ATTEMPTS) refuse(`${BRANCH} moved under each of ${ATTEMPTS} pushes, so concurrent runs keep winning; nothing of this run is on origin`)
   }
 
   // Read back: origin holds the commit, and GitHub serves each blob at it.
-  const after = readRef(ctx, REF)
-  if (after.state === 'unknown') refuse(`the push landed but origin could not be read back: ${after.detail}`, { commit })
-  if (after.state !== 'present' || after.sha !== commit) {
-    const tip = fetchTip()
-    if (tip === null || git(['merge-base', '--is-ancestor', commit, tip]).code !== 0) {
-      refuse(`origin's ${BRANCH} does not contain the pushed commit ${commit.slice(0, 12)}`, { commit })
-    }
+  if (!originHolds(commit, 'the push landed but origin could not be read back')) {
+    refuse(`origin's ${BRANCH} does not contain the pushed commit ${commit.slice(0, 12)}`, { commit })
   }
-  const encode = (path) => path.split('/').map(encodeURIComponent).join('/')
+  const segment = (part) => encodeURIComponent(part).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  const encode = (path) => path.split('/').map(segment).join('/')
   for (const b of blobs) {
     const r = runGh(['api', '--hostname', id.host, `repos/${id.owner}/${id.repo}/contents/${encode(b.path)}?ref=${commit}`, '--jq', '.sha'], { cwd: repo })
     const served = r.code === 0 ? r.stdout.trim() : null
@@ -196,9 +206,9 @@ function run({ repoArg, pr, files, env, scratch }) {
     }
   }
 
-  const urlOf = (path) => (visibility === 'PUBLIC'
+  const urlOf = (path) => (visibility === 'PUBLIC' && id.host === 'github.com'
     ? `https://raw.githubusercontent.com/${id.owner}/${id.repo}/${commit}/${encode(path)}`
-    : `https://github.com/${id.owner}/${id.repo}/blob/${commit}/${encode(path)}?raw=true`)
+    : `https://${id.host}/${id.owner}/${id.repo}/raw/${commit}/${encode(path)}`)
   const alt = (name) => name.slice(0, name.length - extname(name).length).replace(/[[\]\\]/g, '\\$&')
   return {
     commit, branch: BRANCH,
