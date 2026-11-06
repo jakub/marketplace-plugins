@@ -127,6 +127,7 @@ exec /bin/sh -c "$last"
   writeFileSync(join(bin, 'git'), `#!/bin/sh
 { for a; do printf '%s\\037' "$a"; done; printf '\\n'; } >> ${log}
 case " $* " in
+  *" rev-list "*) if [ -f ${workspace}/fail-rev-list ]; then echo 'fatal: smoke: rev-list failed' >&2; exit 128; fi ;;
   *" push "*) out=$(${REAL_GIT} "$@"); s=$?; printf '%s\\n' "$out"; printf '%s\\n' "$out" >> ${workspace}/push-out; echo $s >> ${workspace}/push-exits; exit $s ;;
 esac
 exec ${REAL_GIT} "$@"
@@ -459,6 +460,47 @@ console.log('the pin and the read-back')
   check('a non-GitHub origin refuses before any gh call or push', off.code === 1 && off.json?.reason?.includes('gitlab.example') && off.calls.length === 0 && off.pushes.length === 0, detail(off))
 }
 
+console.log('the fetch writes a ref of its own, never the shared tracking ref, and deletes it')
+{
+  // Linked worktrees share refs/remotes, so a rival run's fetch could rewind a shared ref between
+  // this run's fetch and its read. Plant one at an unrelated commit. A declined push updates no
+  // tracking ref itself, so only this run's two fetches could move it.
+  const main = w.git(w.repo, 'rev-parse', 'main')
+  w.git(w.repo, 'update-ref', 'refs/remotes/origin/flow-evidence', main)
+  writeFileSync(w.preMode, 'decline')
+  const logBefore = gitLog().length
+  const r = push(20, [file('one/own-ref.png', 'png own ref')])
+  rmSync(w.preMode)
+  check('exit 1, "did not land"', r.code === 1 && r.json?.reason?.includes('did not land'), detail(r))
+  check('refs/remotes/origin/flow-evidence still names the planted commit', w.git(w.repo, 'rev-parse', 'refs/remotes/origin/flow-evidence') === main)
+  const fetches = gitLog().slice(logBefore).filter((args) => args.includes('fetch'))
+  const dests = fetches.map((args) => args.at(-1))
+  check('each fetch lands in its own refs/flow-evidence-push/ ref, with an empty --refmap', fetches.length === 2 && dests.every((a) => /^\+refs\/heads\/flow-evidence:refs\/flow-evidence-push\/\d+-[0-9a-f]{12}$/.test(a)) && dests[0] !== dests[1] && fetches.every((args) => args.includes('--refmap=')), JSON.stringify(fetches))
+  w.git(w.repo, 'update-ref', '-d', 'refs/remotes/origin/flow-evidence')
+}
+
+console.log('a read-back git cannot answer refuses with landed: unknown, never "not landed"')
+{
+  writeFileSync(join(w.workspace, 'fail-rev-list'), '')
+  const r = push(21, [file('one/unsure.png', 'png unsure')])
+  rmSync(join(w.workspace, 'fail-rev-list'))
+  check('the push itself answered cleanly, and origin holds it', lastPushExit() === 0 && blobAt(tipOf(), 'pr-21/unsure.png') !== null, String(lastPushExit()))
+  check('exit 1, ok false, landed: "unknown", carrying the pushed commit', r.code === 1 && r.json?.ok === false && r.json.landed === 'unknown' && r.json.commit === tipOf(), detail(r))
+  check('and the reason says git could not answer', r.json?.reason?.includes('git could not say whether'), r.json?.reason)
+  check('and no contents read-back ran', r.contents.length === 0, JSON.stringify(r.contents))
+}
+
+console.log('a lost push answer git cannot place refuses with landed: unknown after one push')
+{
+  writeFileSync(w.hookMode, 'kill')
+  writeFileSync(join(w.workspace, 'fail-rev-list'), '')
+  const r = push(22, [file('one/unplaced.png', 'png unplaced')])
+  rmSync(join(w.workspace, 'fail-rev-list'))
+  const pushed = r.pushes[0]?.at(-1)?.split(':')[0]
+  check('one push went out, origin holds it, and its answer was lost', r.pushes.length === 1 && tipOf() === pushed && lastPushExit() !== 0, `${r.pushes.length} ${lastPushExit()}`)
+  check('exit 1, ok false, landed: "unknown", commit is the attempted commit', r.code === 1 && r.json?.ok === false && r.json.landed === 'unknown' && r.json.commit === pushed, detail(r))
+}
+
 console.log('no forced update was ever sent')
 {
   const pushes = pushesIn(gitLog())
@@ -468,6 +510,14 @@ console.log('no forced update was ever sent')
   const entries = readFileSync(join(w.origin, 'logs', 'refs', 'heads', 'flow-evidence'), 'utf8').split('\n').filter(Boolean).map((l) => l.split(' ').slice(0, 2))
   const rewinds = entries.filter(([from, to]) => !ZERO.test(from) && spawnSync(REAL_GIT, ['--git-dir', w.origin, 'merge-base', '--is-ancestor', from, to]).status !== 0)
   check(`origin's reflog for flow-evidence (${entries.length} updates) holds only fast-forwards`, entries.length >= 8 && rewinds.length === 0, JSON.stringify(rewinds))
+}
+
+console.log('no fetch ref outlives its run')
+{
+  const left = w.git(w.repo, 'for-each-ref', '--format=%(refname)', 'refs/flow-evidence-push')
+  check('refs/flow-evidence-push/ is empty after every case', left === '', left)
+  const named = gitLog().filter((args) => args.some((a) => a.includes('refs/remotes/')))
+  check('no git call names a refs/remotes/ ref', named.length === 0, JSON.stringify(named))
 }
 
 rmSync(tmp, { recursive: true, force: true })
