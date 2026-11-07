@@ -215,11 +215,13 @@ function run({ repoArg, pr, files, env, scratch }) {
     // concurrent run, however git worded it: a client-side non-fast-forward, or a remote
     // "incorrect old value" when the rival landed after the advertisement. Anything else is a
     // real failure, and retrying it would only repeat it. An unmoved tip proves "did not land" only
-    // when origin rejected the ref: a push that timed out or lost its connection may still commit
-    // on the server after this read, so that stays unknown.
+    // when origin rejected the ref, `[rejected]` or `[remote rejected]`. A push that timed out,
+    // lost its connection or got `[remote failure]` (the "!" flag too, but no answer about the
+    // ref) may still commit on the server after this read, so that stays unknown.
     const seen = originHolds(built, `the push of ${built.slice(0, 12)} to ${BRANCH} may have landed, and origin could not be read to tell`)
     if (seen.holds) { commit = built; break }
-    if (seen.tip === tip && status?.flag !== '!') {
+    const rejected = status?.flag === '!' && /^\[(rejected|remote rejected)\]/.test(status.summary)
+    if (seen.tip === tip && !rejected) {
       refuse(`the push of ${built.slice(0, 12)} to ${BRANCH} gave no answer (${said(push)}), and origin does not hold it yet; it may still land`, { commit: built, landed: 'unknown' })
     }
     if (seen.tip === tip) refuse(`the push of ${built.slice(0, 12)} to ${BRANCH} did not land: origin rejected it, ${redact(status.summary)}`)

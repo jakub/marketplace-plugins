@@ -128,6 +128,14 @@ exec /bin/sh -c "$last"
   writeFileSync(join(bin, 'git'), `#!/bin/sh
 { for a; do printf '%s\\037' "$a"; done; printf '\\n'; } >> ${log}
 case " $* " in
+  *" push "*) if [ -f ${workspace}/remote-failure ]; then
+    # What git prints when receive-pack took the pack but never reported on the ref.
+    for a; do last=$a; done
+    printf 'To origin\n!\t%s\t[remote failure] (remote failed to report status)\nDone\n' "$last" | tee -a ${workspace}/push-out
+    echo 1 >> ${workspace}/push-exits; exit 1
+  fi ;;
+esac
+case " $* " in
   *" rev-list "*) if [ -f ${workspace}/fail-rev-list ]; then echo 'fatal: smoke: rev-list failed' >&2; exit 128; fi ;;
   *" push "*) out=$(${REAL_GIT} "$@"); s=$?; printf '%s\\n' "$out"; printf '%s\\n' "$out" >> ${workspace}/push-out; echo $s >> ${workspace}/push-exits; exit $s ;;
 esac
@@ -491,6 +499,17 @@ console.log('a push that gets no answer while origin stays unmoved is unknown, n
   const before = tipOf()
   const r = push(25, [file('one/dropped.png', 'png dropped')])
   rmSync(join(w.workspace, 'drop-push'))
+  const tried = r.pushes[0]?.at(-1)?.split(':')[0]
+  check('one push went out, and origin is unmoved', r.pushes.length === 1 && tipOf() === before, `${r.pushes.length} ${tipOf()}`)
+  check('exit 1, ok false, landed: "unknown", commit is the attempted commit', r.code === 1 && r.json?.ok === false && r.json.landed === 'unknown' && r.json.commit === tried && !r.json.reason.includes('did not land'), detail(r))
+}
+
+console.log('a "[remote failure]" push with origin unmoved is unknown, never "did not land"')
+{
+  writeFileSync(join(w.workspace, 'remote-failure'), '')
+  const before = tipOf()
+  const r = push(26, [file('one/unreported.png', 'png unreported')])
+  rmSync(join(w.workspace, 'remote-failure'))
   const tried = r.pushes[0]?.at(-1)?.split(':')[0]
   check('one push went out, and origin is unmoved', r.pushes.length === 1 && tipOf() === before, `${r.pushes.length} ${tipOf()}`)
   check('exit 1, ok false, landed: "unknown", commit is the attempted commit', r.code === 1 && r.json?.ok === false && r.json.landed === 'unknown' && r.json.commit === tried && !r.json.reason.includes('did not land'), detail(r))
