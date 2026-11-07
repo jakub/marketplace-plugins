@@ -8,7 +8,7 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Re
 
 Review bots are useful, even when they're wrong. Your job is to get one PR from "pushed" to "ready to land": every thread answered, every check green on the current head, and the branch rebased on the current base.
 
-You write to this PR's branch and to the PR, and nothing else. You never merge or auto-merge, because `land` is the only way in. Babysit works on any PR the user names, flow-managed repo or not.
+You write to this PR's branch, to the PR, and to the repo's `flow-evidence` branch through `evidence-push.mjs` (§Show it), and nothing else. You never merge or auto-merge, because `land` is the only way in. Babysit works on any PR the user names, flow-managed repo or not.
 
 ## Who can start it
 
@@ -19,7 +19,7 @@ An issue run that escalated or suspended hasn't finished.
 
 ## Where to work
 
-Fix on the PR's branch in the issue run's worktree if it still exists, or in a new one under the canonical checkout's `.flow-worktrees/`, with `/.flow-worktrees/` in `.git/info/exclude`. Never in the canonical checkout: the user or another session might be in it. Codex can leave `.git` read-only, so creating the worktree, commits, rebases and pushes go through the approval prompt there.
+Fix on the PR's branch in the issue run's worktree if it still exists, or in a new one under the canonical checkout's `.flow-worktrees/`, with `/.flow-worktrees/` in `.git/info/exclude`. Never in the canonical checkout: the user or another session might be in it. Codex can leave `.git` read-only, so creating the worktree, commits, rebases, pushes and evidence pushes go through the approval prompt there.
 
 ## Triage
 
@@ -99,12 +99,36 @@ A round goes from "something changed" to "pushed and answered":
    - what this reviewer's route can't run, from the list in the `delegate` skill's `reference.md` under "T3 seats: posture and identity". The reviewer reports those checks as not run, which is neither a pass nor a finding.
 
    Flow supplies the reviewer instruction itself, so the brief doesn't restate it.
-5. **Push once**, then reply to and resolve the round's threads, citing the pushed SHA.
+5. **Push once**, then reply to and resolve the round's threads, citing the pushed SHA. A fix that changed something a browser renders carries its image, as §Show it says.
 6. **Wait, then gather.** Gather again once CI finished on the new head and the bots posted against it, or once a reasonable quiet stretch passed with nothing new. Neither makes the PR clean. Only a clean pass, as §Triage defines it, does.
 
 Fix minor findings inline. Hand a substantial round to a write seat with the worktree path: a T3 seat through `delegate_task` in T3 Code, `flow:implementer` in Claude Code, a native spawn in Codex. To hand a running T3 seat verified state, steer it as `delegate` §3 says. The cross-family review in T3 Code is a review seat, opened with `seat.mjs open --access review` as the `delegate` skill says. Outside T3 it's `adversarial-review` mode, through `delegate_to_codex` from Claude Code or `delegate_to_claude` from Codex.
 
 A fix round is one batch of code changes made in response to review. Several commits in one batch count once, and replies, rejections and investigations don't count. The breaker allows exactly 3 fix rounds on `low` and 5 otherwise. The count continues the total journaled on the linked issue, never resets at handoff or when the tier rises, and gets journaled again after every batch. A PR with no flow issue starts at 0 and `standard`. The last allowed batch still gets its review, and no batch after it is authorized. Then, or sooner when fixes keep spawning findings where they land, stop: hand the survivors to a seat picked for settling conflicting reviewers, and give the real ones to the user with your read on each. That stop follows `issue` §8's "Suspending".
+
+## Show it
+
+A reviewer reads the PR page, often on a phone, and a change they can see should be shown there, not described. Put an annotated before/after image inline whenever a round changes something a browser renders, and whenever a criterion's evidence is a browser test or a visible state: in the evidence ledger row for a criterion, and in the thread reply for a fix a reviewer asked for. The image shows the evidence; it isn't the evidence. Keep the committed test's pointer beside it, because `issue` inv.4 needs one a stranger can re-run.
+
+1. **Capture a matched pair.** The before is the PR's base, or the pre-fix head for a fix. The after is the head you're about to push. Take both from the same browser test, each head in its own worktree, with the same data, viewport, theme, device scale and clock, so the only pixels that move are the change. Both images must be the same size, so screenshot the viewport or one element, not a full page whose height the change can move: `markup.mjs` refuses a pair that differs. A Playwright test that already reaches the state is the best source: screenshot at the state it asserts. When the PR adds the view, the base has nothing to wait for: take the before from the closest base state at the same size, such as the page or route the view hangs off, and say so in the legend, or show no image and say why in the ledger row. Capture only synthetic data, never the user's dev stack, because the image is published.
+2. **Mark it up.** Run `node <plugin-root>/scripts/markup.mjs --before b.png --after a.png --out <name>.png --spec spec.json --legend`. The spec numbers and labels each change, with boxes in after-image pixels: `{"title": "...", "annotations": [{"n": 1, "box": [x, y, w, h], "label": "..."}]}`. `--auto` boxes the pixel diff for a first look, but label every box before you publish. The script finds Playwright in the repo, and exit 3 means it didn't. Read why. A refusal of a tracked or planted install is the trust check working, so never answer it by pointing into the checkout. Pass `--playwright <package.json>` at an install outside the checkout, which a PR from outside the repo's writers always needs. Open the output and look at it. A box that misses, a badge over the change or a crop that hides it gets fixed before anyone else sees it.
+3. **Publish it.** Run `node <plugin-root>/scripts/evidence-push.mjs <worktree> --pr <N> <file>...`. It commits the images to the repo's `flow-evidence` branch, which is never merged, rewritten or deleted, and prints SHA-pinned URLs with ready markdown. Paste the markdown and the legend table into the ledger row or reply. On a public repo the image is world-readable, so check every pixel for secrets, tokens in URLs, real hostnames and personal data before you run it.
+
+BAD
+
+> ❌ Fixed in 4f2e1aa: the status badge no longer wraps on iPad.
+
+GOOD
+
+> ✅ Fixed in 4f2e1aa: the status badge keeps one line at iPad width, asserted by `schedules.spec.ts:88`.
+>
+> ![Schedules, iPad](https://raw.githubusercontent.com/<owner>/<repo>/<sha>/pr-42/badge-ipad.png)
+>
+> | # | Change |
+> |---|---|
+> | 1 | Badge copy shortened from "Enabled · next run" to "Enabled" |
+
+A later round that changes the same view makes its image stale: capture the pair again. When nothing visible changed, show nothing. When a criterion is visual but no image could make it readable, say so in its ledger row.
 
 ## Waiting
 
@@ -130,4 +154,4 @@ REST can't tell you whether a thread is resolved, and resolving is GraphQL only,
 
 ## Report
 
-Clean: say so, with the head SHA, and name `land` as the next move. If the PR body has `## Risk` and `## Revert` sections, check them against the final diff first, because your rounds can change what a rollback leaves behind. Update them if they're stale, never lowering the tier. Then repeat the tier and the Revert line, so the user sees what a rollback costs before they ask to land. If the PR closes a flow issue, journal a comment on it whose first line after the charter's attribution block is exactly `babysit: clean #<pr> <40-hex head>`, because a `chain` ledger counts the PR clean only on that line. When this session's starting prompt carries a land grant for that issue, invoke the `land` skill on the PR and the head you called clean, instead of stopping. Otherwise: the PR's state, each finding whose outcome is the user's with your read on it, what each other open item waits on, and what you tried. When the report ends on a decision only the user can make, stop the way `issue` §8's "Suspending" says. Either way, give the number of findings you rejected, declines included. The thread replies are the audit trail.
+Clean: say so, with the head SHA, and name `land` as the next move. Before you call it clean, every visual criterion in the ledger shows an image whose after side is the final state of that view, or says why no image could show it, per §Show it. If the PR body has `## Risk` and `## Revert` sections, check them against the final diff first, because your rounds can change what a rollback leaves behind. Update them if they're stale, never lowering the tier. Then repeat the tier and the Revert line, so the user sees what a rollback costs before they ask to land. If the PR closes a flow issue, journal a comment on it whose first line after the charter's attribution block is exactly `babysit: clean #<pr> <40-hex head>`, because a `chain` ledger counts the PR clean only on that line. When this session's starting prompt carries a land grant for that issue, invoke the `land` skill on the PR and the head you called clean, instead of stopping. Otherwise: the PR's state, each finding whose outcome is the user's with your read on it, what each other open item waits on, and what you tried. When the report ends on a decision only the user can make, stop the way `issue` §8's "Suspending" says. Either way, give the number of findings you rejected, declines included. The thread replies are the audit trail.
