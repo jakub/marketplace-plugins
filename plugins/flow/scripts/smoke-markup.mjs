@@ -110,6 +110,11 @@ console.log('a bad spec exits 2 with a message, before any Playwright lookup')
   writeFileSync(crop, JSON.stringify({ crop: [0, 0, 10] }))
   const c = run([...io, '--auto', '--spec', crop, '--out', join(tmp, 'x.png')], noPw)
   check('a three-number crop, even under --auto: exit 2', c.status === 2 && c.stderr.includes('spec.crop must be'), `${c.status} ${c.stderr}`)
+  for (const [name, bad] of [['zero width', [0, 0, 0, 100]], ['negative width', [0, 0, -10, 100]], ['zero height', [0, 0, 100, 0]], ['negative x', [-1, 0, 100, 100]]]) {
+    writeFileSync(crop, JSON.stringify({ crop: bad }))
+    const z = run([...io, '--spec', crop, '--out', join(tmp, 'x.png')], noPw)
+    check(`a crop with ${name}: exit 2, naming the rule`, z.status === 2 && z.stderr.includes('positive w and h'), `${z.status} ${z.stderr}`)
+  }
   const missing = run([...io, '--out', join(tmp, 'x.png')], noPw)
   check('a pointer that resolves no Playwright: exit 3, naming the pointer', missing.status === 3 && missing.stderr.includes('FLOW_MARKUP_PLAYWRIGHT points at'), `${missing.status} ${missing.stderr}`)
 }
@@ -206,6 +211,22 @@ console.log('discovery trusts only an untracked install inside node_modules')
     writeFileSync(join(dir, 'payload.cjs'), payload(marker))
     const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, 'loose.png')], { cwd: dir, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
     skippedFor({ label: 'outside a repository, an entry outside node_modules', r, marker }, 'outside any node_modules')
+  }
+  // A checkout under a directory named node_modules, whose own committed package.json is named
+  // playwright: Node's package self-reference resolves it, and its path does pass through a
+  // node_modules, but one above the repository, not one inside it.
+  {
+    const repo = join(tmp, 'node_modules', 'selfref')
+    const marker = join(tmp, 'selfref.loaded')
+    mkdirSync(repo, { recursive: true })
+    writeFileSync(join(repo, 'package.json'), '{ "name": "playwright", "version": "0.0.0", "exports": "./payload.cjs" }\n')
+    writeFileSync(join(repo, 'payload.cjs'), payload(marker))
+    const git = (...args) => execFileSync(REAL_GIT, ['-C', repo, '-c', 'user.name=s', '-c', 'user.email=s@example.invalid', ...args], { env: discoveryEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    git('init', '-q')
+    git('add', '--', 'package.json', 'payload.cjs')
+    git('commit', '-q', '-m', 'plant')
+    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, 'selfref.png')], { cwd: repo, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
+    skippedFor({ label: 'a self-referencing package under an outer node_modules', r, marker }, 'outside any node_modules')
   }
   const untracked = plant('untracked')
   check('untracked: the module is loaded (its marker is written)', existsSync(untracked.marker))

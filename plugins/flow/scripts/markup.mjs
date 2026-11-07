@@ -87,8 +87,9 @@ function parseArgs(argv) {
 /** The spec's annotations, or null under --auto, which reads only its title and crop. */
 function validateSpec(spec, auto) {
   if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) throw new Error('spec must be a JSON object')
-  if (spec.crop !== undefined && spec.crop !== null && (!Array.isArray(spec.crop) || spec.crop.length !== 4 || !spec.crop.every(Number.isFinite))) {
-    throw new Error('spec.crop must be [x, y, w, h]')
+  const crop = spec.crop
+  if (crop !== undefined && crop !== null && (!Array.isArray(crop) || crop.length !== 4 || !crop.every(Number.isFinite) || crop[0] < 0 || crop[1] < 0 || crop[2] <= 0 || crop[3] <= 0)) {
+    throw new Error('spec.crop must be [x, y, w, h] with x and y at least 0 and positive w and h')
   }
   if (auto) return null
   const anns = spec.annotations ?? []
@@ -121,8 +122,10 @@ const gitIn = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encodin
 
 /**
  * Why a discovered module isn't trusted, or null when it is. The entry, followed through every
- * symlink, must sit inside a node_modules directory, and the outermost node_modules on its logical
- * path and on its real one may hold no file git tracks, so a sibling dependency planted elsewhere
+ * symlink, must sit inside a node_modules directory of the repository that holds it, so a
+ * checkout under a directory named node_modules can't pass its own committed package (Node's
+ * package self-reference resolves one) for an install. The outermost such node_modules on the
+ * entry's logical path and on its real one may hold no file git tracks, so a sibling dependency planted elsewhere
  * in that tree (a pnpm store, say) is covered too. A git that can't answer is a refusal,
  * never a pass. "Outside any repository" is read from the filesystem, a `.git` entry in no
  * directory above, never from a git error, because git also refuses a repository it distrusts,
@@ -131,12 +134,16 @@ const gitIn = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encodin
 const untrusted = (resolved) => {
   let real
   try { real = realpathSync(resolved) } catch { return `${resolved} does not resolve` }
+  // The outermost node_modules below the top of the repository holding file, or below / outside
+  // any repository.
   const modulesOf = (file) => {
     const parts = file.split(path.sep)
-    const at = parts.indexOf('node_modules')
+    const top = repoTopOf(path.dirname(file))
+    const at = parts.indexOf('node_modules', top === null ? 0 : top.split(path.sep).length)
     return at === -1 ? null : parts.slice(0, at + 1).join(path.sep)
   }
   if (modulesOf(real) === null) return `${resolved} resolves to ${real}, outside any node_modules`
+  if (modulesOf(resolved) === null) return `${resolved} sits outside any node_modules`
   for (const dir of new Set([modulesOf(resolved), modulesOf(real)].filter(Boolean))) {
     const parent = path.dirname(dir)
     if (repoTopOf(parent) === null) continue
