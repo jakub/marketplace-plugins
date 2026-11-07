@@ -42,7 +42,11 @@
 // trust the stage hadn't already given by running them. For a pull request from someone outside
 // the repository's writers, point 1 or 2 at an install outside the checkout.
 //
-// Exit codes: 0 rendered; 2 usage, or a spec that is not JSON or not the shape above; 3 no
+// Both images must be the same size, and a pair that isn't is refused rather than cropped to
+// the area they share.
+//
+// Exit codes: 0 rendered; 2 usage, a spec that is not JSON or not the shape above, or a before
+// and after of different sizes; 3 no
 // Playwright resolves, or its browser does not launch (Playwright's own message, which names the
 // install command); 1 anything else, such as an unreadable or undecodable image.
 
@@ -242,6 +246,11 @@ async function main(argv, env) {
       seed,
     })
     if (errors.length) throw new Error(errors.join('\n'))
+    if (result.mismatch) {
+      const { before: b, after: a } = result.mismatch
+      throw new Exit(2, `markup: the before is ${b[0]}x${b[1]} and the after is ${a[0]}x${a[1]}; capture both at the same size, ` +
+        'such as the same viewport or the same element, so no change falls outside the comparison')
+    }
     const png = Buffer.from(result.png.slice(result.png.indexOf(',') + 1), 'base64')
     await fs.mkdir(path.dirname(path.resolve(opts.out)), { recursive: true })
     await fs.writeFile(opts.out, png)
@@ -305,8 +314,13 @@ async function render({ before, after, font, annotations, cropOverride, title, s
   }
   const pxB = pixels(imgB)
   const pxA = pixels(imgA)
-  const W = Math.min(pxA.width, pxB.width)
-  const H = Math.min(pxA.height, pxB.height)
+  // A pair of different sizes is refused: comparing only the shared area would hide a change
+  // that grew the page, and clamp a box drawn in the after image's own pixels.
+  if (pxA.width !== pxB.width || pxA.height !== pxB.height) {
+    return { mismatch: { before: [pxB.width, pxB.height], after: [pxA.width, pxA.height] } }
+  }
+  const W = pxA.width
+  const H = pxA.height
   // Pixel unit: 1 for DPR 1 screenshots, 2 for retina captures.
   const u = pxA.width >= 2200 ? 2 : 1
 

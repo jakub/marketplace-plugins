@@ -239,6 +239,13 @@ console.log('render cases')
     const md = join(tmp, 'legend.md')
     const text = existsSync(md) ? readFileSync(md, 'utf8') : ''
     check('--legend writes <out>.md with the escaped label', legend.status === 0 && text === '| # | Change |\n|---|---|\n| 1 | Red \\| box |\n', `${legend.status} ${legend.stderr} ${JSON.stringify(text)}`)
+    // A change that grew the page: the after is taller, and the new control sits below the
+    // before's last row, where a shared-area comparison would never look.
+    const taller = join(tmp, 'taller.png')
+    writeFileSync(taller, encodePng(600, 600, (x, y) => (x >= 300 && x < 380 && y >= 450 && y < 490 ? [255, 0, 0] : [255, 255, 255])))
+    const out4 = join(tmp, 'grown.png')
+    const grown = run(['--before', before, '--after', taller, '--auto', '--out', out4])
+    check('a before and after of different sizes exits 2, naming both sizes, and writes nothing', grown.status === 2 && grown.stderr.includes('600x400') && grown.stderr.includes('600x600') && !existsSync(out4), `${grown.status} ${grown.stderr}`)
   }
 }
 
