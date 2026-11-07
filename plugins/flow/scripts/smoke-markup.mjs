@@ -302,19 +302,23 @@ console.log('render cases')
     const second = run([...io, '--auto', '--dump-regions', '--out', out2])
     check('a second run gives identical bytes', second.status === 0 && existsSync(out2) && readFileSync(out2).equals(bytes1), `${second.status} ${second.stderr}`)
     const spec = join(tmp, 'spec.json')
-    writeFileSync(spec, JSON.stringify({ title: 'Smoke', annotations: [{ n: 1, box: [RECT.x, RECT.y, RECT.w, RECT.h], label: 'Red | box' }] }))
+    writeFileSync(spec, JSON.stringify({ title: 'Smoke', annotations: [{ n: 1, box: [RECT.x, RECT.y, RECT.w, RECT.h], label: 'Red | box\nsecond line' }] }))
     const out3 = join(tmp, 'legend.png')
     const legend = run([...io, '--spec', spec, '--legend', '--out', out3])
     const md = join(tmp, 'legend.md')
     const text = existsSync(md) ? readFileSync(md, 'utf8') : ''
-    check('--legend writes <out>.md with the escaped label', legend.status === 0 && text === '| # | Change |\n|---|---|\n| 1 | Red \\| box |\n', `${legend.status} ${legend.stderr} ${JSON.stringify(text)}`)
+    check('--legend writes <out>.md with the escaped label', legend.status === 0 && text === '| # | Change |\n|---|---|\n| 1 | Red \\| box second line |\n', `${legend.status} ${legend.stderr} ${JSON.stringify(text)}`)
     // A change that grew the page: the after is taller, and the new control sits below the
     // before's last row, where a shared-area comparison would never look.
     const taller = join(tmp, 'taller.png')
     writeFileSync(taller, encodePng(600, 600, (x, y) => (x >= 300 && x < 380 && y >= 450 && y < 490 ? [255, 0, 0] : [255, 255, 255])))
+    const edge = join(tmp, 'edge.json')
+    writeFileSync(edge, JSON.stringify({ crop: [500, 300, 200, 200] }))
+    const past = run([...io, '--auto', '--spec', edge, '--out', join(tmp, 'edge.png')])
+    check('a crop past the image edge exits 2, naming the crop and the size, and writes nothing', past.status === 2 && past.stderr.includes('spec.crop [500, 300, 200, 200] runs past the 600x400 images') && !existsSync(join(tmp, 'edge.png')), `${past.status} ${past.stderr}`)
     const out4 = join(tmp, 'grown.png')
     const grown = run(['--before', before, '--after', taller, '--auto', '--out', out4])
-    check('a before and after of different sizes exits 2, naming both sizes, and writes nothing', grown.status === 2 && grown.stderr.includes('600x400') && grown.stderr.includes('600x600') && !existsSync(out4), `${grown.status} ${grown.stderr}`)
+    check('a before and after of different sizes exits 2, naming both sizes, and writes nothing', grown.status === 2 && grown.stderr.includes('the before is 600x400 and the after is 600x600; capture both at the same size') && !existsSync(out4), `${grown.status} ${grown.stderr}`)
   }
 }
 

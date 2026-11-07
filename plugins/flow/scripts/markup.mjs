@@ -43,10 +43,10 @@
 // the repository's writers, point 1 or 2 at an install outside the checkout.
 //
 // Both images must be the same size, and a pair that isn't is refused rather than cropped to
-// the area they share.
+// the area they share. A spec crop must lie inside them.
 //
-// Exit codes: 0 rendered; 2 usage, a spec that is not JSON or not the shape above, or a before
-// and after of different sizes; 3 no
+// Exit codes: 0 rendered; 2 usage, a spec that is not JSON or not the shape above, a before
+// and after of different sizes, or a crop past their edge; 3 no
 // Playwright resolves, or its browser does not launch (Playwright's own message, which names the
 // install command); 1 anything else, such as an unreadable or undecodable image.
 
@@ -271,6 +271,10 @@ async function main(argv, env) {
       throw new Exit(2, `markup: the before is ${b[0]}x${b[1]} and the after is ${a[0]}x${a[1]}; capture both at the same size, ` +
         'such as the same viewport or the same element, so no change falls outside the comparison')
     }
+    if (result.outside) {
+      const { crop, size } = result.outside
+      throw new Exit(2, `markup: spec.crop [${crop.join(', ')}] runs past the ${size[0]}x${size[1]} images; keep x + w and y + h inside them`)
+    }
     const png = Buffer.from(result.png.slice(result.png.indexOf(',') + 1), 'base64')
     await fs.mkdir(path.dirname(path.resolve(opts.out)), { recursive: true })
     await fs.writeFile(opts.out, png)
@@ -280,7 +284,7 @@ async function main(argv, env) {
     )
     if (opts.dump) console.log(JSON.stringify(result.annotations.map((a) => ({ n: a.n, box: a.box }))))
     if (opts.legend) {
-      const rows = result.annotations.map((a) => `| ${a.n} | ${(a.label || '_describe the change_').replace(/\|/g, '\\|')} |`)
+      const rows = result.annotations.map((a) => `| ${a.n} | ${(a.label || '_describe the change_').replace(/\r\n|\r|\n/g, ' ').replace(/\|/g, '\\|')} |`)
       const md = ['| # | Change |', '|---|---|', ...rows, ''].join('\n')
       const mdPath = opts.out.replace(/\.png$/i, '') + '.md'
       await fs.writeFile(mdPath, md)
@@ -500,7 +504,11 @@ async function render({ before, after, font, annotations, cropOverride, title, s
     if (crop.w * crop.h > 0.85 * W * H) crop = { x: 0, y: 0, w: W, h: H }
   }
   // Optional spec.crop [x, y, w, h] in after-image pixels overrides the computed crop.
-  if (cropOverride) crop = { x: cropOverride[0], y: cropOverride[1], w: cropOverride[2], h: cropOverride[3] }
+  if (cropOverride) {
+    crop = { x: cropOverride[0], y: cropOverride[1], w: cropOverride[2], h: cropOverride[3] }
+    // A crop past the image's edge would sample pixels that aren't there.
+    if (crop.x + crop.w > W || crop.y + crop.h > H) return { outside: { crop: cropOverride, size: [W, H] } }
+  }
 
   // --- palette from the screenshot ----------------------------------------
   let lum = 0
