@@ -94,7 +94,9 @@ function stage(files, scratch) {
     if (seen.has(name)) refuse(`two files are named ${name}, and each lands at pr-<N>/<basename>`)
     seen.add(name)
     let fd
-    try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW) } catch (error) {
+    // O_NONBLOCK, so a FIFO with no writer opens at once and fails the regular-file check below
+    // instead of blocking the run. It changes nothing for a regular file.
+    try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK) } catch (error) {
       refuse(error?.code === 'ELOOP' ? `${name} is a symlink, not a regular file` : `${name} does not open: ${error?.code ?? 'error'}`)
     }
     try {
@@ -201,7 +203,8 @@ function run({ repoArg, pr, files, env, scratch }) {
   for (let attempt = 1; ; attempt += 1) {
     const tip = fetchTip()
     const built = build(tip)
-    const push = git(['push', '--porcelain', 'origin', `${built}:${REF}`], { timeoutMs: 120_000 })
+    // --no-follow-tags, so a push.followTags config can't publish a tag reachable from the commit.
+    const push = git(['push', '--porcelain', '--no-follow-tags', 'origin', `${built}:${REF}`], { timeoutMs: 120_000 })
     const status = pushStatus(push.stdout, REF)
     if (push.code === 0 && (status?.flag === ' ' || status?.flag === '*')) { commit = built; break }
     // Whatever the failure looked like, origin says what happened. An answer lost on the way back

@@ -196,7 +196,8 @@ const run = (args, extra = {}) => {
   const logBefore = gitLog().length
   const callsBefore = state().calls.length
   const contentsBefore = state().contents.length
-  const r = spawnSync(process.execPath, [EXECUTOR, ...args], { encoding: 'utf8', env: { ...w.env, ...extra } })
+  // The timeout turns a hang, such as a blocking open, into a failed check instead of a stuck suite.
+  const r = spawnSync(process.execPath, [EXECUTOR, ...args], { encoding: 'utf8', env: { ...w.env, ...extra }, timeout: 60_000 })
   let json = null
   try { json = JSON.parse(r.stdout) } catch {}
   const st = state()
@@ -419,8 +420,10 @@ console.log('refusals before any push')
     ['a symlink', [link], 'symlink'],
     ['a missing file', [join(files, 'none.png')], 'does not open'],
     ['a directory', [join(files, 'one.png')], ''],
+    ['a FIFO with no writer', [join(files, 'pipe.png')], 'is not a regular file'],
   ]) {
     if (name === 'a directory') mkdirSync(join(files, 'one.png'))
+    if (name === 'a FIFO with no writer') execFileSync('mkfifo', [join(files, 'pipe.png')])
     const tip = tipOf()
     const r = push(12, paths)
     check(`${name}: exit 1, ok false${text ? `, ${text}` : ''}`, r.code === 1 && r.json?.ok === false && r.json.reason.includes(text), detail(r))
@@ -458,6 +461,20 @@ console.log('the pin and the read-back')
   const off = push(13, [file('one/k.png', 'png k')])
   w.git(w.repo, 'remote', 'set-url', 'origin', 'git@github.com:jakub/demo.git')
   check('a non-GitHub origin refuses before any gh call or push', off.code === 1 && off.json?.reason?.includes('gitlab.example') && off.calls.length === 0 && off.pushes.length === 0, detail(off))
+}
+
+console.log('push.followTags never publishes a tag along with the evidence')
+{
+  // An annotated tag on origin's current tip, which the next commit descends from, and the config
+  // that would push it with the branch.
+  const tip = tipOf()
+  w.git(w.repo, 'tag', '-a', '-m', 'unpublished', 'smoke-unpublished', tip)
+  w.git(w.repo, 'config', 'push.followTags', 'true')
+  const r = push(23, [file('one/tagless.png', 'png tagless')])
+  w.git(w.repo, 'config', '--unset', 'push.followTags')
+  w.git(w.repo, 'tag', '-d', 'smoke-unpublished')
+  check('exit 0, ok, the new commit descends from the tagged tip', r.code === 0 && r.json?.ok === true && w.og('rev-parse', `${tipOf()}^`) === tip, detail(r))
+  check('origin holds no tag', w.og('for-each-ref', 'refs/tags') === '', w.og('for-each-ref', 'refs/tags'))
 }
 
 console.log('the fetch writes a ref of its own, never the shared tracking ref, and deletes it')
