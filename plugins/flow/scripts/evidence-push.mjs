@@ -235,7 +235,9 @@ function run({ repoArg, pr, files, env, scratch }) {
   const segment = (part) => encodeURIComponent(part).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
   const encode = (path) => path.split('/').map(segment).join('/')
   for (const b of blobs) {
-    const r = runGh(['api', '--hostname', id.host, `repos/${id.owner}/${id.repo}/contents/${encode(b.path)}?ref=${commit}`, '--jq', '.sha'], { cwd: repo })
+    // The object media type, because GitHub serves a file over 1 MB through the contents API only
+    // as raw or object, and the check needs only .sha.
+    const r = runGh(['api', '--hostname', id.host, '-H', 'Accept: application/vnd.github.object+json', `repos/${id.owner}/${id.repo}/contents/${encode(b.path)}?ref=${commit}`, '--jq', '.sha'], { cwd: repo })
     const served = r.code === 0 ? r.stdout.trim() : null
     if (served !== b.blob) {
       refuse(`GitHub does not serve ${b.path} at ${commit.slice(0, 12)} as blob ${b.blob.slice(0, 12)}: ${served === null ? firstLine(r.stderr) || `exit ${r.code}` : `it names ${served.slice(0, 12)}`}`, { commit })

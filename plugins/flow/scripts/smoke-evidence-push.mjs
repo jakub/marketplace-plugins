@@ -55,6 +55,8 @@ if (argv[0] === 'api') {
   if (at('--hostname') !== (st.host || 'github.com')) fail('api off the pin: ' + argv.join(' '))
   const m = String(argv.find((a) => a.startsWith('repos/'))).match(/^repos\\/jakub\\/demo\\/contents\\/([^?]+)\\?ref=([0-9a-f]+)$/)
   if (!m || at('--jq') !== '.sha') fail('unexpected api ' + argv.join(' '))
+  // Over 1 MB, GitHub's contents API answers only the raw or object media type.
+  if (at('-H') !== 'Accept: application/vnd.github.object+json') fail('contents read without the object media type: ' + argv.join(' '))
   const path = m[1].split('/').map(decodeURIComponent).join('/')
   st.contents.push({ path, ref: m[2] })
   if (st.contentsLie) out('f'.repeat(40) + '\\n')
