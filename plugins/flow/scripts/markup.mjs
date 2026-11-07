@@ -118,38 +118,51 @@ const repoTopOf = (dir) => {
     if (path.dirname(at) === at) return null
   }
 }
+// Every directory at or above dir with a .git entry, innermost first.
+const repoTopsOf = (dir) => {
+  const tops = []
+  for (let at = dir; ; at = path.dirname(at)) {
+    if (existsSync(path.join(at, '.git'))) tops.push(at)
+    if (path.dirname(at) === at) return tops
+  }
+}
 const gitIn = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 })
 
 /**
- * Why a discovered module isn't trusted, or null when it is. The entry, followed through every
- * symlink, must sit inside a node_modules directory of the repository that holds it, so a
- * checkout under a directory named node_modules can't pass its own committed package (Node's
- * package self-reference resolves one) for an install. The outermost such node_modules on the
- * entry's logical path and on its real one may hold no file git tracks, so a sibling dependency planted elsewhere
- * in that tree (a pnpm store, say) is covered too. A git that can't answer is a refusal,
- * never a pass. "Outside any repository" is read from the filesystem, a `.git` entry in no
- * directory above, never from a git error, because git also refuses a repository it distrusts,
- * such as one with dubious ownership, and that refusal must not read as "nothing is tracked".
+ * Why a discovered module isn't trusted, or null when it is. Two rules, on the entry's logical
+ * path and on its real one, followed through every symlink. The entry must sit inside a
+ * node_modules of the repository that holds it, so a checkout under a directory named
+ * node_modules can't pass its own committed package (Node's package self-reference resolves one)
+ * for an install. And no node_modules on either path may hold a file that any repository around
+ * it tracks, so neither a sibling dependency planted elsewhere in that tree (a pnpm store, say)
+ * nor an outer repository's committed tree with a nested repository inside it passes. A git that
+ * can't answer is a refusal, never a pass. "Outside any repository" is read from the filesystem,
+ * a `.git` entry in no directory above, never from a git error, because git also refuses a
+ * repository it distrusts, such as one with dubious ownership, and that refusal must not read as
+ * "nothing is tracked".
  */
 const untrusted = (resolved) => {
   let real
   try { real = realpathSync(resolved) } catch { return `${resolved} does not resolve` }
-  // The outermost node_modules below the top of the repository holding file, or below / outside
-  // any repository.
-  const modulesOf = (file) => {
+  // The first node_modules below the top of the repository holding file, or below / outside any.
+  const ownModulesOf = (file) => {
     const parts = file.split(path.sep)
     const top = repoTopOf(path.dirname(file))
     const at = parts.indexOf('node_modules', top === null ? 0 : top.split(path.sep).length)
     return at === -1 ? null : parts.slice(0, at + 1).join(path.sep)
   }
-  if (modulesOf(real) === null) return `${resolved} resolves to ${real}, outside any node_modules`
-  if (modulesOf(resolved) === null) return `${resolved} sits outside any node_modules`
-  for (const dir of new Set([modulesOf(resolved), modulesOf(real)].filter(Boolean))) {
-    const parent = path.dirname(dir)
-    if (repoTopOf(parent) === null) continue
-    let listed
-    try { listed = gitIn(parent, ['ls-files', '-z', '--', dir]) } catch { return `git could not say whether it tracks files under ${dir}` }
-    if (listed.length > 0) return `git tracks files under ${dir}`
+  if (ownModulesOf(real) === null) return `${resolved} resolves to ${real}, outside any node_modules`
+  if (ownModulesOf(resolved) === null) return `${resolved} sits outside any node_modules`
+  const modulesOn = (file) => {
+    const parts = file.split(path.sep)
+    return parts.flatMap((part, i) => (part === 'node_modules' ? [parts.slice(0, i + 1).join(path.sep)] : []))
+  }
+  for (const dir of new Set([...modulesOn(resolved), ...modulesOn(real)])) {
+    for (const top of repoTopsOf(path.dirname(dir))) {
+      let listed
+      try { listed = gitIn(top, ['ls-files', '-z', '--', dir]) } catch { return `git could not say whether ${top} tracks files under ${dir}` }
+      if (listed.length > 0) return `git tracks files under ${dir}`
+    }
   }
   return null
 }

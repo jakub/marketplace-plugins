@@ -228,6 +228,54 @@ console.log('discovery trusts only an untracked install inside node_modules')
     const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, 'selfref.png')], { cwd: repo, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
     skippedFor({ label: 'a self-referencing package under an outer node_modules', r, marker }, 'outside any node_modules')
   }
+  // An outer repository commits a playwright, and a repository initialized inside its tree tracks
+  // only its own package.json. Run from the inner one, its index sees no tracked node_modules, so
+  // only asking every repository around each node_modules finds the committed bytes. Once with
+  // the commit under an outer node_modules, once under the inner repository's own.
+  for (const [label, rel] of [['nested under an outer node_modules', join('node_modules', 'project')], ['nested, the outer repository tracking the inner node_modules', 'project']]) {
+    const outer = join(tmp, label.replace(/[^a-z]+/g, '-'))
+    const inner = join(outer, rel)
+    const mod = join(inner, 'node_modules', 'playwright')
+    const marker = join(tmp, `${label.replace(/[^a-z]+/g, '-')}.loaded`)
+    mkdirSync(mod, { recursive: true })
+    writeFileSync(join(inner, 'package.json'), '{ "name": "project", "private": true }\n')
+    writeFileSync(join(mod, 'package.json'), '{ "name": "playwright", "version": "0.0.0", "main": "index.js" }\n')
+    writeFileSync(join(mod, 'index.js'), payload(marker))
+    const gitAt = (dir, ...args) => execFileSync(REAL_GIT, ['-C', dir, '-c', 'user.name=s', '-c', 'user.email=s@example.invalid', ...args], { env: discoveryEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    gitAt(outer, 'init', '-q')
+    gitAt(outer, 'add', '-f', '--', join(rel, 'node_modules'))
+    gitAt(outer, 'commit', '-q', '-m', 'plant')
+    gitAt(inner, 'init', '-q')
+    gitAt(inner, 'add', '--', 'package.json')
+    gitAt(inner, 'commit', '-q', '-m', 'inner')
+    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, 'nested.png')], { cwd: inner, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
+    skippedFor({ label, r, marker }, 'git tracks files under')
+  }
+  // The inner repository's playwright is untracked everywhere, but it requires playwright-core,
+  // and Node's resolution climbs to the one the outer repository committed in its node_modules.
+  // Only checking every node_modules on the path, the outer one too, finds it.
+  {
+    const outer = join(tmp, 'nested-dependency')
+    const inner = join(outer, 'node_modules', 'project')
+    const mod = join(inner, 'node_modules', 'playwright')
+    const core = join(outer, 'node_modules', 'playwright-core')
+    const marker = join(tmp, 'nested-dependency.loaded')
+    for (const d of [mod, core]) mkdirSync(d, { recursive: true })
+    writeFileSync(join(inner, 'package.json'), '{ "name": "project", "private": true }\n')
+    writeFileSync(join(mod, 'package.json'), '{ "name": "playwright", "version": "0.0.0", "main": "index.js" }\n')
+    writeFileSync(join(mod, 'index.js'), "module.exports = require('playwright-core')\n")
+    writeFileSync(join(core, 'package.json'), '{ "name": "playwright-core", "version": "0.0.0", "main": "index.js" }\n')
+    writeFileSync(join(core, 'index.js'), payload(marker))
+    const gitAt = (dir, ...args) => execFileSync(REAL_GIT, ['-C', dir, '-c', 'user.name=s', '-c', 'user.email=s@example.invalid', ...args], { env: discoveryEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    gitAt(outer, 'init', '-q')
+    gitAt(outer, 'add', '-f', '--', join('node_modules', 'playwright-core'))
+    gitAt(outer, 'commit', '-q', '-m', 'plant')
+    gitAt(inner, 'init', '-q')
+    gitAt(inner, 'add', '--', 'package.json')
+    gitAt(inner, 'commit', '-q', '-m', 'inner')
+    const r = spawnSync(process.execPath, [SCRIPT, ...io, '--auto', '--out', join(tmp, 'nested-dependency.png')], { cwd: inner, encoding: 'utf8', env: discoveryEnv, timeout: 120_000 })
+    skippedFor({ label: 'nested, a dependency committed in the outer node_modules', r, marker }, 'git tracks files under')
+  }
   const untracked = plant('untracked')
   check('untracked: the module is loaded (its marker is written)', existsSync(untracked.marker))
   check('untracked: exit 3 on its throwing launch', untracked.r.status === 3 && untracked.r.stderr.includes('did not launch: fake playwright: no browser here'), `${untracked.r.status} ${untracked.r.stderr}`)
