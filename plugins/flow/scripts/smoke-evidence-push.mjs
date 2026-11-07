@@ -110,6 +110,7 @@ cd ${base} || exit 1
 for a; do last=$a; done
 case "$last" in
   git-receive-pack*)
+    if [ -f ${workspace}/drop-push ]; then echo 'fatal: smoke: the connection dropped' >&2; exit 1; fi
     if [ -f ${failReads} ]; then : > ${workspace}/pushed; echo 0 > ${workspace}/reads; fi
     n=$(cat ${race})
     if [ "$n" -gt 0 ]; then echo $((n - 1)) > ${race}; ${rival} >/dev/null || exit 1; fi ;;
@@ -461,6 +462,38 @@ console.log('the pin and the read-back')
   const off = push(13, [file('one/k.png', 'png k')])
   w.git(w.repo, 'remote', 'set-url', 'origin', 'git@github.com:jakub/demo.git')
   check('a non-GitHub origin refuses before any gh call or push', off.code === 1 && off.json?.reason?.includes('gitlab.example') && off.calls.length === 0 && off.pushes.length === 0, detail(off))
+}
+
+console.log('a tracked hooks path never runs, on the push or on any ref update')
+{
+  // A pull request's checkout can track its own hooks (husky's .husky/, say) under a hooksPath
+  // the repository's config already names. Plant one for each hook a run could reach.
+  const hooks = join(w.repo, '.githooks')
+  mkdirSync(hooks, { recursive: true })
+  const ran = join(w.workspace, 'hook-ran')
+  for (const h of ['pre-push', 'reference-transaction', 'post-checkout', 'post-index-change']) {
+    writeFileSync(join(hooks, h), `#!/bin/sh\necho ${h} >> ${ran}\nexit 0\n`)
+    chmodSync(join(hooks, h), 0o755)
+  }
+  w.git(w.repo, 'config', 'core.hooksPath', '.githooks')
+  const r = push(24, [file('one/hookless.png', 'png hookless')])
+  w.git(w.repo, 'config', '--unset', 'core.hooksPath')
+  rmSync(hooks, { recursive: true, force: true })
+  check('exit 0, ok', r.code === 0 && r.json?.ok === true, detail(r))
+  let said = ''
+  try { said = readFileSync(ran, 'utf8') } catch {}
+  check('no hook from the tracked hooks path ran', said === '', JSON.stringify(said))
+}
+
+console.log('a push that gets no answer while origin stays unmoved is unknown, never "did not land"')
+{
+  writeFileSync(join(w.workspace, 'drop-push'), '')
+  const before = tipOf()
+  const r = push(25, [file('one/dropped.png', 'png dropped')])
+  rmSync(join(w.workspace, 'drop-push'))
+  const tried = r.pushes[0]?.at(-1)?.split(':')[0]
+  check('one push went out, and origin is unmoved', r.pushes.length === 1 && tipOf() === before, `${r.pushes.length} ${tipOf()}`)
+  check('exit 1, ok false, landed: "unknown", commit is the attempted commit', r.code === 1 && r.json?.ok === false && r.json.landed === 'unknown' && r.json.commit === tried && !r.json.reason.includes('did not land'), detail(r))
 }
 
 console.log('push.followTags never publishes a tag along with the evidence')

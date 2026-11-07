@@ -44,8 +44,9 @@
 // stdout is one JSON line: { ok: true, commit, branch: "flow-evidence", files: [{ path, blob, url,
 // markdown }] } with markdown `![<basename without extension>](<url>)`, exit 0; { ok: false,
 // reason } on a refusal, exit 1, carrying `commit` once one reached origin, and `landed: "unknown"`
-// with the attempted `commit` when origin could not be read to say whether it did; usage on
-// stderr, exit 2.
+// with the attempted `commit` when origin could not be read to say whether it did, or when a
+// push gave no answer and origin doesn't hold it yet; usage on stderr, exit 2. Every git call
+// runs with hooks off, so a hooks path the checkout tracks never runs here.
 
 import { closeSync, constants, fstatSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
@@ -128,7 +129,9 @@ function run({ repoArg, pr, files, env, scratch }) {
   if (pinned.identity === undefined) refuse(pinned.refusal)
   const id = pinned.identity
   const ctx = { cwd: repo, redact, env: gitEnv }
-  const git = (args, { timeoutMs = 10_000, extraEnv } = {}) => execCapture('git', ['-C', repo, ...args], { timeoutMs, env: extraEnv ? { ...gitEnv, ...extraEnv } : gitEnv })
+  // Hooks off for every call: the checkout can be a pull request's, and a hooks path it tracks
+  // (husky's .husky/, say) would otherwise run its pre-push or reference-transaction code here.
+  const git = (args, { timeoutMs = 10_000, extraEnv } = {}) => execCapture('git', ['-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { timeoutMs, env: extraEnv ? { ...gitEnv, ...extraEnv } : gitEnv })
   const said = (r) => redact(firstLine(r.stderr)) || `exit ${r.code}`
   const must = (args, what, opts) => {
     const r = git(args, opts)
@@ -211,10 +214,15 @@ function run({ repoArg, pr, files, env, scratch }) {
     // can hide a push that landed. A tip that moved off the one this commit was built on is a
     // concurrent run, however git worded it: a client-side non-fast-forward, or a remote
     // "incorrect old value" when the rival landed after the advertisement. Anything else is a
-    // real failure, and retrying it would only repeat it.
+    // real failure, and retrying it would only repeat it. An unmoved tip proves "did not land" only
+    // when origin rejected the ref: a push that timed out or lost its connection may still commit
+    // on the server after this read, so that stays unknown.
     const seen = originHolds(built, `the push of ${built.slice(0, 12)} to ${BRANCH} may have landed, and origin could not be read to tell`)
     if (seen.holds) { commit = built; break }
-    if (seen.tip === tip) refuse(`the push of ${built.slice(0, 12)} to ${BRANCH} did not land: ${status === null ? said(push) : `${JSON.stringify(status.flag)} ${redact(status.summary)}`}`)
+    if (seen.tip === tip && status?.flag !== '!') {
+      refuse(`the push of ${built.slice(0, 12)} to ${BRANCH} gave no answer (${said(push)}), and origin does not hold it yet; it may still land`, { commit: built, landed: 'unknown' })
+    }
+    if (seen.tip === tip) refuse(`the push of ${built.slice(0, 12)} to ${BRANCH} did not land: origin rejected it, ${redact(status.summary)}`)
     if (attempt >= ATTEMPTS) refuse(`${BRANCH} moved under each of ${ATTEMPTS} pushes, so concurrent runs keep winning; nothing of this run is on origin`)
   }
 
