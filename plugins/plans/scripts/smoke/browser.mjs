@@ -322,7 +322,9 @@ import { createHash } from 'node:crypto'
 const BAD = ['exception', 'console-csp', 'request-outside', 'load-failed', 'http-status', 'media-decode', 'page-overflow',
   'clipped', 'a-target', 'form', 'outbound-link', 'srcset', 'poster', 'css-url', 'svg-href', 'svg-viewbox', 'svg-label',
   'svg-wide', 'svg-text-small', 'empty-title', 'media-undeclared']
-const BAD_INLINE = ['inline-height', 'inline-kit-hook', 'inline-frame']
+const BAD_INLINE = ['inline-height', 'inline-kit-hook', 'inline-frame', 'inline-shell']
+// The BAD_INLINE kinds the builder refuses before the browser runs, each with its detail.
+const STATIC_INLINE = new Map([['inline-shell', /^<body> carries data-base-shell$/]])
 // A kit page adds the interaction state to every view, so its matrix has 12 cells. `named` maps
 // a case name to a pattern over the result's `interaction: ...` check names: the case passes when
 // at least one check matches and every match passed.
@@ -447,7 +449,7 @@ const CASES = [
   // A block wider than the page in the first of two <details> that share a name. Opening the
   // second closes the first, so the details-open state probes each member in turn.
   { dir: 'bad/overflow-in-details-group', args: [], exit: 1, fault: 'page-overflow' },
-  ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind })),
+  ...BAD_INLINE.map((kind) => ({ dir: `bad-inline/${kind}`, args: ['--inline'], exit: 1, fault: kind, ...(STATIC_INLINE.has(kind) ? { static: true, match: STATIC_INLINE.get(kind) } : {}) })),
   // An Inline page with no viewport meta and a block wider than 360 px. T3's iframe lays it out at
   // 360 whatever the meta says, so the 360 views must too.
   { dir: 'bad-inline/inline-no-viewport', args: ['--inline'], exit: 1, fault: 'page-overflow' },

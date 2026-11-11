@@ -4,10 +4,10 @@
 // no-chromium.
 // It covers argv (exit 2), every refusal (exit 1, nothing written, a previous output and its hard
 // link kept byte for byte, no temp file left), the marker, the --out rules, diff placeholders,
-// the build id and digest recomputed from the written file, the two assemblies, the pure helpers
-// in memory, static rules over kit/ask.js, findChromium and the MEDIA table. Every spawn has a
-// SIGKILL deadline, so a build that blocks fails its check instead of hanging the smoke. A few
-// cases put a stand-in for Chromium in PLANS_CHROMIUM: a shell script that acts where the browser
+// the build id and digest recomputed from the written file, the two assemblies and the base's
+// byte budget, the pure helpers in memory, static rules over the kit scripts and the base files,
+// findChromium and the MEDIA table. Every spawn has a SIGKILL deadline, so a build that blocks
+// fails its check instead of hanging the smoke. A few cases put a stand-in for Chromium in PLANS_CHROMIUM: a shell script that acts where the browser
 // check would run, then exits 1, so the check is unknown and nothing needs a real browser. The one
 // exception is a passing build whose --shots write fails, which needs the real browser check to
 // pass: it runs with the Chromium findChromium finds, and is skipped when there is none.
@@ -52,6 +52,23 @@ export default async function ({ ROOT, check, skip }) {
       writeFileSync(p, `#!/bin/sh\n${lines}\nexit 1\n`)
       chmodSync(p, 0o755)
       return p
+    }
+    // A fresh directory holding p.html with the given text.
+    const writeAt = (text) => { const d = fresh(); writeFileSync(join(d, 'p.html'), text); return d }
+    // The kit header lines inside the one kit style and the one kit script, in order, and how many
+    // of each the page holds.
+    const kitOrder = (text) => {
+      const block = (open, close) => {
+        const at = text.indexOf(open)
+        return at === -1 ? '' : text.slice(at, text.indexOf(close, at))
+      }
+      const names = (s) => [...s.matchAll(/^\/\* plans-kit:(\S+) \*\/$/gm)].map((m) => m[1])
+      return {
+        style: names(block('<style data-plans-kit>', '</style>')),
+        script: names(block('<script data-plans-kit>', '</script>')),
+        styles: text.split('<style data-plans-kit>').length - 1,
+        scripts: text.split('<script data-plans-kit>').length - 1,
+      }
     }
 
     // --- argv: exit 2, usage on stderr, nothing on stdout, nothing written.
@@ -105,9 +122,10 @@ export default async function ({ ROOT, check, skip }) {
       const emptied = Buffer.from(text.replace(`content="${j.buildId}"`, 'content=""'), 'utf8')
       check('build: the build id is SHA-256 of the file with the meta content empty', sha(emptied) === j.buildId)
       check('build: the marker is gone and the kit sits where it was', !text.includes('<!-- plans:kit -->') && text.indexOf('<meta name="plans-build"') > text.indexOf('<title>') && text.indexOf('</head>') > text.indexOf('<script data-plans-kit>'))
-      const heads = ['tokens.css', 'look.css', 'marks.css', 'ask.css', 'ask.js'].map((f) => text.indexOf(`/* plans-kit:${f} */`))
-      check('build: Document assembly holds the five kit files in order', heads.every((x, i) => x !== -1 && (i === 0 || x > heads[i - 1])), heads.join(','))
-      check('build: Document assembly is meta, one style, one script', /<meta name="plans-build" content="[0-9a-f]{64}">\n<style data-plans-kit>\n\/\* plans-kit:tokens\.css \*\//.test(text) && text.split('<style data-plans-kit>').length === 2 && text.split('<script data-plans-kit>').length === 2)
+      const order = kitOrder(text)
+      check('build: Document style is tokens, look, marks, ask, parts and shell css, in order', JSON.stringify(order.style) === JSON.stringify(['tokens.css', 'look.css', 'marks.css', 'ask.css', 'parts.css', 'shell.css']), JSON.stringify(order.style))
+      check('build: Document script is ask.js, parts.js and shell.js, in order', JSON.stringify(order.script) === JSON.stringify(['ask.js', 'parts.js', 'shell.js']), JSON.stringify(order.script))
+      check('build: Document assembly is meta, one style, one script', /<meta name="plans-build" content="[0-9a-f]{64}">\n<style data-plans-kit>\n\/\* plans-kit:tokens\.css \*\//.test(text) && order.styles === 1 && order.scripts === 1, `${order.styles} styles, ${order.scripts} scripts`)
       check('build: no temp file is left', temps(d).length === 0, temps(d).join(','))
       const again = run(['--json', join(d, 'p.html')])
       check('build: the same input builds the same id and bytes', again.json?.buildId === j.buildId && sha(readFileSync(out)) === j.digest)
@@ -125,8 +143,11 @@ export default async function ({ ROOT, check, skip }) {
       const out = join(d, 'p.inline.html')
       const text = r.status === 3 ? readFileSync(out, 'utf8') : ''
       check('build --inline: exits 3 and writes <stem>.inline.html', r.status === 3 && r.json?.out === out, `${r.status} ${r.stderr}`)
-      check('build --inline: holds tokens.css and marks.css', text.includes('/* plans-kit:tokens.css */') && text.includes('/* plans-kit:marks.css */'))
-      check('build --inline: holds no look.css or ask.* header and no script', !/plans-kit:(look\.css|ask\.css|ask\.js)/.test(text) && !text.includes('<script data-plans-kit>'))
+      const order = kitOrder(text)
+      check('build --inline: style is tokens, marks and parts css, in order', JSON.stringify(order.style) === JSON.stringify(['tokens.css', 'marks.css', 'parts.css']), JSON.stringify(order.style))
+      check('build --inline: script is parts.js alone', JSON.stringify(order.script) === JSON.stringify(['parts.js']), JSON.stringify(order.script))
+      check('build --inline: one kit style and one kit script', order.styles === 1 && order.scripts === 1, `${order.styles} styles, ${order.scripts} scripts`)
+      check('build --inline: holds no look.css, ask.* or shell.* header', !/plans-kit:(look\.css|ask\.css|ask\.js|shell\.css|shell\.js)/.test(text))
       check('build --inline: still carries the build meta', /<meta name="plans-build" content="[0-9a-f]{64}">/.test(text))
       check('build --inline: reports an absolute image path as skipped media', JSON.stringify(r.json?.skippedMedia) === '["/abs/shot.png"]', JSON.stringify(r.json?.skippedMedia))
     }
@@ -245,6 +266,24 @@ export default async function ({ ROOT, check, skip }) {
     }
     refuse('Inline output over 500,000 bytes', { input: page({ body: `<p>${'x'.repeat(500000)}</p>` }), inline: true, kind: 'inline-size' })
     refuse('a data-note textarea inside an <svg> <title> in Inline mode', { input: page({ body: '<svg><title><textarea data-note="x"></textarea></title></svg>' }), inline: true, kind: 'inline-hook', also: ['foreign'] })
+    for (const [what, body, detail] of [
+      ['a <body data-base-shell>', null, '<body> carries data-base-shell'],
+      ['a data-base-contents nav', '<nav data-base-contents aria-label="Sections"></nav>', '<nav> carries data-base-contents'],
+      ['a pb-mast header', '<header class="x pb-mast"><h1>T</h1></header>', '<header> carries pb-mast'],
+      ['a pb-brief div', '<div class="pb-brief"><p>B</p></div>', '<div> carries pb-brief'],
+    ]) {
+      const input = body === null ? page().replace('<body>', '<body data-base-shell>') : page({ body })
+      const r = refuse(`shell markup in Inline mode: ${what}`, { input, inline: true, kind: 'inline-shell' })
+      check(`build --inline: ${what} names its tag and attribute`, r.json?.reason?.detail === detail, r.json?.reason?.detail)
+      const doc = run(['--json', join(writeAt(input), 'p.html')])
+      check(`build: ${what} is no fault in Document mode`, doc.status === 3 && doc.json?.reason?.kind === 'no-chromium', `${doc.status} ${doc.stderr}`)
+    }
+    {
+      const r = run(['--inline', '--json', join(writeAt(page({ body: '<p class="pb-masthead pb-briefs" data-base-shelf>Near names.</p>' })), 'p.html')])
+      check('build --inline: names near the shell names are no fault', r.status === 3 && r.json?.reason?.kind === 'no-chromium', `${r.status} ${r.stderr}`)
+      const r2 = run(['--inline', '--json', join(writeAt(page({ body: '<div data-base-shell>Not the body.</div>' })), 'p.html')])
+      check('build --inline: data-base-shell off <body> is no fault', r2.status === 3, `${r2.status} ${r2.stderr}`)
+    }
     refuse('a data-note div inside an <svg> <style> in Inline mode', { input: page({ body: '<svg><style><div data-note="n"></div></style></svg>' }), inline: true, kind: 'inline-hook' })
 
     // Foreign content the scanner can't follow is refused with its own kind.
@@ -518,20 +557,197 @@ export default async function ({ ROOT, check, skip }) {
       check('assemble: a refused kit file yields a kit-file fault and no buffer', got.buffer === null && got.faults.some((f) => f.kind === 'kit-file'))
       const inline = mod.assemble(page(), { inline: true, kit, readSibling: () => '' })
       check('assemble: Inline mode does not read ask.js', inline.buffer !== null && inline.faults.length === 0)
+      for (const name of ['shell.css', 'shell.js']) {
+        const k = { ...shipped, [name]: `${shipped[name]}\n/* </style> </script> */\n` }
+        const doc = mod.assemble(page(), { kit: k, readSibling: () => '' })
+        const inl = mod.assemble(page(), { inline: true, kit: k, readSibling: () => '' })
+        check(`assemble: Document mode reads ${name} and Inline mode does not`, doc.buffer === null && doc.faults.some((f) => f.kind === 'kit-file') && inl.buffer !== null && inl.faults.length === 0)
+      }
+      // Three IIFEs with no trailing `;` must still run one after another, not call each other.
+      {
+        const iife = (n) => `/* plans-kit:${n} */\n(() => {\n  globalThis.__kitRan = (globalThis.__kitRan ?? '') + '${n} '\n})()\n`
+        const k = { ...shipped, 'ask.js': iife('ask.js'), 'parts.js': iife('parts.js'), 'shell.js': iife('shell.js') }
+        const got = mod.assemble(page(), { kit: k, readSibling: () => '' })
+        const t = got.buffer?.toString('utf8') ?? ''
+        const js = t.slice(t.indexOf('<script data-plans-kit>') + '<script data-plans-kit>'.length, t.indexOf('</script>', t.indexOf('<script data-plans-kit>')))
+        let ran = null
+        try { delete globalThis.__kitRan; new Function(js)(); ran = globalThis.__kitRan } catch (e) { ran = String(e) } finally { delete globalThis.__kitRan }
+        check('assemble: concatenated kit scripts run as three separate IIFEs', ran === 'ask.js parts.js shell.js ', String(ran))
+      }
+      check('assemble: the mode lists are the literal orders', JSON.stringify(mod.DOCUMENT_KIT) === JSON.stringify(['tokens.css', 'look.css', 'marks.css', 'ask.css', 'parts.css', 'shell.css', 'ask.js', 'parts.js', 'shell.js']) && JSON.stringify(mod.INLINE_KIT) === JSON.stringify(['tokens.css', 'marks.css', 'parts.css', 'parts.js']))
+      const base = ['parts.css', 'parts.js', 'shell.css', 'shell.js'].map((f) => statSync(join(DOC, 'kit', f)).size)
+      const total = base.reduce((a, b) => a + b, 0)
+      check('kit budget: parts.css, parts.js, shell.css and shell.js total at most 40,000 bytes', total <= 40000, `${total} bytes (${base.join(' + ')})`)
       check('build limits match the contract', mod.DIFF_MAX === 524288 && mod.INLINE_MAX === 500000 && mod.NOTES_DEFAULT === 12 && mod.NOTES_MAX === 10000)
     }
 
-    // --- static rules over kit/ask.js.
+    // --- static rules over the kit scripts and the base files. A rule returns its offending
+    // snippets, so an empty list passes. Each rule has a negative control that it fails while every
+    // other rule for that file kind passes, and one clean sample that passes all of them.
     {
-      const js = readFileSync(join(DOC, 'kit/ask.js'), 'utf8')
-      const code = js.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[\s;{}(),])\/\/[^\n]*/g, '$1')
-      const body = code.trim()
-      check('ask.js: is one IIFE', body.startsWith('(() => {') && /\}\)\(\)\s*;?$/.test(body) && (body.match(/^\(\(\) => \{/gm) ?? []).length === 1, body.slice(0, 40))
-      const forbidden = [/\binnerHTML\b/, /\bouterHTML\b/, /\binsertAdjacentHTML\b/, /\bdocument\.write(?:ln)?\b/, /\blocalStorage\b/, /\bsessionStorage\b/, /\bindexedDB\b/, /\bcookie\b/, /\bwindow\.open\b/, /\bopen\s*\(/]
-      for (const re of forbidden) check(`ask.js: never uses ${re.source.replace(/\\b|\\/g, '')}`, !re.test(code))
-      const calls = [...code.matchAll(/\.(querySelector|querySelectorAll|closest|matches)\s*\(/g)]
-      const bad = calls.filter((m) => !/^\s*(?:'[^'\n]*'|"[^"\n]*")\s*\)/.test(code.slice(m.index + m[0].length)))
-      check('ask.js: every selector argument is a string literal', calls.length > 0 && bad.length === 0, bad.map((m) => code.slice(m.index, m.index + 60)).join(' | '))
+      const stripJs = (js) => js.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[\s;{}(),])\/\/[^\n]*/g, '$1')
+      const stripCss = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '')
+      const at = (code, m) => code.slice(m.index, m.index + 60).split('\n')[0]
+      const hits = (code, ...res) => res.flatMap((re) => [...code.matchAll(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'))].map((m) => at(code, m)))
+      // The argument texts of a call whose `(` ends at index i, split at top-level commas.
+      const args = (code, i) => {
+        const out = []
+        let depth = 0, cur = '', quote = null
+        for (let k = i; k < code.length; k++) {
+          const c = code[k]
+          if (quote) { cur += c; if (c === '\\') { cur += code[++k] ?? '' } else if (c === quote) quote = null; continue }
+          if (c === "'" || c === '"' || c === '`') { quote = c; cur += c; continue }
+          if (c === '(' || c === '[' || c === '{') depth++
+          if (c === ')' || c === ']' || c === '}') { if (depth === 0) { out.push(cur.trim()); return out } depth-- }
+          if (c === ',' && depth === 0) { out.push(cur.trim()); cur = ''; continue }
+          cur += c
+        }
+        return out
+      }
+      const literal = (a) => /^(?:'[^'\\\n]*'|"[^"\\\n]*")$/.test(a ?? '') ? a.slice(1, -1) : null
+      const ATTRS = new Set(['hidden', 'disabled', 'aria-pressed', 'aria-hidden', 'aria-label', 'aria-current', 'role', 'tabindex', 'href', 'src', 'alt', 'type'])
+      const COLOUR = [/(?<![\w-])#[0-9a-fA-F]{3,8}(?![\w-])/, /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/, /(?<![\w-])(?:white|black)(?![\w-])/]
+      const JS_RULES = {
+        'is one IIFE': (code) => {
+          const body = code.trim()
+          return body.startsWith('(() => {') && /\}\)\(\)\s*;?$/.test(body) && (body.match(/^\(\(\) => \{/gm) ?? []).length === 1 ? [] : [body.slice(0, 40)]
+        },
+        'uses nothing on the forbidden list': (code) => hits(code, /\binnerHTML\b/, /\bouterHTML\b/, /\binsertAdjacentHTML\b/, /\bdocument\.write(?:ln)?\b/, /\blocalStorage\b/, /\bsessionStorage\b/, /\bindexedDB\b/, /\bcookie\b/, /\bwindow\.open\b/, /\bopen\s*\(/),
+        'passes every selector as a string literal': (code) => [...code.matchAll(/\.(querySelector|querySelectorAll|closest|matches)\s*\(/g)]
+          .filter((m) => !/^\s*(?:'[^'\n]*'|"[^"\n]*")\s*\)/.test(code.slice(m.index + m[0].length))).map((m) => at(code, m)),
+        'holds no colour literal': (code) => hits(code, ...COLOUR),
+        'assigns no id': (code) => hits(code, /\.id\s*=(?!=)/, /\bsetAttribute\s*\(\s*['"]id['"]/),
+        'listens for no scroll': (code) => hits(code, /(['"`])scroll\1/, /\bonscroll\b/),
+        'never touches document.title': (code) => hits(code, /\bdocument\.title\b/),
+        'creates only plans- names': (code) => {
+          const bad = []
+          for (const m of code.matchAll(/\.className\s*\+?=(?!=)\s*/g)) {
+            const rest = code.slice(m.index + m[0].length)
+            const lit = /^(?:'([^'\\\n]*)'|"([^"\\\n]*)")\s*(?:[;\n)}]|$)/.exec(rest)
+            const v = lit ? (lit[1] ?? lit[2]) : null
+            if (v === null || v.split(/\s+/).filter(Boolean).some((c) => !c.startsWith('plans-'))) bad.push(at(code, m))
+          }
+          for (const m of code.matchAll(/\.classList\.(add|toggle|replace)\s*\(/g)) {
+            const a = args(code, m.index + m[0].length)
+            const names = m[1] === 'add' ? a : m[1] === 'toggle' ? a.slice(0, 1) : a.slice(0, 2)
+            if (names.length === 0 || names.some((x) => !literal(x)?.startsWith('plans-'))) bad.push(at(code, m))
+          }
+          for (const m of code.matchAll(/\b(setAttribute|removeAttribute|toggleAttribute)\s*\(/g)) {
+            const name = literal(args(code, m.index + m[0].length)[0])
+            if (name === null || !(name.startsWith('data-plans-') || ATTRS.has(name))) bad.push(at(code, m))
+          }
+          for (const m of code.matchAll(/\.dataset(?:\.(\w+)|\s*\[)/g)) {
+            const after = code.slice(m.index + m[0].length)
+            const write = m[1] === undefined ? /^[^\]]*\]\s*=(?!=)/.test(after) : /^\s*=(?!=)/.test(after)
+            if (write && !(m[1] ?? '').startsWith('plans')) bad.push(at(code, m))
+          }
+          return bad
+        },
+        'sets geometry only through inlineSize and insetInlineStart': (code) => [
+          ...[...code.matchAll(/\.style\.(\w+)\s*=(?!=)/g)].filter((m) => m[1] !== 'inlineSize' && m[1] !== 'insetInlineStart').map((m) => at(code, m)),
+          ...hits(code, /\.style\s*\[/, /\.style\.setProperty\b/, /\.style\.cssText\b/, /\bsetAttribute\s*\(\s*['"]style['"]/),
+        ],
+        'never reads checked': (code) => hits(code, /\.checked\b/),
+      }
+      const CSS_RULES = {
+        'holds no colour literal': (css) => hits(css, ...COLOUR),
+        'reads no viewport': (css, name) => name !== 'parts.css' ? [] : [...css.matchAll(/@media\b([^{;]*)/g)]
+          .filter((m) => /(?<![\w-])(?:(?:min-|max-|device-|min-device-|max-device-)?(?:width|height|aspect-ratio)|orientation)(?![\w-])/.test(m[1])).map((m) => at(css, m)),
+      }
+      // ask.js keeps the three rules it always had. The base scripts and stylesheets take them all.
+      const ASK_RULES = ['is one IIFE', 'uses nothing on the forbidden list', 'passes every selector as a string literal']
+      const run = (rules, names, code, file) => Object.fromEntries(names.map((r) => [r, rules[r](code, file)]))
+      const files = [['ask.js', ASK_RULES], ['parts.js', Object.keys(JS_RULES)], ['shell.js', Object.keys(JS_RULES)]]
+      for (const [file, names] of files) {
+        const code = stripJs(readFileSync(join(DOC, 'kit', file), 'utf8'))
+        for (const [r, bad] of Object.entries(run(JS_RULES, names, code))) check(`${file}: ${r}`, bad.length === 0, bad.join(' | '))
+      }
+      check('ask.js: the selector rule sees its calls', /\.(querySelector|querySelectorAll|closest|matches)\s*\(/.test(stripJs(readFileSync(join(DOC, 'kit/ask.js'), 'utf8'))))
+      for (const file of ['parts.css', 'shell.css']) {
+        const css = stripCss(readFileSync(join(DOC, 'kit', file), 'utf8'))
+        for (const [r, rule] of Object.entries(CSS_RULES)) {
+          if (r === 'reads no viewport' && file !== 'parts.css') continue
+          const bad = rule(css, file)
+          check(`${file}: ${r}`, bad.length === 0, bad.join(' | '))
+        }
+      }
+
+      // Negative controls: each fails its own rule and passes every other.
+      const wrap = (s) => `(() => {\n${s}\n})()\n`
+      const JS_CONTROLS = [
+        ['is one IIFE', 'const x = 1\n'],
+        ['is one IIFE', '(() => {\n})()\n(() => {\n})()\n'],
+        ['uses nothing on the forbidden list', wrap("el.innerHTML = ''")],
+        ['uses nothing on the forbidden list', wrap('localStorage.length')],
+        ['passes every selector as a string literal', wrap('document.querySelector(sel)')],
+        ['holds no colour literal', wrap("const c = '#fff'")],
+        ['holds no colour literal', wrap("const c = 'rgb(0 0 0)'")],
+        ['holds no colour literal', wrap("const c = 'white'")],
+        ['assigns no id', wrap("el.id = 'x'")],
+        ['listens for no scroll', wrap("addEventListener('scroll', f)")],
+        ['listens for no scroll', wrap('window.onscroll = f')],
+        ['never touches document.title', wrap("document.title = 'x'")],
+        ['creates only plans- names', wrap("el.classList.add('pb-row')")],
+        ['creates only plans- names', wrap('el.classList.toggle(name, true)')],
+        ['creates only plans- names', wrap("el.className = 'plans-a pb-b'")],
+        ['creates only plans- names', wrap("el.setAttribute('data-base-x', '')")],
+        ['creates only plans- names', wrap("el.removeAttribute(name)")],
+        ['creates only plans- names', wrap("el.dataset.baseKind = 'x'")],
+        ['sets geometry only through inlineSize and insetInlineStart', wrap("el.style.width = '1px'")],
+        ['sets geometry only through inlineSize and insetInlineStart', wrap("el.style.setProperty('inline-size', '1px')")],
+        ['sets geometry only through inlineSize and insetInlineStart', wrap("el.style.cssText = ''")],
+        ['never reads checked', wrap('if (input.checked) f()')],
+      ]
+      for (const [own, src] of JS_CONTROLS) {
+        const got = run(JS_RULES, Object.keys(JS_RULES), stripJs(src))
+        const others = Object.entries(got).filter(([r, bad]) => r !== own && bad.length)
+        check(`static rule control: ${own} fails ${JSON.stringify(src.replace(/^\(\(\) => \{\n|\n\}\)\(\)\n$/g, ''))} and no other rule does`, got[own].length > 0 && others.length === 0, `own ${got[own].length}, others ${others.map(([r]) => r).join(', ')}`)
+      }
+      // setAttribute('id') and setAttribute('style') each break the names rule too, so their
+      // controls check their own rule only.
+      const idAttr = run(JS_RULES, Object.keys(JS_RULES), stripJs(wrap("el.setAttribute('id', 'x')")))
+      check("static rule control: setAttribute('id') fails assigns no id", idAttr['assigns no id'].length > 0)
+      const styleAttr = run(JS_RULES, Object.keys(JS_RULES), stripJs(wrap("el.setAttribute('style', '')")))
+      check("static rule control: setAttribute('style') fails the style channel", styleAttr['sets geometry only through inlineSize and insetInlineStart'].length > 0)
+      const clean = wrap([
+        "const box = document.querySelector('[data-base-chart]')",
+        "const bar = document.createElement('span')",
+        "bar.className = 'plans-bar'",
+        "bar.classList.add('plans-track', 'plans-bar')",
+        "bar.classList.toggle('plans-on', on)",
+        "bar.setAttribute('aria-hidden', 'true')",
+        "bar.toggleAttribute('hidden', !on)",
+        "bar.removeAttribute('data-plans-side')",
+        "box.dataset.plansSide = 'after'",
+        "const k = box.dataset.baseKind",
+        "bar.style.inlineSize = '40%'",
+        "bar.style.insetInlineStart = '10%'",
+        "const io = new IntersectionObserver(f)",
+        "el.scrollIntoView()",
+        "const s = getComputedStyle(el).whiteSpace",
+        "if (el.id === 'x') f()",
+      ].join('\n'))
+      const cleanGot = run(JS_RULES, Object.keys(JS_RULES), stripJs(clean))
+      const cleanBad = Object.entries(cleanGot).filter(([, bad]) => bad.length)
+      check('static rule control: a clean base script passes every rule', cleanBad.length === 0, cleanBad.map(([r, b]) => `${r}: ${b.join(' | ')}`).join('; '))
+
+      const CSS_CONTROLS = [
+        ['holds no colour literal', '.pb-x { color: #000 }'],
+        ['holds no colour literal', '.pb-x { color: oklch(0.5 0.1 30) }'],
+        ['holds no colour literal', '.pb-x { background: black }'],
+        ['reads no viewport', '@media (min-width: 600px) { .pb-x { display: none } }'],
+        ['reads no viewport', '@media (orientation: portrait) { .pb-x { display: none } }'],
+        ['reads no viewport', '@media screen and (width >= 40rem) { .pb-x { display: none } }'],
+      ]
+      for (const [own, src] of CSS_CONTROLS) {
+        const got = Object.fromEntries(Object.entries(CSS_RULES).map(([r, rule]) => [r, rule(stripCss(src), 'parts.css')]))
+        const others = Object.entries(got).filter(([r, bad]) => r !== own && bad.length)
+        check(`static rule control: parts.css ${own} fails ${JSON.stringify(src)} and no other rule does`, got[own].length > 0 && others.length === 0, `own ${got[own].length}, others ${others.map(([r]) => r).join(', ')}`)
+      }
+      const cleanCss = '.pb-x { white-space: nowrap; color: var(--plans-ink); background: transparent }\n@container (min-width: 640px) { .pb-x { display: grid } }\n@media (prefers-reduced-motion: reduce) { .pb-x { transition: none } }\n'
+      const cleanCssBad = Object.entries(CSS_RULES).map(([r, rule]) => [r, rule(cleanCss, 'parts.css')]).filter(([, b]) => b.length)
+      check('static rule control: a clean parts.css passes every rule', cleanCssBad.length === 0, cleanCssBad.map(([r, b]) => `${r}: ${b.join(' | ')}`).join('; '))
+      check('static rule control: shell.css may read the viewport', CSS_RULES['reads no viewport']('@media (min-width: 1100px) { [data-base-shell] main { display: grid } }', 'shell.css').length === 0)
     }
 
     // --- findChromium.

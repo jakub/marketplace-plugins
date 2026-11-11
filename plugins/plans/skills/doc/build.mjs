@@ -41,9 +41,13 @@
 // every platform.
 //
 // Assembly. The marker is replaced, in order, by `<meta name="plans-build" content="">`, one
-// `<style data-plans-kit>` and, in Document mode only, one `<script data-plans-kit>`. Document mode
-// inlines tokens.css, look.css, marks.css, ask.css and ask.js, always: the kit does nothing on a
-// page without hooks. Inline mode inlines tokens.css and marks.css only. Every inlined text opens
+// `<style data-plans-kit>` and one `<script data-plans-kit>`, in both modes. Document mode's style
+// is tokens.css, look.css, marks.css, ask.css, parts.css and shell.css, and its script is ask.js,
+// parts.js and shell.js concatenated, each its own IIFE and each ended with `;` where it lacks
+// one. Inline mode's style is tokens.css,
+// marks.css and parts.css, and its script is parts.js alone (DOCUMENT_KIT and INLINE_KIT). Each
+// mode inlines its files always: the question kit does nothing on a page without hooks, and the
+// base nothing on a page without base markup. Every inlined text opens
 // with `/* plans-kit:<file> */`. The kit files carry that line themselves. tokens.css doesn't,
 // because plans:show pastes it whole into hand-written Inline output, so the builder adds it.
 // Each `<div data-diff-before="a.md" data-diff-after="b.md" [data-diff-notes="12"]></div>` is
@@ -94,6 +98,9 @@
 //     0.5 lays the page out 780 px wide. Measured in Chromium 155 at 390 px, 2026-10-27.
 //   - in Inline mode, any kit hook (data-ask, data-note, data-ask-summary, data-respond), or
 //     output over 500,000 UTF-8 bytes
+//   - in Inline mode, shell markup (kind `inline-shell`, one fault per name): a <body> with
+//     data-base-shell, any tag with data-base-contents, or a class token pb-mast or pb-brief. A
+//     T3 frame owns the theme and has no room for the shell's dock or dialogs.
 //   - SVG or MathML content check/scan.mjs can't follow (kind `foreign`): markup inside an SVG
 //     title, desc or foreignObject or a MathML text element, or an end tag that closes no open
 //     foreign element. scan.mjs's header says why.
@@ -130,7 +137,7 @@
 //
 // The module exports its pure helpers for smoke imports and runs the CLI only when it is the entry
 // point: kitRefusals(name, text), readKit(), assemble(text, opts), mediaFaults(dir, media,
-// skipped), pinDir(path, procRoot), KIT_FILES and the limits.
+// skipped), pinDir(path, procRoot), KIT_FILES, DOCUMENT_KIT, INLINE_KIT and the limits.
 
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs'
@@ -157,8 +164,19 @@ export const KIT_FILES = {
   'look.css': join(HERE, 'kit', 'look.css'),
   'marks.css': join(HERE, 'kit', 'marks.css'),
   'ask.css': join(HERE, 'kit', 'ask.css'),
+  'parts.css': join(HERE, 'kit', 'parts.css'),
+  'shell.css': join(HERE, 'kit', 'shell.css'),
   'ask.js': join(HERE, 'kit', 'ask.js'),
+  'parts.js': join(HERE, 'kit', 'parts.js'),
+  'shell.js': join(HERE, 'kit', 'shell.js'),
 }
+// The kit files each mode inlines, in order. The style takes the .css names and the script the .js
+// names, each in this order.
+export const DOCUMENT_KIT = ['tokens.css', 'look.css', 'marks.css', 'ask.css', 'parts.css', 'shell.css', 'ask.js', 'parts.js', 'shell.js']
+export const INLINE_KIT = ['tokens.css', 'marks.css', 'parts.css', 'parts.js']
+// Shell markup Inline mode refuses: attributes on any tag (data-base-shell only on <body>) and
+// class tokens.
+const SHELL_CLASSES = ['pb-mast', 'pb-brief']
 const USAGE = 'usage: build.mjs [--inline] [--out FILE] [--shots DIR] [--json] [--] INPUT'
 const MEDIA_TAGS = new Set(['img', 'video', 'audio', 'source'])
 // A viewport content list of plain key=value pairs, with spaces, commas or semicolons between
@@ -255,7 +273,7 @@ export function mediaFaults(dir, media, skipped = []) {
 export function assemble(text, { inline = false, kit, readSibling }) {
   const faults = []
   const fault = (kind, offset, message) => faults.push({ kind, line: offset == null ? null : lineOf(text, offset), message })
-  const kitNames = inline ? ['tokens.css', 'marks.css'] : ['tokens.css', 'look.css', 'marks.css', 'ask.css', 'ask.js']
+  const kitNames = inline ? INLINE_KIT : DOCUMENT_KIT
   for (const name of kitNames) for (const m of kitRefusals(name, kit[name] ?? '')) fault('kit-file', null, m)
 
   // Built code already in the input.
@@ -329,6 +347,14 @@ export function assemble(text, { inline = false, kit, readSibling }) {
     }
     if (attr(t, 'data-plans-kit')) fault('built', t.start, `holds a data-plans-kit attribute on <${t.name}>: build from the source page`)
     if (inline) for (const h of HOOKS) if (attr(t, h)) fault('inline-hook', t.start, `kit hook ${h} on <${t.name}>: Inline output never holds the question kit`)
+    if (inline) {
+      const shell = []
+      if (t.name === 'body' && attr(t, 'data-base-shell')) shell.push('data-base-shell')
+      if (attr(t, 'data-base-contents')) shell.push('data-base-contents')
+      const classes = (attr(t, 'class')?.value ?? '').split(/[ \t\n\f\r]+/)
+      for (const c of SHELL_CLASSES) if (classes.includes(c)) shell.push(c)
+      for (const name of shell) fault('inline-shell', t.start, `<${t.name}> carries ${name}`)
+    }
     if (MEDIA_TAGS.has(t.name)) {
       const src = attr(t, 'src')
       if (src) {
@@ -395,7 +421,8 @@ export function assemble(text, { inline = false, kit, readSibling }) {
   if (faults.length) return { faults, buffer: null, buildId: null, media, skippedMedia }
 
   const style = `<style data-plans-kit>\n${kitNames.filter((n) => n.endsWith('.css')).map((n) => kit[n].replace(/\n?$/, '\n')).join('')}</style>`
-  const script = inline ? '' : `\n<script data-plans-kit>\n${kit['ask.js'].replace(/\n?$/, '\n')}</script>`
+  // Each script ends in `;` so the next file's leading `(` never calls the IIFE before it.
+  const script = `\n<script data-plans-kit>\n${kitNames.filter((n) => n.endsWith('.js')).map((n) => kit[n].replace(/;?\s*$/, ';\n')).join('')}</script>`
   replacements.push({ start: marker.start, end: marker.end, parts: [null, `\n${style}${script}`] })
   replacements.sort((a, b) => a.start - b.start)
 
