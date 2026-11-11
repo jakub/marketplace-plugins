@@ -221,7 +221,8 @@
         from = b
         const w = parseInt(pic.getAttribute('width'), 10)
         ratio = () => dpr || (w > 0 ? img.naturalWidth / w : 1)
-        img.src = pic.currentSrc || pic.src
+        // The authored string, not the resolved URL, so the copy names a source the builder read.
+        img.src = pic.getAttribute('src')
         img.alt = pic.alt
         img.style.inlineSize = ''
         size.textContent = 'Actual size'
