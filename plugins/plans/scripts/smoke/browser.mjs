@@ -1229,6 +1229,10 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 ${script}
 </main>`)
   const clonedChart = 'markup: 1 [data-base-chart] in the page, 0 in the built bytes: base markup is written, never made by script'
+  // A key group or a pane outside any switch, with no other base markup: the bytes call for the
+  // panes state, whose model reports it as a part-error in every view.
+  const outsideSwitch = (detail) => (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'part-error')
+    && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.PANES && c.faults.some((f) => f.detail === detail)))
   const stubDir = join(base, 'stub-check')
   mkdirSync(join(stubDir, 'doc/check'), { recursive: true })
   mkdirSync(join(stubDir, 'show'))
@@ -1441,6 +1445,18 @@ ${script}
 <section data-respond></section>
 </main>`),
       (out) => out.result === 'pass' && runMod.DOC_VIEWS.every((v) => [runMod.CHROME, runMod.INTERACTION].every((st) => out.matrix.some((c) => c.view === v.name && c.state === st)))],
+    ['browser: a key group outside any switch is part-error', undefined,
+      basePage('', `<main>
+<h1>Orphan unit</h1>
+<div data-base-key="size"><span>Size</span> <button type="button" value="small" aria-pressed="true" disabled>Small</button> <button type="button" value="large" aria-pressed="false" disabled>Large</button></div>
+<p>No switch holds the key.</p>
+</main>`), outsideSwitch('switch: key "size" sits outside any switch')],
+    ['browser: a pane outside any switch is part-error', undefined,
+      basePage('', `<main>
+<h1>Orphan unit</h1>
+<div data-base-when="size=small"><p>The small pane.</p></div>
+<p>No switch holds the pane.</p>
+</main>`), outsideSwitch('switch: pane "size=small" sits outside any switch')],
     // The capture of the tile at y 16384, the last tile at scale 2 and at scale 1, past its
     // deadline on every attempt. Each view is retried, ends in its first state with the deadline
     // fault, and its listed tiles stop at 16384, an unknown gap. The list and the directory hold

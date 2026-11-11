@@ -68,19 +68,20 @@
 // appears when <details> opens counts the same as one at load, so it needs a kit error or a
 // response the script can drive. A kit page whose kit already logged an error gets the cell
 // without the script, since its response is off.
-//   `panes` runs, in both modes, on a page whose built bytes hold a tag with data-base-switch or a
-// <figure> with the class pb-compare. `chrome` runs on a Document whose bytes hold a <body> with
-// data-base-shell. Both are read from the bytes with scan.mjs, never from the DOM the page's script
-// made, so a base whose script doesn't run can't skip its own check, and the required matrix cells
-// follow the same read. A tag inside an HTML <template> is inert and counts for nothing. Each of
-// the two runs in a page load of its own: navigate, settle, open every <details> as details-open
-// leaves them, settle, then one module function, parts.mjs's panes(drive) or shell.mjs's
-// chrome(drive), then every open <dialog> closed, scroll position 0, settle, the probe and the
-// capture. interaction runs on the details-open load, as it always has, unless panes or chrome ran,
-// when it gets a fresh load set up the same way. On a page whose bytes hold body[data-base-shell],
-// the interaction script calls shell.mjs's counts(drive, model) after the initial response and
-// after each step that moves a question between open, changed and kept, with a copy of its own
-// record as model.
+//   `panes` runs, in both modes, on a page whose built bytes hold a tag with data-base-switch,
+// data-base-key or data-base-when, or a <figure> with the class pb-compare, so a key or a pane
+// outside any switch gets the model that reports it. `chrome` runs on a Document whose bytes hold
+// a <body> with data-base-shell. Both are read from the bytes with scan.mjs, never from the DOM the
+// page's script made, so a base whose script doesn't run can't skip its own check, and the
+// required matrix cells follow the same read. A tag inside an HTML <template> is inert and counts
+// for nothing. Each of the two runs in a page load of its own: navigate, settle, open every
+// <details> as details-open leaves them, settle, then one module function, parts.mjs's panes(drive)
+// or shell.mjs's chrome(drive), then every open <dialog> closed, scroll position 0, settle, the
+// probe and the capture. interaction runs on the details-open load, as it always has, unless panes
+// or chrome ran, when it gets a fresh load set up the same way. On a page whose bytes hold
+// body[data-base-shell], the interaction script calls shell.mjs's counts(drive, model) after the
+// initial response and after each step that moves a question between open, changed and kept, with a
+// copy of its own record as model.
 //   `undriven` lists every control outside the kit that the matrix did not drive: a button,
 // select, textarea, input, contenteditable or tabindex that no fieldset[data-ask],
 // textarea[data-note], data-respond or data-ask-summary holds. Kit controls join it, marked `kit`,
@@ -198,13 +199,13 @@
 // page-overflow, clipped, a-target, form and outbound-link (kit pages), srcset, poster, css-url,
 // svg-href, svg-viewbox, svg-label, svg-wide, svg-text-small and chart-text-small (every Document
 // view, and 360 in Inline), empty-title (Document only), media-undeclared, and in Inline mode
-// inline-height, inline-kit-hook and inline-frame. The DOM probe also counts each kind of base
-// part in WRITTEN in the live page against the built bytes, read as baseNeeds reads them: more in
-// the page than in the bytes is part-error `markup: <n> <kind> in the page, <m> in the built
-// bytes: base markup is written, never made by script`, since every base state and the chart
-// oracle are read from the bytes, so a part only script makes has no check. From the base states: part-drive (a failed
-// drive step), and what parts.mjs and shell.mjs
-// return, such as chart-geometry, chart-overlap and base-state-budget. Chromium 155 prints no "Refused to" line for a CSP block, so
+// inline-height, inline-kit-hook and inline-frame. The DOM probe also counts each kind of base part
+// in WRITTEN in the live page against the built bytes, read as baseNeeds reads them: more in the
+// page than in the bytes is part-error `markup: <n> <kind> in the page, <m> in the built bytes:
+// base markup is written, never made by script`, since every base state and the chart oracle are
+// read from the bytes, so a part only script makes has no check. From the base states: part-drive
+// (a failed drive step), and what parts.mjs and shell.mjs return, such as chart-geometry,
+// chart-overlap and base-state-budget. Chromium 155 prints no "Refused to" line for a CSP block, so
 // console-csp also reads Log.entryAdded with source `security` and loadingFailed with
 // blockedReason `csp`. css-url reads the declarations the CSSOM parsed, in document.styleSheets,
 // document.adoptedStyleSheets and every [style], and the text the CSSOM keeps raw: custom
@@ -999,8 +1000,8 @@ const WRITTEN = ['[data-base-chart]', '[data-base-switch]', 'figure.pb-compare',
 
 // The base states a page requires, read from its built bytes with scan.mjs, never from what its
 // script made, so a base whose script doesn't run can't skip its own check. A tag inside an HTML
-// <template> is inert and counts for nothing. panes: a tag with data-base-switch, or a <figure>
-// with the class token pb-compare. chrome: a Document whose <body> start tag carries
+// <template> is inert and counts for nothing. panes: a tag with data-base-switch, data-base-key or
+// data-base-when, or a <figure> with the class token pb-compare. chrome: a Document whose <body> start tag carries
 // data-base-shell (the parser joins a second <body> tag's attributes to the first). charts: a tag
 // with data-base-chart, which turns chartFaults on. written: how many of each WRITTEN kind the
 // bytes hold, body[data-base-shell] being 1 when any <body> start tag carries it.
@@ -1010,6 +1011,7 @@ function baseNeeds(source, inline) {
     if (t.type !== 'start' || t.template) continue
     const n = need.written
     if (attr(t, 'data-base-switch')) { need.panes = true; n['[data-base-switch]']++ }
+    if (attr(t, 'data-base-key') || attr(t, 'data-base-when')) need.panes = true
     if (t.name === 'figure' && (attr(t, 'class')?.value ?? '').split(/[\t\n\f\r ]+/).includes('pb-compare')) { need.panes = true; n['figure.pb-compare']++ }
     if (attr(t, 'data-base-chart')) { need.charts = true; n['[data-base-chart]']++ }
     if (attr(t, 'data-base-contents')) n['[data-base-contents]']++
