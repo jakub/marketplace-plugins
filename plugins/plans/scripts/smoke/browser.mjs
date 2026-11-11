@@ -323,11 +323,14 @@ import { deflateSync, inflateSync } from 'node:zlib'
 const BAD = ['exception', 'console-csp', 'request-outside', 'load-failed', 'http-status', 'media-decode', 'page-overflow',
   'clipped', 'a-target', 'form', 'outbound-link', 'srcset', 'poster', 'css-url', 'svg-href', 'svg-viewbox', 'svg-label',
   'svg-wide', 'svg-text-small', 'chart-text-small', 'empty-title', 'media-undeclared',
-  'part-error', 'chart-geometry', 'chart-overlap', 'base-state-budget']
+  'part-error', 'part-drive', 'chart-geometry', 'chart-overlap', 'base-state-budget']
 // The parts kinds, each with the pattern its detail must match. Each fails alone: no other kind
 // may appear in any cell, since a stub that also broke the walk or the layout proves nothing.
 const PART_BAD = new Map([
   ['part-error', /^switch: switch 1 pane "size=small" /],
+  // A head script keeps the shell's count observer from attaching, so after the first answer the
+  // counts still read as the page loaded, while the kit and its response work.
+  ['part-drive', /^interaction base counts: with 1 of 2 answered, the contents row #store reads "1 open", not "answered"; /],
   ['chart-geometry', /: row \d+ col \d+ drawn [\d.]+-[\d.]+ px, expected [\d.]+-[\d.]+ px$/],
   ['chart-overlap', /: "Parse 120" and "120 ms" intersect$/],
   ['base-state-budget', /^switch 1: 25 combinations, limit 16$/],
@@ -364,6 +367,19 @@ const PANES_NAMED = [
   ['a compare driven from its own switch', /^panes: compare 1 (before|after)$/],
   ['a compare revealed inside a pane', /^panes: compare 2 (before|after)$/],
   ...['grouped', 'stacked', 'negative', 'all-zero', 'shared', 'timeline'].map(chartRow),
+]
+// A shell page with questions runs every state. good-base names each row it must drive, one case
+// per row, so a combination, a zoom or a theme the walk skipped has no row and fails its case.
+const BASE_STATES = ['initial', 'details-open', 'panes', 'chrome', 'interaction']
+const exactRow = (name) => [name, new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)]
+const BASE_NAMED = [
+  ...['scheme=light', 'scheme=dark', 'scheme arrow'].map((s) => exactRow(`panes: switch 1 ${s}`)),
+  ...['device=phone cache=cold', 'device=phone cache=warm', 'device=desktop cache=cold', 'device=desktop cache=warm', 'device arrow', 'cache arrow']
+    .map((s) => exactRow(`panes: switch 2 ${s}`)),
+  ...['before', 'after'].map((s) => exactRow(`panes: compare 1 ${s}`)),
+  ...['grouped', 'stacked', 'negative', 'all-zero', 'shared', 'timeline'].map(chartRow),
+  ...['theme light', 'theme dark', 'theme auto', 'zoom 1', 'zoom 2', 'zoom 3', 'zoom 4', 'dock', 'sheet'].map((s) => exactRow(`chrome: ${s}`)),
+  exactRow('interaction: base counts'),
 ]
 // Kit negative fixtures under bad-kit/: [directory, fault, pattern its detail must match].
 const KIT_BAD = [
@@ -422,6 +438,10 @@ const CASES = [
   // shared scale across a period switch, a two-key switch, a compare beside it and one inside a
   // pane, a packed two-lane timeline, and a table that overflows at 390.
   { dir: 'good-base-plain', args: [], exit: 0, states: PANES_STATES, named: PANES_NAMED },
+  // Every part and the shell, with five questions: ten sections, eight figures, four zooms (two
+  // inside the panes of a 1×2 switch), a 2×2 switch of bars on one scale, a compare, stacked,
+  // negative and all-zero bars, a two-lane timeline, and a table that overflows at 390.
+  { dir: 'good-base', args: ['--shots', 'shots'], exit: 0, shots: true, states: BASE_STATES, copy: 'copied-verified', named: BASE_NAMED },
   // Grouped bars in a 2×2 switch built Inline: every pane stays within 2,000 px.
   { dir: 'inline-parts', args: ['--inline'], exit: 0, states: PANES_STATES, named: [
     ['every combination of a 2×2 switch', /^panes: switch 1 region=\w+ quarter=q\d$/],
@@ -1110,8 +1130,9 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
   const views = runMod.DOC_VIEWS.length
   // A kit page that logs one plans-part line twice at load.
   const partLine = (dir) => buildMod.assemble(readFileSync(join(FIX, dir, 'page.html'), 'utf8').replace('</main>', '<script>console.error("plans-part: switch: a pane names key size, which its box does not have"); console.error("plans-part: switch: a pane names key size, which its box does not have")</script>\n</main>'), { inline: false, kit: buildMod.readKit(), readSibling: () => '' }).buffer
-  // A Document built with the kit, with attrs on its <body>.
-  const basePage = (attrs, body) => buildMod.assemble(`<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>run unit</title>\n<!-- plans:kit -->\n</head>\n<body${attrs}>\n${body}\n</body>\n</html>\n`, { inline: false, kit: buildMod.readKit(), readSibling: () => '' }).buffer
+  // A Document built with the kit, with attrs on its <body>: the assembly, and its bytes alone.
+  const baseBuild = (attrs, body) => buildMod.assemble(`<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>run unit</title>\n<!-- plans:kit -->\n</head>\n<body${attrs}>\n${body}\n</body>\n</html>\n`, { inline: false, kit: buildMod.readKit(), readSibling: () => '' })
+  const basePage = (attrs, body) => baseBuild(attrs, body).buffer
   const switchPage = basePage('', `<main>
 <h1>Switch unit</h1>
 <div data-base-switch>
@@ -1270,6 +1291,85 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
       : stall ? await withStall(cdp, { ...stall, settleMs: runMod.SETTLE_MS }, go) : await go()
     const after = { ...leaks(priv), timers: timers() }
     check(name, ok(out, shotsDir) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), shots: out.shots?.map((s) => s.file), before, after }))
+  }
+
+  // The base leaves the response alone (ruling 2). One question block runs on a shell page and on
+  // a plain page. Each run's interaction compares its page's response with check/expect.mjs after
+  // every step, for that page's own build. The unit also keeps every response the runs read back,
+  // through readState, and the two lists must match once each response's _build line is removed.
+  // The first response of each must be format() of a model written here by hand.
+  const responseName = "browser: base response matches the kit's apart from the build line"
+  if (why) skip(responseName, why)
+  else {
+    const { format } = await import(new URL('../../skills/doc/check/expect.mjs', import.meta.url).href)
+    const ask = `<fieldset data-ask="store">
+<legend>Where does the cache live?</legend>
+<p>Memory costs nothing to run. A store on disk survives a restart.</p>
+<label><input type="radio" name="store" value="memory" checked> In memory <span data-hint>Nothing new to run.</span></label>
+<label><input type="radio" name="store" value="disk"> On disk <span data-then>Then a restart keeps the cache.</span></label>
+</fieldset>
+<fieldset data-ask="regions">
+<legend>Which regions go first?</legend>
+<p>Each region that goes first tests the change for the others.</p>
+<label><input type="checkbox" name="regions" value="north" checked> North</label>
+<label><input type="checkbox" name="regions" value="south"> South</label>
+</fieldset>
+<label for="note-why">Anything else</label>
+<textarea id="note-why" data-note="Why" rows="2"></textarea>`
+    const pages = [
+      ['shell', baseBuild(' data-base-shell', `<header class="pb-mast"><h1>Response unit</h1><p class="pb-lede">One question block under the shell.</p></header>
+<div class="pb-brief"><nav data-base-contents aria-label="Sections"></nav></div>
+<main>
+<section id="ask" data-base-status="proposed"><h2>Questions</h2>
+${ask}
+</section>
+<section data-respond></section>
+</main>`)],
+      ['plain', baseBuild('', `<main>\n<h1>Response unit</h1>\n${ask}\n<section data-respond></section>\n</main>`)],
+    ]
+    const model = (build) => ({
+      title: 'run unit', build,
+      questions: [
+        q('store', 'Where does the cache live?', 'radio', [['memory', 'In memory', true, true], ['disk', 'On disk', false, false]]),
+        q('regions', 'Which regions go first?', 'checkbox', [['north', 'North', true, true], ['south', 'South', false, false]]),
+      ],
+      notes: [{ name: 'Why', text: '' }, { name: 'General', text: '' }],
+    })
+    const unbuilt = (r) => r.split('\n').filter((line, i) => !(i === 1 && /^_build [0-9a-f]{12}_$/.test(line))).join('\n')
+    const before = { ...leaks(priv), timers: timers() }
+    const runs = []
+    for (const [label, built] of pages) {
+      const read = []
+      const real = cdp.Pipe.prototype.send
+      cdp.Pipe.prototype.send = function (method, params, ...rest) {
+        const p = real.call(this, method, params, ...rest)
+        if (method === 'Runtime.evaluate' && params?.expression?.startsWith('(function readState(')) {
+          p.then((r) => { if (typeof r?.result?.value?.response === 'string') read.push(r.result.value.response) }, () => {})
+        }
+        return p
+      }
+      try {
+        runs.push({ label, built, read, out: await runMod.runChecks({ buffer: built.buffer, dir: base, chromium, tmp: priv }) })
+      } finally { cdp.Pipe.prototype.send = real }
+    }
+    const after = { ...leaks(priv), timers: timers() }
+    const wrong = []
+    for (const { label, built, read, out } of runs) {
+      const bad = out.checks.filter((c) => c.result !== 'pass')
+      if (out.result !== 'pass' || bad.length) wrong.push(`${label} page: ${out.result} ${JSON.stringify(out.reason)} ${bad.map((c) => `${c.name}: ${c.detail}`).join(' | ')}`)
+      if (!out.checks.some((c) => c.name === 'interaction: initial response' && c.result === 'pass')) wrong.push(`${label} page: no passing initial response`)
+      if (read[0] !== format(model(built.buildId))) wrong.push(`${label} page: its first response ${JSON.stringify(read[0])} is not format() of the model for build ${built.buildId.slice(0, 12)}`)
+    }
+    const [shell, plain] = runs
+    if (!shell.out.checks.some((c) => c.name === 'interaction: base counts' && c.result === 'pass')) wrong.push('shell page: no passing base counts row')
+    if (shell.built.buildId === plain.built.buildId) wrong.push('the two pages share a build id, so the unit compares nothing')
+    if (!shell.read.length || shell.read.length !== plain.read.length) wrong.push(`read ${shell.read.length} responses on the shell page and ${plain.read.length} on the plain page`)
+    else {
+      const k = shell.read.findIndex((r, i) => unbuilt(r) !== unbuilt(plain.read[i]))
+      if (k >= 0) wrong.push(`response ${k + 1} of ${shell.read.length} differs apart from its build line: ${JSON.stringify(shell.read[k])} and ${JSON.stringify(plain.read[k])}`)
+    }
+    check(responseName, wrong.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
+      `${shell.read.length} responses each. ${wrong.slice(0, 4).join(' | ')} ${JSON.stringify({ before, after })}`)
   }
 
   // good-base-tall, checked once with screenshots: each cell's tiles cover the page with no gap,

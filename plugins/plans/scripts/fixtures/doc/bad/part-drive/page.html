@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: part-drive</title>
+<script>
+  // A base whose counts never update: an observer that filters on the kit's question state is
+  // never attached, so the shell writes its counts once at load and never again. The kit's own
+  // observers filter on nothing or on other names, so the question kit keeps working.
+  const observe = MutationObserver.prototype.observe
+  MutationObserver.prototype.observe = function (target, options) {
+    if (options && Array.isArray(options.attributeFilter) && options.attributeFilter.includes('data-plans-state')) return
+    return observe.call(this, target, options)
+  }
+</script>
+<!-- plans:kit -->
+</head>
+<body data-base-shell>
+<header class="pb-mast">
+  <h1>Counts that never move</h1>
+  <p class="pb-lede">Two questions whose open counts stay as the page loaded them.</p>
+</header>
+<div class="pb-brief">
+  <nav data-base-contents aria-label="Sections"></nav>
+</div>
+<main>
+<section id="store" data-base-status="proposed">
+  <h2>Store</h2>
+  <fieldset data-ask="store">
+    <legend>Where does the cache live?</legend>
+    <p>Memory costs nothing to run. A store survives a restart.</p>
+    <label><input type="radio" name="store" value="memory" checked> In memory</label>
+    <label><input type="radio" name="store" value="disk"> On disk</label>
+  </fieldset>
+</section>
+<section id="regions" data-base-status="proposed">
+  <h2>Regions</h2>
+  <fieldset data-ask="regions">
+    <legend>Which regions go first?</legend>
+    <p>Each region that goes first tests the change for the others.</p>
+    <label><input type="checkbox" name="regions" value="north" checked> North</label>
+    <label><input type="checkbox" name="regions" value="south"> South</label>
+  </fieldset>
+</section>
+<section data-respond>
+  <h2>Your response</h2>
+</section>
+</main>
+</body>
+</html>
