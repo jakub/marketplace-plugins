@@ -79,7 +79,7 @@ Script adds nothing. Put only numbers you measured or counted in a tile.
 
 - A figure holds an `img` or an inline SVG, and a `figcaption`.
 - `data-base-frame="browser"` draws a browser frame, and its `.pb-address` text is the address line. `data-base-frame="phone"` draws a phone frame. Leave the attribute off for no frame.
-- Under the shell, `data-base-zoom` makes each `img` open a native dialog: fitted first, then at actual size. Actual size is the natural width divided by the pixel ratio. The ratio is `data-base-dpr` on the `img` when you set it, else the natural width divided by the `width` attribute, else 1. `data-base-dpr` is a number greater than 0, or it is a `part-error`.
+- Under the shell, `data-base-zoom` on the figure makes script wrap each `img` in a button with a **Zoom** badge. The button opens a native dialog that shows the image fitted, and the dialog's **Actual size** button shows it at actual size. Actual size is the natural width divided by the pixel ratio. The ratio is `data-base-dpr` on the `img` when you set it, else the natural width divided by the `width` attribute, else 1. `data-base-dpr` is a number greater than 0, or it is a `part-error`. A zoomable image inside a question is a `part-error` too.
 - Under the shell, a caption sits beside its figure when the figure's own box is 640 px or wider, and below it when narrower.
 
 Before script runs, the image shows at its laid-out size and nothing opens.
@@ -102,7 +102,9 @@ A before-and-after pair of one thing.
 </figure>
 ```
 
-Give each side a visible heading. At 640 px of box width and wider, both sides show side by side. Under 640 px, script adds a two-button switch above the sides and shows `after` first. Before script runs, both sides show, one above the other.
+Give each side a visible heading. The two sides and the `figcaption` are direct children of the figure. At 640 px of box width and wider, both sides show side by side. Script adds a two-button switch above the sides, labelled with the sides' headings. The switch shows only when the box is under 640 px, and it starts on `after`. Before script runs, both sides show: side by side at 640 px and wider, one above the other below that.
+
+A `.pb-compare` that isn't a `figure`, lacks the `figcaption` or a headed side, or holds a question is a `part-error`.
 
 ### Switch
 
@@ -129,8 +131,8 @@ A box of panes that the reader picks between with one or two groups of buttons.
 - Keys are unique in a box. Values are unique in a key, and each key has at least two. Both match `^[a-z][a-z0-9-]*$`.
 - Two panes may match one combination, and a combination may match no pane.
 - Never set `hidden` on a pane. Before script runs, every pane shows, so the page still holds everything.
-- These are `part-error`s: a pane with no term, a term with an unknown key or value, one key twice in a pane, and a switch inside a switch.
-- Arrow keys, Home and End move between the buttons of one group.
+- A break of any rule above is a `part-error`. So are a pane with no term, a term with an unknown key or value, one key twice in a pane, a key inside a pane, a pane or a key outside any switch, and a switch inside a switch or a question. A switch with an error stays as written: its buttons stay disabled and every pane shows.
+- Arrow keys, Home and End move to another button in the same group and press it. They wrap at both ends.
 
 The check visits every combination of each switch's keys, at most 16 per switch and 64 per page. Over either limit is the fault `base-state-budget`.
 
@@ -145,7 +147,7 @@ The check visits every combination of each switch's keys, at most 16 per switch 
 </div>
 ```
 
-Give the table a `caption`. When the table is wider than its box, script makes the box a named, focusable scroll region, so a keyboard reader can scroll it. There's no height cap. A sticky header is fine only where the box itself scrolls.
+Give the table a `caption`. The `.pb-table` box holds that one table and nothing else. A box without a captioned table, with a second child, or inside a question is a `part-error`. When the table is wider than its box, script makes the box a focusable scroll region named by the caption, so a keyboard reader can scroll it. There's no height cap. A sticky header is fine only where the box itself scrolls.
 
 ### Notes
 
@@ -187,7 +189,9 @@ The numbers are the list's own. Script adds nothing.
 
 A chart is an HTML table or list that holds the values. Script reads the values and draws the marks. You never write a fraction, a width or a coordinate. Put a chart in a `figure` with a `figcaption` that says what was measured, where and when.
 
-The table or list stays the readable text. The drawn track is `aria-hidden`.
+The table or list stays the readable text, and the drawn track is `aria-hidden`. Before script runs, and on a chart with a markup error, the chart reads as a plain table or list.
+
+`data-base-chart="bars"` goes on a `table`, and `data-base-chart="timeline"` on an `ol`. Any other pairing is a `part-error`. So are a chart inside a chart, and a chart that holds a question or sits in one.
 
 ### Bars
 
@@ -205,13 +209,14 @@ The table or list stays the readable text. The drawn track is `aria-hidden`.
 </figure>
 ```
 
-- Each body row has a `th` label and one to six `td` cells. Each cell holds one `<data value>`.
+- Each body row has a `th` label and one to six `td` cells. Each cell holds one `<data value>`. Every row has the same number of cells. With two or more value columns, the `thead` row has one cell over the labels and one over each column.
 - A value matches `^-?\d+(\.\d+)?$`: an optional `-`, digits, then an optional `.` and digits. An exponent, `Infinity`, a trailing `.` and an empty value are `part-error`s. The display text inside `<data>` is yours, so `1.2 s` can stand for `1210`.
 - Columns draw side by side by default. Add `data-base-stack` to the table to stack them. A stacked chart refuses a negative value.
-- In a side-by-side chart, a negative value draws left of a zero line.
+- In a side-by-side chart, each value gets its own bar, with its display text beside it. When the scale includes 0, each track draws a zero line at 0, and a bar runs from that line to its value, so a negative value draws left of the line. With a `data-base-min` above 0, a bar starts at that bound.
+- A stacked chart draws each row as one bar of segments, end to end from 0 with no gap, and prints the row's values under its label.
 - The scale runs from the smaller of 0 and the lowest value to the larger of 0 and the highest value. A stacked chart scales to its largest row sum. An all-zero chart uses 0 to 1.
-- `data-base-min` and `data-base-max` on the table set the bounds. A bound that leaves out a value, or a row sum in a stacked chart, is a `part-error`. So is a stacked chart with a `data-base-min` other than 0.
-- One value column draws in ink, and a row with `data-base-status="changed"` takes the accent. Two to six columns draw in `--plans-chart-1` to `--plans-chart-6`, and the `thead` cells are the legend.
+- `data-base-min` and `data-base-max` on the table set the bounds, each a decimal in the value form. A bound that leaves out a value, or a row sum in a stacked chart, is a `part-error`. So is a stacked chart with a `data-base-min` other than 0.
+- One value column draws in ink, and a row with `data-base-status="changed"` takes the accent. Two to six columns draw in `--plans-chart-1` to `--plans-chart-6`, and the `thead` cells are the legend, each with a colour swatch. There, a changed row keeps its series colours, and only its label takes the accent ◆.
 
 **Shared scales.** Charts in one `[data-base-switch]` box that have the same `data-base-unit` share one scale across the panes, so a bar keeps its length when the reader switches panes. A chart with no unit, or a different unit, keeps its own scale. In a share group, every chart that states `data-base-min` or `data-base-max` states the same value as the others that state it, or it is a `part-error`. Charts that state no bound take the group's.
 
@@ -233,10 +238,11 @@ A value over time is a bars chart with one row per period. There's no line-plot 
 
 - Each `li` has a `data-base-lane` and one or two `time[datetime]`: one for a point, two for a span.
 - A `datetime` is `YYYY-MM-DD`, read as UTC midnight, or `YYYY-MM-DDTHH:mm:ssZ`. A date that doesn't exist, such as `2026-02-30`, a time without `Z`, and an end before its start are `part-error`s.
-- `data-base-from` and `data-base-to` on the `ol` set the bounds, in the same forms. Without them the chart runs from the earliest start to the latest end. If those are the same instant, every mark sits in the middle.
+- `data-base-from` and `data-base-to` on the `ol` set the bounds, in the same forms. Without them the chart runs from the earliest start to the latest end. If those are the same instant, every mark sits in the middle. An item outside the bounds is a `part-error`.
 - Script draws a track above the list, with one labelled band per lane, in order of first use. The lane's name labels the band, beside it when the chart's box is 480 px or wider and above it when narrower.
-- Marks keep their true positions in time. Marks in one lane that would overlap take extra rows in that band, in order of start and then source order, and the track grows as tall as it needs.
+- A point draws as a diamond centred on its time, and a span as a bar from its start to its end. Marks keep their true positions in time. Marks in one lane that would overlap take extra rows in that band, in order of start and then source order, and the track grows as tall as it needs.
 - Lanes have no colours. Marks draw in ink, and a `li` with `data-base-status="changed"` takes the accent.
+- The track has no date axis, so the `time` texts in the list carry the dates. CSS prints each item's lane before its text, so don't repeat the lane name in the text.
 
 ## Lay a Document out with the shell
 
@@ -266,20 +272,21 @@ Keep the masthead and the brief short. On a phone, the first screen should hold 
 
 ### Contents
 
-Write `nav[data-base-contents]` empty. Script fills it with one row for each `main > section[id]` whose first element child is an `h2`. A row holds the heading text and the section's status as a chip. A section that holds questions also shows a live count: `N open`, or `answered`.
+Write `nav[data-base-contents]` empty. Script fills it with one row for each `main > section[id]` whose first element child is an `h2`. A row holds the heading text, less a leading `.num`, and a chip with the section's status word. A section that holds questions also shows a live count: `N open`, or `answered`.
 
-- Give every listed section a `data-base-status`. A listed section without one is a `part-error`, and so is a nav that you filled yourself.
+- Give every listed section a `data-base-status` from the vocabulary. A listed section without one, or with a value outside the set, is a `part-error`, and its row shows no chip.
+- A nav that you filled yourself is a `part-error`, and so is a nav with no section to list.
 - A question counts as answered when the kit has marked it changed or kept. `kit.md` says when that happens.
 
 Before script runs, the nav is empty and every section reads as it is.
 
 ### Dock and sheet
 
-When the contents list scrolls out of view, script shows a bar fixed to the bottom of the screen at every width. It shows the section in view as `3/7 Title`, the open count on a page with questions, and a **Sections** button. The button opens a sheet with the same rows. A row closes the sheet and jumps to its section. **Close** and Escape close it, and focus goes back to the button. The page leaves room for the bar at its end, so no control sits under it.
+When the contents list scrolls above the top of the screen, script shows a bar fixed to the bottom of the screen at every width. It shows the section in view as `3/7 Title`, the open count on a page with questions, and a **Sections** button. The button opens a sheet with the same rows. A row closes the sheet and jumps to its section. **Close**, Escape and a press outside the sheet close it, and focus goes back to the button. On a page without a contents list, the bar shows once the masthead scrolls away. The page leaves room for the bar at its end, so no control sits under it.
 
 ### Theme switch
 
-Script adds one button to the masthead that cycles **auto**, **light** and **dark**. Nothing is stored, so a reload starts at auto. The colours come from the kit's own tokens, so page CSS under the shell never queries `prefers-color-scheme`. `style.md` has that rule.
+Script adds one button to the masthead that cycles **auto**, **light** and **dark**. Under the shell, a page without a `header.pb-mast` is a `part-error`, because the button has nowhere to go. Nothing is stored, so a reload starts at auto. The colours come from the kit's own tokens, so page CSS under the shell never queries `prefers-color-scheme`. `style.md` has that rule.
 
 ### Rows
 
