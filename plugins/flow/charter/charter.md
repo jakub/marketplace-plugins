@@ -70,7 +70,7 @@ Agents own the test environments. Dev is the user's and holds production-like da
 
 When a background task, monitor, or seat comes back with an error, a null, a rate limit, or a timeout, its outcome is unknown. Retry a transient failure up to three times with backoff, check the outcome before anything depends on it, and never round unknown up to a pass.
 
-When structure or visuals beat prose, pick a tier with `plans:show` if installed, else sketch.
+When you report to the user, show it: chart numbers they compare, diagram the structure of a code change, and screenshot a UI change, because each reads faster than the prose that describes it. Pick the tier with `plans:show` if installed, else sketch.
 
 A PR criterion is evidenced only if a reviewer can check it in a browser. A CI deep-link or a capture committed at a pinned SHA beats pasted output. Publish HTML, screenshots, videos, and large image sets with `plans:publish --keep` and say the link is tailnet-only.
 

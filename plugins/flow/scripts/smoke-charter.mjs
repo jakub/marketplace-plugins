@@ -39,7 +39,8 @@ try {
 
   // The issue's routing lines. Each routing check reports why a text fails, so the controls below
   // can prove that reverting either line, or the whole file to its pre-plans form, is caught.
-  const SHOW_LINE = 'When structure or visuals beat prose, pick a tier with `plans:show` if installed, else sketch.'
+  const SHOW_LINE = 'When you report to the user, show it: chart numbers they compare, diagram the structure of a code change, and screenshot a UI change, because each reads faster than the prose that describes it. Pick the tier with `plans:show` if installed, else sketch.'
+  const OLD_SHOW_LINE = 'When structure or visuals beat prose, pick a tier with `plans:show` if installed, else sketch.'
   const KEEP_TAIL = 'Publish HTML, screenshots, videos, and large image sets with `plans:publish --keep` and say the link is tailnet-only.'
   const routingFailures = (text) => {
     const lines = text.split('\n').map((line) => line.trimEnd())
@@ -54,6 +55,7 @@ try {
 
   const reverted = {
     'the show line': charter.replace(SHOW_LINE, 'When structure or visuals beat prose, publish HTML through the artifact publisher and hand back the URL.'),
+    'the show line, back to its pre-#54 wording': charter.replace(SHOW_LINE, OLD_SHOW_LINE),
     'the keep line': charter.replace(KEEP_TAIL, "Publish HTML, screenshots, videos, and large image sets with the artifact publisher's `--keep` and say the link is tailnet-only."),
   }
   for (const [name, text] of Object.entries(reverted)) {
