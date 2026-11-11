@@ -17,11 +17,13 @@
 //
 // What should exist comes from the built bytes, parsed in the page with DOMParser (plan()), never
 // from what the shell's script made or a marker it set. So a shell that made nothing fails each
-// step the bytes call for instead of passing with nothing to drive. The bytes call for:
+// step the bytes call for instead of passing with nothing to drive. Nothing inside a <noscript> or
+// a <template> counts, since the scripted page holds neither's content as elements. The bytes call
+// for:
 //   - the theme switch, when they hold header.pb-mast
 //   - one zoom per img in figure.pb-figure[data-base-zoom], in document order, less one inside a
-//     fieldset[data-ask] or a <noscript>, or with a data-base-dpr that isn't a number over 0, each
-//     of which the shell refuses with a part-error. A zoom button past that count fails its row too.
+//     fieldset[data-ask], or with a data-base-dpr that isn't a number over 0, each of which the
+//     shell refuses with a part-error. A zoom button past that count fails its row too.
 //   - the dock and the sheet, when a main > section[id] opens with an h2: those sections are the
 //     rows, titled by the h2's text less a leading .num, whitespace collapsed, else the id
 //   - a count on each row whose section holds a fieldset[data-ask], in the contents list and in
@@ -128,26 +130,29 @@ function fallbacks() {
 // What the built bytes call for, read with DOMParser: { mast, nav, rows: [{ id, title, asks }],
 // asks: [id], zooms: [{ src, dpr, width, pane, compare, side }] }. asks in a row are indexes into
 // asks, pane is the zoom's [data-base-when] index, or -1, and compare the figure.pb-compare index
-// whose .pb-side holds it, or -1, with that side's data-base-side.
+// whose .pb-side holds it, or -1, with that side's data-base-side. DOMParser parses with scripting
+// off, so a <noscript>'s content is elements here and text in the scripted page: every read skips
+// it, and a <template>'s, as parts.mjs's model does.
 function plan(source) {
   const doc = new DOMParser().parseFromString(source, 'text/html')
-  const asks = [...doc.querySelectorAll('fieldset[data-ask]')]
+  const all = (root, sel) => [...root.querySelectorAll(sel)].filter((el) => !el.closest('noscript, template'))
+  const asks = all(doc, 'fieldset[data-ask]')
   const titleOf = (h) => {
     let t = ''
     for (const n of h.childNodes) if (!(n.nodeType === 1 && !t.trim() && n.matches('.num'))) t += n.textContent
     return t.replace(/\s+/g, ' ').trim()
   }
   const rows = []
-  for (const s of doc.querySelectorAll('main > section[id]')) {
+  for (const s of all(doc, 'main > section[id]')) {
     const h = s.firstElementChild
     if (!s.id || !h || h.localName !== 'h2') continue
-    rows.push({ id: s.id, title: titleOf(h) || s.id, asks: [...s.querySelectorAll('fieldset[data-ask]')].map((f) => asks.indexOf(f)) })
+    rows.push({ id: s.id, title: titleOf(h) || s.id, asks: all(s, 'fieldset[data-ask]').map((f) => asks.indexOf(f)) })
   }
-  const panes = [...doc.querySelectorAll('[data-base-when]')]
-  const compares = [...doc.querySelectorAll('figure.pb-compare')]
+  const panes = all(doc, '[data-base-when]')
+  const compares = all(doc, 'figure.pb-compare')
   const zooms = []
-  for (const img of doc.querySelectorAll('figure.pb-figure[data-base-zoom] img')) {
-    if (img.closest('fieldset[data-ask], noscript')) continue
+  for (const img of all(doc, 'figure.pb-figure[data-base-zoom] img')) {
+    if (img.closest('fieldset[data-ask]')) continue
     const raw = img.getAttribute('data-base-dpr')
     const dpr = raw === null ? 0 : raw.trim() === '' ? NaN : Number(raw)
     if (raw !== null && !(Number.isFinite(dpr) && dpr > 0)) continue
@@ -157,7 +162,7 @@ function plan(source) {
     zooms.push({ src: img.getAttribute('src'), dpr, width: w > 0 ? w : 0, pane: panes.indexOf(img.closest('[data-base-when]')),
       compare, side: compare >= 0 ? side.getAttribute('data-base-side') : null })
   }
-  return { mast: !!doc.querySelector('header.pb-mast'), nav: !!doc.querySelector('[data-base-contents]'), rows, asks: asks.map((f) => f.getAttribute('data-ask')), zooms }
+  return { mast: all(doc, 'header.pb-mast').length > 0, nav: all(doc, '[data-base-contents]').length > 0, rows, asks: asks.map((f) => f.getAttribute('data-ask')), zooms }
 }
 
 function themeNow(names) {

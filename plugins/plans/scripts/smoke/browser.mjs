@@ -1416,6 +1416,31 @@ ${script}
     ['browser: a chart a page script clones from a template is part-error', undefined,
       templatedChart('<script>document.querySelector("main").append(document.getElementById("later").content.cloneNode(true))</script>'),
       (out) => out.result === 'fail' && out.matrix.length > 0 && out.matrix.every((c) => c.faults.length > 0 && c.faults.every((f) => f.kind === 'part-error' && f.detail === clonedChart))],
+    // DOMParser parses with scripting off, so a <noscript> fallback's main, section and question
+    // are elements there and text in the scripted page. The plan must not expect them.
+    ['browser: a shell page with a noscript fallback section passes in every view', undefined,
+      basePage(' data-base-shell', `<header class="pb-mast"><h1>Fallback unit</h1><p class="pb-lede">A shell page with a fallback for a reader without script.</p></header>
+<div class="pb-brief"><nav data-base-contents aria-label="Sections"></nav></div>
+<noscript><main>
+<section id="fallback"><h2>Without script</h2>
+<fieldset data-ask="old">
+<legend>Is the old flow kept?</legend>
+<label><input type="radio" name="old" value="yes" checked> Yes</label>
+<label><input type="radio" name="old" value="no"> No</label>
+</fieldset>
+</section>
+</main></noscript>
+<main>
+<section id="ask" data-base-status="proposed"><h2>Questions</h2>
+<fieldset data-ask="store">
+<legend>Where does the cache live?</legend>
+<label><input type="radio" name="store" value="memory" checked> In memory</label>
+<label><input type="radio" name="store" value="disk"> On disk</label>
+</fieldset>
+</section>
+<section data-respond></section>
+</main>`),
+      (out) => out.result === 'pass' && runMod.DOC_VIEWS.every((v) => [runMod.CHROME, runMod.INTERACTION].every((st) => out.matrix.some((c) => c.view === v.name && c.state === st)))],
     // The capture of the tile at y 16384, the last tile at scale 2 and at scale 1, past its
     // deadline on every attempt. Each view is retried, ends in its first state with the deadline
     // fault, and its listed tiles stop at 16384, an unknown gap. The list and the directory hold
