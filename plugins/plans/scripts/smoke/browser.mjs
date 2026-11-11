@@ -1152,7 +1152,28 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 <section id="one" data-base-status="changed"><h2>The one section</h2><p>Its text.</p></section>
 </main>`)
   const cellsOf = (out, view, state) => out.matrix.filter((c) => c.view === view && c.state === state).length
-  const leftover = (out) => out.matrix.some((c) => c.faults.some((f) => f.kind === 'part-drive' && / a base control that no base state drives$/.test(f.detail)))
+  const noPartDrive = (out) => !out.matrix.some((c) => c.faults.some((f) => f.kind === 'part-drive'))
+  // An author control with a plans- class, alone on a plain page and beside a switch, a compare and
+  // a shell's controls on a base page.
+  const exportButton = '<button type="button" class="plans-export">export</button>'
+  const exportListed = (out) => out.undriven.length === 1 && out.undriven[0] === 'button[type="button"] "export"'
+  const exportBasePage = basePage(' data-base-shell', `<header class="pb-mast"><h1>Export unit</h1><p class="pb-lede">An author control beside the base's own.</p></header>
+<div class="pb-brief"><nav data-base-contents aria-label="Sections"></nav></div>
+<main>
+<section id="one" data-base-status="changed"><h2>The one section</h2>
+<p>${exportButton}</p>
+<div data-base-switch>
+  <div data-base-key="size"><span>Size</span> <button type="button" value="small" aria-pressed="true" disabled>Small</button> <button type="button" value="large" aria-pressed="false" disabled>Large</button></div>
+  <div data-base-when="size=small"><p>The small pane.</p></div>
+  <div data-base-when="size=large"><p>The large pane.</p></div>
+</div>
+<figure class="pb-compare">
+  <div class="pb-side" data-base-side="before"><h3>Before</h3><p>The old text.</p></div>
+  <div class="pb-side" data-base-side="after"><h3>After</h3><p>The new text.</p></div>
+  <figcaption>One change, before and after.</figcaption>
+</figure>
+</section>
+</main>`)
   const cases = [
     // The initial state holds a fault, and opening <details> blocks the page past the deadline.
     ['runChecks: a cell measured before the deadline keeps its fault, so the run fails', 4000,
@@ -1244,25 +1265,32 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
         && out.matrix.filter((c) => c.state === 'interaction').length === views
         && out.checks.some((c) => c.name === 'interaction: initial response' && c.result === 'pass')],
     // The base states come from the built bytes. A switch and a compare give every view one panes
-    // cell and their controls are driven, so none is in undriven or left over. A shell gives every
+    // cell and their controls are driven, so none is in undriven. A shell gives every
     // Document view one chrome cell, with its controls driven the same way. A page with neither
     // gets neither. The pages run against whatever parts.mjs and shell.mjs hold, so only the cells
     // and the controls are asserted.
     ['browser: a switch page gets one panes cell per view and no switch control in undriven', undefined, switchPage,
       (out) => runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.PANES) === 1 && cellsOf(out, v.name, runMod.CHROME) === 0)
-        && out.matrix.every((c) => c.ms !== null) && out.undriven.length === 0 && !leftover(out)],
+        && out.matrix.every((c) => c.ms !== null) && out.undriven.length === 0],
     ['browser: a shell page gets one chrome cell per Document view', undefined, shellPage,
       (out) => runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.CHROME) === 1 && cellsOf(out, v.name, runMod.PANES) === 0)
-        && out.matrix.every((c) => c.ms !== null) && out.undriven.length === 0 && !leftover(out)],
+        && out.matrix.every((c) => c.ms !== null) && out.undriven.length === 0],
     ['browser: a page with neither a switch nor a shell gets no panes or chrome cell', undefined, page('<p>A quiet page.</p>'),
       (out) => out.result === 'pass' && out.matrix.length === 2 * views && out.matrix.every((c) => runMod.STATES.includes(c.state))],
-    // A key button the page's script adds after load. The bytes hold no switch, so no state drives
-    // it: it is left over, a part-drive in the cell that read the controls, and never in undriven.
-    ['browser: a base control no base state drives is a part-drive', undefined,
+    // A control is a base control only by the base's exact names, on a page whose bytes require the
+    // state that drives it. Every other control is listed in undriven, whatever its class: an old
+    // page's own plans- control, alone or beside real base controls, and a key button that script
+    // adds outside any switch on a page whose bytes hold none. None of them is a part-drive.
+    ['browser: an old page\'s own plans- control is listed in undriven', undefined,
+      page(`<p>An old page with an export control of its own.</p>\n<p>${exportButton}</p>`),
+      (out) => out.result === 'pass' && exportListed(out) && noPartDrive(out) && out.matrix.every((c) => runMod.STATES.includes(c.state))],
+    ['browser: an author plans- control beside base controls is listed in undriven', undefined, exportBasePage,
+      (out) => out.result === 'pass' && exportListed(out) && noPartDrive(out)
+        && runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.PANES) === 1 && cellsOf(out, v.name, runMod.CHROME) === 1)],
+    ['browser: a key button that script adds outside any switch is listed in undriven', undefined,
       page('<p>A script adds a key button after load.</p>\n<script>const k = document.createElement("div"); k.setAttribute("data-base-key", "k"); const b = document.createElement("button"); b.type = "button"; b.value = "x"; b.textContent = "Injected"; k.append(b); document.querySelector("main").append(k)</script>'),
-      (out) => out.result === 'fail' && has(out, '390-light', 'details-open', 'part-drive') && out.undriven.length === 0
-        && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'part-drive' && f.detail === 'details-open button[type="button"][value="x"] "Injected": a base control that no base state drives')
-        && out.matrix.every((c) => runMod.STATES.includes(c.state))],
+      (out) => out.result === 'pass' && out.undriven.length === 1 && out.undriven[0] === 'button[type="button"][value="x"] "Injected"'
+        && noPartDrive(out) && out.matrix.every((c) => runMod.STATES.includes(c.state))],
     // The capture of the tile at y 16384, the last tile at scale 2 and at scale 1, past its
     // deadline on every attempt. Each view is retried, ends in its first state with the deadline
     // fault, and its listed tiles stop at 16384, an unknown gap. The list and the directory hold

@@ -84,15 +84,15 @@
 //   `undriven` lists every control outside the kit that the matrix did not drive: a button,
 // select, textarea, input, contenteditable or tabindex that no fieldset[data-ask],
 // textarea[data-note], data-respond or data-ask-summary holds. Kit controls join it, marked `kit`,
-// only when the script did not run. A base control never joins it. For each base state the page
-// requires, the controls that state drives are dropped by selector (panes: `[data-base-key]
-// button` and `.plans-compare-switch button`; chrome: `button.plans-theme`,
-// `button.plans-zoom-open`, `dialog.plans-zoom button`, `.plans-dock button` and
-// `dialog.plans-sheet button`), and a `.pb-table` scroller is always skipped. Any other base
-// control, being a key button, a control with a plans- class outside the 0.2.0 kit's plans-ask,
-// plans-diff and plans-note names, or a control inside a script-made part, is the fault part-drive
-// (`<state> <control>: a base control that no base state drives`) in the cell that read the
-// controls: the first view's last state.
+// only when the script did not run. A base control never joins it. A control is a base control
+// only by the exact names the base's markup holds or its script makes, and only on a page whose
+// bytes require the state that drives it, which drops it (panes: `[data-base-switch]
+// [data-base-key] button` and `.plans-compare-switch button`; chrome: `button.plans-theme`,
+// `button.plans-zoom-open`, `dialog.plans-zoom button.plans-zoom-size` and
+// `button.plans-zoom-close`, `.plans-dock button.plans-dock-sections` and `dialog.plans-sheet
+// button.plans-sheet-close`). Every other control joins it whatever its class, so an old page's
+// own plans- control is listed as it always was, and a `.pb-table` scroller is always skipped. A
+// base control that its state can't drive fails that state's step, a part-drive.
 //
 // Drive. Each module function gets one drive, built once per state load:
 //   io                 { send(method, params), evaluate(expression), mouse(x, y) }: a raw command
@@ -199,7 +199,7 @@
 // svg-href, svg-viewbox, svg-label, svg-wide, svg-text-small and chart-text-small (every Document
 // view, and 360 in Inline), empty-title (Document only), media-undeclared, and in Inline mode
 // inline-height, inline-kit-hook and inline-frame. From the base states: part-drive (a failed
-// drive step, or a base control no base state drove, as above), and what parts.mjs and shell.mjs
+// drive step), and what parts.mjs and shell.mjs
 // return, such as chart-geometry, chart-overlap and base-state-budget. Chromium 155 prints no "Refused to" line for a CSP block, so
 // console-csp also reads Log.entryAdded with source `security` and loadingFailed with
 // blockedReason `csp`. css-url reads the declarations the CSSOM parsed, in document.styleSheets,
@@ -721,38 +721,30 @@ function probe(cfg) {
   return { faults, kitPage, height, width: Math.max(root.scrollWidth, cw) }
 }
 
-// Every control the matrix does not drive, as { list, left }. The kit's own controls are listed
-// too, marked `kit`, only when the interaction script did not drive them. A base control is never
-// listed: the controls of each base state in `base` ({ panes, chrome }, the states the page's
-// bytes require) are dropped by selector, a .pb-table scroller is always skipped, and any other
-// base control is in `left`, a part-drive. A base control is a switch's key button, a script-made
-// control (a class token that starts with plans-, outside the question kit's own names) or a
-// control inside a script-made part.
+// Every control the matrix does not drive. The kit's own controls are listed too, marked `kit`,
+// only when the interaction script did not drive them. A base control is never listed: it is one
+// of the exact names the base's markup holds or its script makes, below, on a page whose bytes
+// require the state that drives it (`base`: { panes, chrome }). Any other control is listed,
+// whatever its class, so an old page's own plans- control is listed as it always was. A .pb-table
+// scroller is always skipped.
 function controls(driven, base) {
   const KIT = 'fieldset[data-ask], [data-respond], [data-ask-summary], textarea[data-note]'
-  const PANES = '[data-base-key] button, .plans-compare-switch button'
-  const CHROME = 'button.plans-theme, button.plans-zoom-open, dialog.plans-zoom button, .plans-dock button, dialog.plans-sheet button'
-  const PARTS = '.plans-compare-switch, .plans-dock, dialog.plans-sheet, dialog.plans-zoom, [data-base-contents]'
-  const OLD = ['plans-ask', 'plans-diff', 'plans-note']
-  const list = [], left = []
+  const PANES = '[data-base-switch] [data-base-key] button, .plans-compare-switch button'
+  const CHROME = 'button.plans-theme, button.plans-zoom-open, dialog.plans-zoom button.plans-zoom-size, dialog.plans-zoom button.plans-zoom-close, .plans-dock button.plans-dock-sections, dialog.plans-sheet button.plans-sheet-close'
+  const list = []
   for (const el of document.querySelectorAll('button, select, textarea, input, [contenteditable], [tabindex]')) {
     if (!el.matches('button, select, textarea, input, [tabindex]') && el.getAttribute('contenteditable') === 'false') continue
     const kit = !!el.closest(KIT)
     if (kit && driven) continue
-    if (!kit && el.matches('.pb-table')) continue
-    const made = [...el.classList].some((c) => c.startsWith('plans-') && !OLD.some((o) => c === o || c.startsWith(o + '-')))
-    const isBase = !kit && (el.matches(PANES) || el.matches(CHROME) || made || !!el.closest(PARTS))
-    if (isBase && ((base.panes && el.matches(PANES)) || (base.chrome && el.matches(CHROME)))) continue
+    if (!kit && (el.matches('.pb-table') || (base.panes && el.matches(PANES)) || (base.chrome && el.matches(CHROME)))) continue
     let s = el.localName
     if (el.id) s += '#' + el.id
-    if (made) s += '.' + [...el.classList].join('.')
     for (const a of ['type', 'name', 'value', 'tabindex', 'contenteditable']) if (el.hasAttribute(a)) s += `[${a}="${el.getAttribute(a)}"]`
     const t = (el.localName === 'button' ? el.textContent : '').trim().replace(/\s+/g, ' ')
     if (t) s += ` "${t.slice(0, 40)}"`
-    if (isBase) left.push(s)
-    else list.push(kit ? `kit ${s}` : s)
+    list.push(kit ? `kit ${s}` : s)
   }
-  return { list, left }
+  return list
 }
 
 // Closes every open <dialog> through the isolated world's own close(), which page script can't
@@ -1527,11 +1519,7 @@ async function runView(browser, ctx, v, rec) {
         cell.ms = Date.now() - since
         since = Date.now()
       }
-      if (ctx.undriven === null) {
-        const c = await evaluate(call(controls, driven, { panes: ctx.panes, chrome: ctx.chrome }))
-        ctx.undriven = c.list
-        for (const s of c.left) record({ kind: 'part-drive', detail: `${rec.state} ${s}: a base control that no base state drives` })
-      }
+      if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls, driven, { panes: ctx.panes, chrome: ctx.chrome }))
     } catch (e) {
       // A lost target ends the view through the retry rule, whatever error it caused first.
       throw lost ?? e
