@@ -284,7 +284,7 @@ Before script runs, the nav is empty and every section reads as it is.
 
 ### Dock and sheet
 
-When the contents list scrolls above the top of the screen, script shows a bar fixed to the bottom of the screen at every width. It shows the section in view as `3/7 Title`, the open count on a page with questions, and a **Sections** button. The button opens a sheet with the same rows. A row closes the sheet and jumps to its section. **Close**, Escape and a press outside the sheet close it, and focus goes back to the button. On a page without a contents list, the bar shows once the masthead scrolls away. The page leaves room for the bar at its end, so no control sits under it.
+When the contents list scrolls above the top of the screen, script shows a bar fixed to the bottom of the screen at every width. It shows the section in view as `3/7 Title`, the open count on a page with questions, and a **Sections** button. The section in view is the last one whose top has passed a line 35% down the screen, or the first when none has, so a part of the page that no row lists counts as the section above it. At the page's end it is the last section, however short. The button opens a sheet with the same rows. A row closes the sheet and jumps to its section. **Close**, Escape and a press outside the sheet close it, and focus goes back to the button. On a page without a contents list, the bar shows once the masthead scrolls away. The page leaves room for the bar at its end, so no control sits under it.
 
 ### Theme switch
 

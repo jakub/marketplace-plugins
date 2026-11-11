@@ -62,7 +62,7 @@
     const rows = []
     for (const s of d.querySelectorAll('main > section[id]')) {
       const h = s.firstElementChild
-      if (!s.id || !h || h.localName !== 'h2') continue
+      if (!s.id || h?.localName !== 'h2') continue
       const st = s.getAttribute('data-base-status')
       const ok = STATUS.includes(st)
       if (!ok) fault('contents', 'section "' + s.id + '" needs a data-base-status of ' + STATUS.join(' '))
@@ -140,11 +140,12 @@
     sheet.append(close, links)
     d.body.append(dock, sheet)
 
-    let now = -1
-    const here = (i) => {
+    // In view: the last section whose top is above a line 35% down, else the first; at the end, the last.
+    let now = -1, end
+    const here = () => {
+      const i = end ? rows.length - 1 : Math.max(0, rows.findLastIndex((r) => r.up))
       if (i !== now) where.textContent = i + 1 + '/' + rows.length + ' ' + rows[(now = i)].title
     }
-    here(0)
     go.addEventListener('click', () => {
       const as = links.querySelectorAll('a')
       as.forEach((a, i) => { if (i === now) a.setAttribute('aria-current', 'location'); else a.removeAttribute('aria-current') })
@@ -158,16 +159,18 @@
       if (e.target.closest('a') || e.clientY < r.top || e.clientX < r.left || e.clientX > r.right) sheet.close()
     })
 
-    // The section in view is the first one that reaches below a line 35% down the viewport.
-    const below = new Set()
     const io = new IntersectionObserver((es) => {
-      for (const e of es) below[e.isIntersecting ? 'add' : 'delete'](rows.findIndex((r) => r.s === e.target))
-      if (below.size) here(Math.min(...below))
-    }, { rootMargin: '-35% 0px 0px 0px' })
+      for (const e of es) rows.find((r) => r.s === e.target).up = e.isIntersecting
+      here()
+    }, { rootMargin: '1e6px 0px -65% 0px' })
     for (const r of rows) io.observe(r.s)
+    new IntersectionObserver((es) => {
+      end = es.at(-1).intersectionRatio === 1
+      here()
+    }, { rootMargin: '1e6px 0px 2px', threshold: 1 }).observe(d.body)
     // The dock shows once the contents, else the masthead, sit above the view.
     new IntersectionObserver((es) => {
-      const e = es[es.length - 1]
+      const e = es.at(-1)
       const show = !e.isIntersecting && e.boundingClientRect.bottom <= 0
       if (dock.hidden === show) dock.hidden = !show
     }).observe(nav || mast || rows[0].s)
