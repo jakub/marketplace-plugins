@@ -29,41 +29,59 @@
 //   panes(drive)             the `panes` state, below. Returns { faults, steps }.
 //   chartFaults(source)      in-page, after every probe in every state of a page whose bytes hold
 //                            a chart: the oracle, below. Returns faults and `chart: …` rows.
-//   reveal(drive, paneIndex) clicks the terms of the pane at that model index, and of the panes
-//                            that hold it, on their switch's buttons, settles, and returns whether
-//                            the pane has a box. A click that misses throws the step failure
-//                            drive.click throws, for the caller to catch with drive.missed.
-//   showSide(drive, compareIndex, side)
-//                            where the compare at that model index shows its switch and the side
-//                            ('before' or 'after') has no box, clicks the switch's button for that
-//                            side and settles. Returns whether the side has a box. A click that
-//                            misses throws as reveal's does.
+//   expose(drive, target)    makes a target reachable whatever hides it, below. target is a base
+//                            click spec without its kind, { selector, index }. Returns { ok,
+//                            changes, hidden }.
+//   restore(drive, changes)  puts back what expose() changed. Returns { undone, failed }.
+//
+// expose. Three containers can hide a base control or what it shows: a closed <details>, such as
+// a named group's member other than the open one; a pane of a switch whose pressed buttons don't
+// match its terms; and the side a compare under 640 px doesn't show. They nest in any order and to
+// any depth, so no caller orders them. expose() reads the target's chain of containers from the
+// page, outermost first and the target itself included, and with the model for a pane's terms.
+// For each one that hides its content it clicks the controls that show it, with real input
+// through drive.click: the details' summary (or the details itself, when the browser draws the
+// summary), the key buttons for the pane's terms that aren't pressed, the compare switch's button
+// for the side. Each control has a box by then, since the containers outside it already show, and
+// one without a box is not clicked: that container is the one that stayed hidden. After each
+// container it settles and reads the chain again, and the container must now show. ok false names
+// that container in hidden, as `<container> is hidden, and …` or `<container> stayed hidden after
+// a click on its …`, with changes holding what was clicked so far; a caller makes it a failed row,
+// so part-drive. A click that misses is the same, never a thrown step failure. changes lists each
+// click as { kind, label, back, pane }: back is the base spec that undoes it, or null (a pane
+// whose key had no single pressed button), and pane is { s, j, from, to } for a key button, the
+// switch's model index, the key's index and the values, else null. restore() clicks each back,
+// innermost first, settles, and returns the changes it undid with '' or what failed.
 //
 // panes. The model's errors are part-error faults. Budget: a valid switch has as many combinations
 // as the product of its keys' value counts, over 16 is base-state-budget `switch <n>: <k>
 // combinations, limit 16`, and over 64 across the page is `page: <k> combinations, limit 64`;
 // either one stops the walk before it starts. Otherwise, after a first probe of the state as it
-// loaded, each valid switch in document order, with every other switch at its defaults: every
-// combination of its own keys, values in written order, each reached by real clicks on the key
-// buttons (the first one clicks a button even when nothing has to change), then for each key the
-// pressed button clicked to focus it and ArrowRight pressed once, which must move focus to the next
-// button, wrapping, and pick it; then clicks back to its defaults. A switch whose box sits in a
-// named <details> member other than the first is walked with that member open. Then each valid
-// compare, with its named <details> member open the same way, and one inside a hidden pane revealed
-// through reveal(): where its content box is under 640 px its switch must show, and its before and
-// after buttons are clicked in turn, each showing its own side alone; where it is 640 px or wider,
-// no switch shows and both sides must. Last, the final display step puts every switch on its last
-// combination, which the state's screenshot shows.
+// loaded, each valid switch in document order, with every other switch at its defaults: its box
+// made reachable through expose(), then every combination of its own keys, values in written
+// order, each reached by real clicks on the key buttons (the first one clicks a button even when
+// nothing has to change), then for each key the pressed button clicked to focus it and ArrowRight
+// pressed once, which must move focus to the next button, wrapping, and pick it; then clicks back
+// to its defaults, and restore(). Then each valid compare, made reachable the same way and put
+// back after its steps: where its content box is under 640 px its switch must show, and its before
+// and after buttons are clicked in turn, each showing its own side alone; where it is 640 px or
+// wider, no switch shows and both sides must. Last, the final display step makes each switch
+// reachable, puts it on its last combination, asserts its panes while it shows, and puts its
+// containers back, so the state's screenshot shows every container as it loaded and every switch
+// on its last combination. The walk's record of each switch's values follows the key buttons
+// expose() and restore() click.
 //   After each action the step settles and asserts that exactly the panes the model predicts have
 // a box: every pane of a valid switch whose box has a box, unless a closed <details> between the
-// pane and its box hides it. Then it probes. A named <details> group inside a pane or a compare
-// side that the step revealed is probed once per member, last member first, ending on the first
-// (ruling 11). A step
+// pane and its box hides it. Then it probes. A named <details> group with a member inside a pane
+// or a compare side that the step or its expose() revealed is probed once per member, last member
+// first, and then put back to the member it had open (ruling 11). A step
 // row's result is its drive and its pane assertion; what the probes found joins the cell as its
 // own faults, and the row's detail names the faults no earlier probe of the state found, so the
 // step that first showed a fault says so. A failed step, a click that missed or a wrong pane, ends
 // that part: the walk closes any dialog, tries to put the switch back at its defaults, leaves the
-// switch out of later pane assertions and the final step, and goes on to the next part.
+// switch out of later pane assertions and the final step, and goes on to the next part. A part
+// expose() can't reach fails its first row, `revealing its box: <hidden>` for a switch and
+// `revealing it: <hidden>` for both rows of a compare, or `the final step: revealing its box: …`.
 //   A shared scale only holds if one value draws at one length in every pane, so each step, after
 // its probes, also reads the box and track widths of every valid chart with a box in a share group
 // of two or more. At the end of the walk, two charts of one group whose boxes had the same width, within
@@ -448,38 +466,49 @@ function prep(source) {
 }
 
 // Which panes, compare sides and switch boxes have a box, which panes a closed <details> inside
-// their box hides, the largest named <details> group with a member in each pane and each side, and
-// the focused key button. sides holds each compare's before and after, in document order.
+// their box hides, and the focused key button. sides holds each compare's before and after, in
+// document order.
 function look() {
   const has = (el) => !!el && el.getClientRects().length > 0
-  const size = (name) => [...document.querySelectorAll('details')].filter((d) => d.getAttribute('name') === name).length
-  const group = (el) => Math.max(0, ...[...new Set([...el.querySelectorAll('details')].map((d) => d.getAttribute('name')).filter(Boolean))].map(size))
   return {
     panes: [...document.querySelectorAll('[data-base-when]')].map((p) => {
       let blocked = false
       for (let a = p.parentElement; a && !a.matches('[data-base-switch]'); a = a.parentElement) if (a.localName === 'details' && !a.open) blocked = true
-      return { shown: has(p), blocked, group: group(p) }
+      return { shown: has(p), blocked }
     }),
     sides: [...document.querySelectorAll('figure.pb-compare')].flatMap((fig) => ['before', 'after'].map((s) => {
       const side = [...fig.children].find((c) => c.classList.contains('pb-side') && c.getAttribute('data-base-side') === s)
-      return { shown: has(side), group: side ? group(side) : 0 }
+      return { shown: has(side) }
     })),
     boxes: [...document.querySelectorAll('[data-base-switch]')].map(has),
     focus: [...document.querySelectorAll('[data-base-key] button')].indexOf(document.activeElement),
   }
 }
 
-// The member of its named <details> group that the i-th match of sel sits in, or 0. sel is a
-// literal the walk wrote.
-function memberOf(sel, i) {
-  const box = document.querySelectorAll(sel)[i]
-  const d = box && box.closest('details')
-  const name = d && d.getAttribute('name')
-  return name ? [...document.querySelectorAll('details')].filter((x) => x.getAttribute('name') === name).indexOf(d) : 0
+// The named <details> groups with a member inside the given panes, by index among
+// [data-base-when], or compare sides, by index in look()'s sides. With arg null, returns { size,
+// open }: the largest group's size and the index of each group's open member by name, -1 for none.
+// With a number k, opens member k of each group that has one. With an open map, puts each group
+// back to that member.
+function members(paneIdx, sideIdx, arg) {
+  const panes = document.querySelectorAll('[data-base-when]')
+  const sides = [...document.querySelectorAll('figure.pb-compare')].flatMap((fig) => ['before', 'after'].map((s) => [...fig.children].find((c) => c.classList.contains('pb-side') && c.getAttribute('data-base-side') === s)))
+  const regions = [...paneIdx.map((i) => panes[i]), ...sideIdx.map((i) => sides[i])].filter(Boolean)
+  const names = [...new Set(regions.flatMap((r) => [...r.querySelectorAll('details')].map((d) => d.getAttribute('name')).filter(Boolean)))]
+  const all = [...document.querySelectorAll('details')]
+  const group = (name) => all.filter((d) => d.getAttribute('name') === name)
+  if (arg === null) return { size: Math.max(0, ...names.map((n) => group(n).length)), open: Object.fromEntries(names.map((n) => [n, group(n).findIndex((d) => d.open)])) }
+  for (const n of names) {
+    const ms = group(n)
+    const k = typeof arg === 'number' ? arg : arg[n] ?? -1
+    if (k >= 0 && k < ms.length) ms[k].open = true
+    else if (typeof arg !== 'number') for (const d of ms) d.open = false
+  }
+  return null
 }
 
 // A compare's state: whether it and each side have a box, its content width, its switch and the
-// switch's buttons as indexes among the live `.plans-compare-switch button`, and the pane holding it.
+// switch's buttons as indexes among the live `.plans-compare-switch button`.
 function compareLook(i) {
   const has = (el) => !!el && el.getClientRects().length > 0
   const fig = document.querySelectorAll('figure.pb-compare')[i]
@@ -491,17 +520,67 @@ function compareLook(i) {
   const button = (s) => (sw ? all.indexOf([...sw.children].find((b) => b.localName === 'button' && b.getAttribute('data-plans-side') === s)) : -1)
   const cs = getComputedStyle(fig)
   const width = fig.getBoundingClientRect().width - ['borderLeftWidth', 'borderRightWidth', 'paddingLeft', 'paddingRight'].reduce((t, k) => t + parseFloat(cs[k]), 0)
-  const pane = fig.closest('[data-base-when]')
-  return {
-    shown: has(fig), width, made: !!sw, sw: has(sw), before: has(side('before')), after: has(side('after')),
-    buttons: { before: button('before'), after: button('after') },
-    pane: pane ? [...document.querySelectorAll('[data-base-when]')].indexOf(pane) : null,
-  }
+  return { shown: has(fig), width, made: !!sw, sw: has(sw), before: has(side('before')), after: has(side('after')), buttons: { before: button('before'), after: button('after') } }
 }
 
-function hasPane(i) {
-  const p = document.querySelectorAll('[data-base-when]')[i]
-  return !!p && p.getClientRects().length > 0
+// The containers that can hide the i-th match of sel, outermost first, the element itself
+// included: a <details> whose own summary doesn't hold the element, a [data-base-when] pane, and
+// a compare's .pb-side. Each comes with whether it shows its content now, the controls that
+// show it, each a base click spec with whether it has a box, and back, the spec that puts it as
+// it was, or null. A details' control is its summary, or the details itself when it has none,
+// whose box is then the browser's own summary; back is the summary of the member of its group
+// that was open, else its own summary, which closes it. A pane's controls are the key buttons
+// its terms name that aren't pressed, each with the one pressed now as back. A side's control is
+// its button in the compare's switch, and back the button of the side the compare showed. Null
+// when the page has no such match. sel is a literal the caller wrote.
+function hiders(sel, i) {
+  const pc = globalThis.plansCheck
+  const m = pc.parts || (pc.parts = pc.model(pc.source))
+  const el = document.querySelectorAll(sel)[i]
+  if (!el) return null
+  const has = (x) => !!x && x.getClientRects().length > 0
+  const all = (s, root = document) => [...root.querySelectorAll(s)]
+  const SUMMARY = 'details > summary:first-of-type', KEY = '[data-base-key] button', SIDE = '.plans-compare-switch button'
+  const summaries = all(SUMMARY), details = all('details'), keys = all(KEY), sides = all(SIDE)
+  const panes = all('[data-base-when]'), boxes = all('[data-base-switch]'), figs = all('figure.pb-compare')
+  const spec = (selector, list, x) => (list.indexOf(x) < 0 ? null : { selector, index: list.indexOf(x) })
+  const summaryOf = (d) => [...d.children].find((c) => c.localName === 'summary')
+  const chain = []
+  for (let a = el; a; a = a.parentElement) {
+    if (a.localName === 'details') {
+      const s = summaryOf(a)
+      if (s && s.contains(el)) continue
+      const name = a.getAttribute('name')
+      const group = name ? details.filter((d) => d.getAttribute('name') === name) : [a]
+      const was = group.find((d) => d.open && d !== a)
+      chain.unshift({ kind: 'details', label: name ? `member ${group.indexOf(a) + 1} of the details group "${name}"` : `details ${details.indexOf(a) + 1}`, shown: a.open,
+        controls: [{ what: s ? 'summary' : 'details', spec: s ? spec(SUMMARY, summaries, s) : spec('details', details, a), box: has(s || a) }],
+        back: (was ? spec(SUMMARY, summaries, summaryOf(was)) : s ? spec(SUMMARY, summaries, s) : null) })
+    } else if (a.matches('[data-base-when]')) {
+      const p = m.panes[panes.indexOf(a)], s = p && p.box !== null ? m.switches[p.box] : null
+      const groups = s && boxes[s.i] ? all('[data-base-key]', boxes[s.i]) : []
+      const button = (j, v) => (groups[j] ? all('button', groups[j])[s.keys[j].values.indexOf(v)] : undefined)
+      const controls = []
+      for (const [key, v] of s && s.ok ? p.terms : []) {
+        const j = s.keys.findIndex((x) => x.name === key)
+        const on = groups[j] ? all('button[aria-pressed="true"]', groups[j]) : []
+        const from = on.length === 1 ? on[0].getAttribute('value') : null
+        if (from === v) continue
+        const b = button(j, v)
+        controls.push({ what: `${key}=${v} button`, spec: spec(KEY, keys, b), box: has(b), back: from === null ? null : spec(KEY, keys, button(j, from)), pane: { s: s.i, j, from, to: v } })
+      }
+      chain.unshift({ kind: 'pane', label: `the pane "${a.getAttribute('data-base-when')}"${s ? ` of switch ${s.n}` : ''}`, shown: has(a), ok: !!s && s.ok, controls })
+    } else if (a.matches('.pb-side') && a.parentElement && a.parentElement.matches('figure.pb-compare')) {
+      const fig = a.parentElement
+      const sw = [...fig.children].find((c) => c.classList.contains('plans-compare-switch'))
+      const button = (side) => (sw ? [...sw.children].find((b) => b.localName === 'button' && b.getAttribute('data-plans-side') === side) : undefined)
+      const side = a.getAttribute('data-base-side'), was = fig.getAttribute('data-plans-side')
+      chain.unshift({ kind: 'side', label: `the ${side} side of compare ${figs.indexOf(fig) + 1}`, shown: has(a),
+        controls: [{ what: 'switch button', spec: spec(SIDE, sides, button(side)), box: has(button(side)) }],
+        back: was && was !== side ? spec(SIDE, sides, button(was)) : null })
+    }
+  }
+  return { shown: has(el), chain }
 }
 
 // Each valid chart in a share group of two or more that has a box: its index, and its box's and
@@ -544,6 +623,51 @@ function trackFaults(m, widths) {
   return faults
 }
 
+// Makes the target reachable whatever hides it, and returns what it changed. Its header is above,
+// with the file's.
+export async function expose(drive, target) {
+  const changes = []
+  const no = (what) => ({ ok: false, changes, hidden: what })
+  let at = await drive.call(hiders, target.selector, target.index)
+  if (!at) return no(`the page has no ${target.selector} at index ${target.index}`)
+  for (let k = 0; k < at.chain.length; k++) {
+    const c = at.chain[k]
+    if (c.shown) continue
+    if (c.kind === 'pane' && !c.ok) return no(`${c.label} is hidden, and its switch has a markup error`)
+    if (!c.controls.length) return no(`${c.label} is hidden, though its switch's pressed buttons match its terms`)
+    for (const x of c.controls) {
+      if (!x.spec || !x.box) return no(`${c.label} is hidden, and ${x.spec ? `its ${x.what} has no box` : `it has no ${x.what}`}`)
+      try { await drive.click({ kind: 'base', ...x.spec }) } catch (e) {
+        if (!drive.missed(e)) throw e
+        return no(`${c.label}: ${e.message}`)
+      }
+      changes.push({ kind: c.kind, label: c.label, back: x.pane ? x.back : c.back, pane: x.pane ?? null })
+    }
+    await drive.settle()
+    at = await drive.call(hiders, target.selector, target.index)
+    if (!at || !at.chain[k].shown) return no(`${c.label} stayed hidden after a click on its ${c.controls.map((x) => x.what).join(' and ')}`)
+  }
+  if (!at.shown) return no('no details, pane or compare side hides it, and it has no box')
+  return { ok: true, changes }
+}
+
+// Puts back what expose() changed, innermost first. Returns { undone, failed }: the changes it put
+// back, and '' or what failed.
+export async function restore(drive, changes) {
+  const undone = []
+  for (const ch of [...changes].reverse()) {
+    if (ch.back) {
+      try { await drive.click({ kind: 'base', ...ch.back }) } catch (e) {
+        if (!drive.missed(e)) throw e
+        return { undone, failed: `putting back ${ch.label}: ${e.message}` }
+      }
+    }
+    undone.push(ch)
+  }
+  if (changes.length) await drive.settle()
+  return { undone, failed: '' }
+}
+
 export async function panes(drive) {
   const faults = [], steps = []
   const { m, buttons, live } = await drive.call(prep, drive.source)
@@ -560,8 +684,10 @@ export async function panes(drive) {
   if (total > WALK.perPage) faults.push({ kind: 'base-state-budget', detail: `page: ${total} combinations, limit ${WALK.perPage}` })
   if (faults.some((f) => f.kind === 'base-state-budget')) return { faults, steps }
 
-  // The check's own record of each switch's values, from the clicks it made.
+  // The check's own record of each switch's values, from the clicks it made, expose()'s and
+  // restore()'s included.
   const cur = new Map(walkable.map((s) => [s.i, s.keys.map((k) => k.initial)]))
+  const track = (changes, back) => { for (const ch of changes) if (ch.pane && cur.has(ch.pane.s) && (!back || ch.back)) cur.get(ch.pane.s)[ch.pane.j] = back ? ch.pane.from : ch.pane.to }
   const broken = new Set()
   const seen = new Set()
   const shared = m.charts.some((c) => c.ok && c.shared > 1), widths = new Map()
@@ -577,6 +703,9 @@ export async function panes(drive) {
     for (const [j, v] of vals.entries()) if (cur.get(s.i)[j] !== v) { await press(s, j, v); clicked = true }
     if (force && !clicked) await press(s, 0, vals[0])
   }
+  // A part made reachable, and put back after its steps, with the record following both.
+  const open = async (target) => { const ex = await expose(drive, target); track(ex.changes, false); return ex }
+  const close = async (ex) => { const r = await restore(drive, ex.changes); track(r.undone, true); return r.failed }
   const shows = (s, p) => [p, ...m.panes[p].within].every((x) => m.panes[x].terms.every(([k, v]) => cur.get(s.i)[s.keys.findIndex((key) => key.name === k)] === v))
   // Each pane a valid switch's terms decide, against the model and the record.
   const verify = (now) => {
@@ -590,16 +719,18 @@ export async function panes(drive) {
     }
     return wrong
   }
-  // The probes of one step, named <details> groups in panes and compare sides it revealed probed
-  // member by member. Returns the faults no earlier probe of this state found, for the row's detail.
+  // The probes of one step. Each named <details> group with a member in a pane or a compare side
+  // the step revealed is probed member by member, last first, then put back as it was. Returns
+  // the faults no earlier probe of this state found, for the row's detail.
   const probeStep = async (now) => {
     const fresh = []
     const run = async () => { for (const f of await drive.probe()) { const k = `${f.kind}\0${f.detail}`; if (!seen.has(k)) { seen.add(k); fresh.push(f) } } }
-    const revealed = (list, was) => list.filter((x, i) => x.shown && !was[i].shown)
-    const group = Math.max(0, ...[...revealed(now.panes, prev.panes), ...revealed(now.sides, prev.sides)].map((x) => x.group))
-    if (group > 1) {
-      for (let k = group - 1; k >= 1; k--) { await drive.openDetails(k); await drive.settle(); await run() }
-      await drive.openDetails(0)
+    const revealed = (list, was) => list.flatMap((x, i) => (x.shown && !was[i].shown ? [i] : []))
+    const inPanes = revealed(now.panes, prev.panes), inSides = revealed(now.sides, prev.sides)
+    const g = inPanes.length || inSides.length ? await drive.call(members, inPanes, inSides, null) : { size: 0 }
+    if (g.size > 1) {
+      for (let k = g.size - 1; k >= 1; k--) { await drive.call(members, inPanes, inSides, k); await drive.settle(); await run() }
+      await drive.call(members, inPanes, inSides, g.open)
       await drive.settle()
     }
     await run()
@@ -633,10 +764,10 @@ export async function panes(drive) {
 
   await probeStep(prev)
   for (const s of walkable) {
-    const member = await drive.call(memberOf, '[data-base-switch]', s.i)
-    if (member > 0) { await drive.openDetails(member); await drive.settle(); prev = await drive.call(look) }
-    let ok = true
     const all = s.keys.reduce((list, k) => list.flatMap((vals) => k.values.map((v) => [...vals, v])), [[]])
+    const ex = await open({ selector: '[data-base-switch]', index: s.i })
+    let ok = ex.ok
+    if (!ok) steps.push({ name: rowName(s, all[0]), result: 'fail', detail: `revealing its box: ${ex.hidden}` })
     for (const vals of all) if (ok) ok = await step(rowName(s, vals), () => reach(s, vals, true))
     for (const [j, k] of s.keys.entries()) {
       if (!ok) break
@@ -657,29 +788,17 @@ export async function panes(drive) {
         await giveUp(s)
       }
     }
-    if (member > 0) { await drive.openDetails(0); await drive.settle() }
+    const failed = await close(ex)
+    if (failed) steps.push({ name: rowName(s, s.keys.map((k) => k.initial)), result: 'fail', detail: `after its walk, ${failed}` })
     prev = await drive.call(look)
   }
 
-  // One compare. It returns at the first failed step, so the walk goes on to the next part.
+  // One compare, made reachable. It returns at the first failed step, so the walk goes on to the
+  // next part.
   const driveCompare = async (c) => {
     const n = c.i + 1
     const rows = (detail) => { for (const side of ['before', 'after']) steps.push({ name: `panes: compare ${n} ${side}`, result: 'fail', detail }) }
     let info = await drive.call(compareLook, c.i)
-    // A compare in a hidden pane: reveal() clicks that pane's terms, and the record follows.
-    const s = c.pane !== null ? walkable.find((x) => x.i === m.panes[c.pane].box) : null
-    if (info && !info.shown && s && !broken.has(s.i)) {
-      try {
-        await reveal(drive, c.pane)
-        for (const x of [c.pane, ...m.panes[c.pane].within]) for (const [k, v] of m.panes[x].terms) cur.get(s.i)[s.keys.findIndex((key) => key.name === k)] = v
-      } catch (e) {
-        if (!drive.missed(e)) throw e
-        steps.push({ name: `panes: compare ${n} before`, result: 'fail', detail: `revealing its pane: ${e.message}` })
-        await drive.closeDialogs()
-        return giveUp(s)
-      }
-      info = await drive.call(compareLook, c.i)
-    }
     if (!info || !info.shown) return rows('the compare has no box to drive')
     // Under 640 px of content box the switch shows and one side at a time; at 640 and up, both
     // sides and no switch. Within a pixel of 640 the check follows the switch.
@@ -696,23 +815,37 @@ export async function panes(drive) {
     }
   }
   for (const c of m.compares.filter((x) => x.ok)) {
-    const member = await drive.call(memberOf, 'figure.pb-compare', c.i)
-    if (member > 0) { await drive.openDetails(member); await drive.settle() }
-    await driveCompare(c)
-    if (member > 0) { await drive.openDetails(0); await drive.settle() }
+    const ex = await open({ selector: 'figure.pb-compare', index: c.i })
+    if (ex.ok) await driveCompare(c)
+    else for (const side of ['before', 'after']) steps.push({ name: `panes: compare ${c.i + 1} ${side}`, result: 'fail', detail: `revealing it: ${ex.hidden}` })
+    const failed = await close(ex)
+    if (failed) steps.push({ name: `panes: compare ${c.i + 1} after`, result: 'fail', detail: `after its walk, ${failed}` })
     prev = await drive.call(look)
   }
 
-  // The final display step: every switch on its last combination.
+  // The final display step: every switch, made reachable, on its last combination, its panes
+  // asserted while it shows, then put back. The state's screenshot shows the page with every
+  // container as it loaded and every switch on its last combination.
   const last = walkable.filter((s) => !broken.has(s.i))
   if (last.length) {
-    const missed = new Map()
+    const missed = new Map(), wrongAt = new Map()
+    const mine = (now, s) => verify({ ...now, boxes: now.boxes.map((b, i) => b && i === s.i) })
     for (const s of last) {
-      try { await reach(s, s.keys.map((k) => k.values.at(-1)), true) } catch (e) {
-        if (!drive.missed(e)) throw e
-        missed.set(s.i, e.message)
-        broken.add(s.i)
+      const ex = await open({ selector: '[data-base-switch]', index: s.i })
+      if (!ex.ok) missed.set(s.i, `revealing its box: ${ex.hidden}`)
+      else {
+        try { await reach(s, s.keys.map((k) => k.values.at(-1)), true) } catch (e) {
+          if (!drive.missed(e)) throw e
+          missed.set(s.i, e.message)
+        }
+        if (!missed.has(s.i) && ex.changes.length) {
+          await drive.settle()
+          wrongAt.set(s.i, mine(await drive.call(look), s))
+        }
       }
+      const failed = await close(ex)
+      if (failed && !missed.has(s.i)) missed.set(s.i, failed)
+      if (missed.has(s.i)) broken.add(s.i)
     }
     await drive.closeDialogs()
     await drive.settle()
@@ -721,36 +854,10 @@ export async function panes(drive) {
     for (const s of last) {
       const name = rowName(s, s.keys.map((k) => k.values.at(-1)))
       if (missed.has(s.i)) { steps.push({ name, result: 'fail', detail: `the final step: ${missed.get(s.i)}` }); continue }
-      const wrong = verify({ ...now, boxes: now.boxes.map((b, i) => b && i === s.i) })
+      const wrong = [...(wrongAt.get(s.i) ?? []), ...mine(now, s)]
       steps.push({ name, result: wrong.length ? 'fail' : 'pass', detail: wrong.length ? `the final step: ${wrong.join('; ')}` : found })
     }
   }
   faults.push(...trackFaults(m, widths))
   return { faults, steps }
-}
-
-export async function showSide(drive, compareIndex, side) {
-  const info = await drive.call(compareLook, compareIndex)
-  if (info && info.sw && !info[side]) {
-    await drive.click({ kind: 'base', selector: SIDE, index: info.buttons[side] })
-    await drive.settle()
-  }
-  const now = await drive.call(compareLook, compareIndex)
-  return !!now && now[side]
-}
-
-export async function reveal(drive, paneIndex) {
-  const { m, buttons } = await drive.call(prep, drive.source)
-  const p = m.panes[paneIndex]
-  const s = p && p.box !== null ? m.switches[p.box] : null
-  if (s && s.ok) {
-    for (const x of [...p.within].reverse().concat(paneIndex)) {
-      for (const [k, v] of m.panes[x].terms) {
-        const j = s.keys.findIndex((key) => key.name === k)
-        await drive.click({ kind: 'base', selector: KEY, index: buttons[s.i][j][s.keys[j].values.indexOf(v)] })
-      }
-    }
-    await drive.settle()
-  }
-  return drive.call(hasPane, paneIndex)
 }

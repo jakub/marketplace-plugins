@@ -1120,6 +1120,102 @@ async function withStall(cdp, { pattern, capMs, settleMs }, run) {
 const CRASH = ['Inspector.targetCrashed', {}]
 const DETACH = ['Inspector.detached', { reason: 'Render process gone.' }]
 
+// The nesting matrix. Three containers hide a base control or what it shows: D, the second member
+// of a two-member named <details> group, which the panes and chrome states load closed; P, the
+// non-default pane of a one-key switch; and S, the before side of a compare, hidden under 640 px.
+// They nest in any order, and the check reaches a target through all of them with parts.mjs's
+// expose(). Each target, a zoomable image, a switch and a compare, sits in every ordered
+// arrangement of one, two and three distinct containers, written outermost first, as D>P.
+const NEST_CONTAINERS = ['D', 'P', 'S']
+const NEST_TARGETS = ['zoom', 'switch', 'compare']
+// Every ordered arrangement of one, two and three distinct containers, outermost first: 3 + 6 + 6.
+const nestArrangements = () => {
+  const out = []
+  const grow = (seq) => { for (const c of NEST_CONTAINERS) if (!seq.includes(c)) { out.push([...seq, c]); grow([...seq, c]) } }
+  grow([])
+  return out.sort((a, b) => a.length - b.length)
+}
+// Why a target can't sit in an arrangement, from parts.md, or null.
+const nestRefused = (target, arr) => (target === 'switch' && arr.includes('P') ? 'a switch in a pane is a switch inside a switch, which parts.md makes a part-error' : null)
+const NEST_WRAP = {
+  D: (x, k) => `<details name="g${k}"><summary>Group ${k}, member 1</summary><p>Member 1 of group ${k}.</p></details>
+<details name="g${k}"><summary>Group ${k}, member 2</summary>
+${x}
+</details>`,
+  P: (x, k) => `<div data-base-switch>
+<p data-base-key="v"><button type="button" value="a" aria-pressed="true" disabled>Pane a ${k}</button> <button type="button" value="b" disabled>Pane b ${k}</button></p>
+<div data-base-when="v=a"><p>Pane a of switch ${k}.</p></div>
+<div data-base-when="v=b">
+${x}
+</div>
+</div>`,
+  S: (x, k) => `<figure class="pb-compare">
+<div class="pb-side" data-base-side="before"><h3>Before ${k}</h3>
+${x}
+</div>
+<div class="pb-side" data-base-side="after"><h3>After ${k}</h3><p>The after side of compare ${k}.</p></div>
+<figcaption>Compare ${k}.</figcaption>
+</figure>`,
+}
+const NEST_TARGET = {
+  zoom: (k) => `<figure class="pb-figure" data-base-zoom><img src="nest.png" alt="Target ${k}" width="80" height="40"><figcaption>Target ${k}.</figcaption></figure>`,
+  switch: (k) => `<div data-base-switch>
+<p data-base-key="t"><button type="button" value="a" aria-pressed="true" disabled>Target ${k} a</button> <button type="button" value="b" disabled>Target ${k} b</button></p>
+<div data-base-when="t=a"><p>Target ${k}, pane a.</p></div>
+<div data-base-when="t=b"><p>Target ${k}, pane b.</p></div>
+</div>`,
+  compare: (k) => `<figure class="pb-compare">
+<div class="pb-side" data-base-side="before"><h3>Target ${k} before</h3><p>The before side of target ${k}.</p></div>
+<div class="pb-side" data-base-side="after"><h3>Target ${k} after</h3><p>The after side of target ${k}.</p></div>
+<figcaption>Target ${k}.</figcaption>
+</figure>`,
+}
+// The tag that counts a part of each kind in document order, for its rows' n.
+const NEST_COUNT = { zoom: 'data-base-zoom', switch: 'data-base-switch', compare: 'class="pb-compare"' }
+// Two shell pages that hold every cell of the matrix, a target in an arrangement. Each page nests
+// the arrangements as a tree: one container per arrangement, holding the targets placed in its
+// arrangement and the containers of the arrangements one longer. A P container is itself a switch
+// in the arrangement above it, and an S container a compare, so a target is placed only in a cell
+// no container is: every zoom, a compare in an arrangement that holds S, and a switch in one that
+// holds P, which parts.md refuses. `pass` holds every cell parts.md allows and must pass; `refused`
+// every refused cell. Returns { pages: { pass, refused }, cells: [{ target, arr, refused, page, n,
+// rows }] }, n being the part's 1-based index among its kind on its page, and rows the check rows
+// it must have.
+function nestMatrix() {
+  const arrs = nestArrangements()
+  const cells = []
+  const pages = {}
+  for (const page of ['pass', 'refused']) {
+    let k = 0
+    const parts = []
+    const tree = (prefix) => arrs.filter((a) => a.length === prefix.length + 1 && prefix.every((c, i) => a[i] === c)).map((a) => {
+      let inner = ''
+      for (const t of NEST_TARGETS) {
+        const refused = !!nestRefused(t, a)
+        if (refused !== (page === 'refused') || (t === 'compare' && !a.includes('S')) || (t === 'switch' && !refused)) continue
+        const own = ++k
+        inner += `${NEST_TARGET[t](own)}\n`
+        parts.push({ t, arr: a, mark: NEST_TARGET[t](own) })
+      }
+      const c = a.at(-1), own = ++k
+      if (c !== 'D') parts.push({ t: c === 'P' ? 'switch' : 'compare', arr: a.slice(0, -1), mark: NEST_WRAP[c]('', own).split('\n').slice(0, 2).join('\n') })
+      return NEST_WRAP[c](inner + tree(a), own)
+    }).join('\n')
+    const body = tree([])
+    pages[page] = `<header class="pb-mast"><h1>Nesting matrix</h1><p class="pb-lede">Each base target in each arrangement of hiding containers.</p></header>\n<main>\n${body}\n</main>`
+    for (const { t, arr, mark } of parts) {
+      const at = body.indexOf(mark)
+      if (at < 0 || body.indexOf(mark, at + 1) >= 0) throw new Error(`nesting matrix: the mark of a ${t} in ${arr.join('>')} is not unique`)
+      const n = body.slice(0, at).split(NEST_COUNT[t]).length
+      const key = t === 'switch' && !nestRefused(t, arr) ? 'v' : 't'
+      const rows = t === 'zoom' ? [`chrome: zoom ${n}`] : t === 'switch' ? [`panes: switch ${n} ${key}=a`, `panes: switch ${n} ${key}=b`, `panes: switch ${n} ${key} arrow`] : [`panes: compare ${n} before`, `panes: compare ${n} after`]
+      cells.push({ target: t, arr: arr.join('>'), refused: nestRefused(t, arr), page, n, rows })
+    }
+  }
+  // Every cell of the matrix, each by its first part: one target in each arrangement.
+  return { pages, cells: NEST_TARGETS.flatMap((t) => arrs.map((a) => cells.find((c) => c.target === t && c.arr === a.join('>')) ?? { target: t, arr: a.join('>'), missing: true })) }
+}
+
 // runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
 // chosen point, a driver command or a screenshot write that fails after a fault was measured, a
 // page event that arrives after a view's last probe, a crash or detach in the same chunk as a
@@ -1160,7 +1256,7 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
   const cellsOf = (out, view, state) => out.matrix.filter((c) => c.view === view && c.state === state).length
   const passRow = (out, name, result = 'pass') => out.checks.some((c) => c.name === name && c.result === result)
   // A shell page with a zoomable image in each side of a compare, whose before side is hidden at
-  // load in every view, and a copy of the check whose showSide does nothing, so the page that
+  // load in every view, and a copy of the check whose expose() does nothing, so the page that
   // passes is shown to need it.
   const zoomPng = (rgb) => encodePng(80, Array.from({ length: 40 }, () => Buffer.from(Array.from({ length: 80 }, () => rgb).flat())), [0])
   writeFileSync(join(base, 'zoom-before.png'), zoomPng([200, 60, 40]))
@@ -1323,7 +1419,7 @@ ${script}
   for (const f of readdirSync(checkDir).filter((f) => f.endsWith('.mjs'))) cpSync(join(checkDir, f), join(stubDir, 'doc/check', f))
   cpSync(fileURLToPath(new URL('../../skills/show/tokens.css', import.meta.url)), join(stubDir, 'show/tokens.css'))
   const partsSrc = readFileSync(join(stubDir, 'doc/check/parts.mjs'), 'utf8')
-  const stubbedSrc = partsSrc.replace(/export async function showSide\(drive, compareIndex, side\) \{\n[\s\S]*?\n\}\n/, 'export async function showSide() { return true }\n')
+  const stubbedSrc = partsSrc.replace(/export async function expose\(drive, target\) \{\n[\s\S]*?\n\}\n/, 'export async function expose() { return { ok: true, changes: [] } }\n')
   writeFileSync(join(stubDir, 'doc/check/parts.mjs'), stubbedSrc)
   const stubMod = stubbedSrc === partsSrc ? null : await import(pathToFileURL(join(stubDir, 'doc/check/run.mjs')).href)
   const noPartDrive = (out) => !out.matrix.some((c) => c.faults.some((f) => f.kind === 'part-drive'))
@@ -1487,7 +1583,7 @@ ${script}
     ['browser: a zoom in each side of a compare is driven in every view', undefined, zoomPage,
       (out) => out.result === 'pass' && passRow(out, 'chrome: zoom 1') && passRow(out, 'chrome: zoom 2')
         && runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.CHROME) === 1), { media: zoomMedia }],
-    ['browser: with showSide stubbed, a zoom in a compare\'s hidden side fails to drive', undefined, zoomPage,
+    ['browser: with expose stubbed, a zoom in a compare\'s hidden side fails to drive', undefined, zoomPage,
       (out) => out.result === 'fail' && has(out, '390-light', 'chrome', 'part-drive') && passRow(out, 'chrome: zoom 1', 'fail'),
       { media: zoomMedia, mod: stubMod }],
     ['browser: a zoom in a compare in a closed details member is driven in every view', undefined, zoomGroupPage,
@@ -1575,7 +1671,7 @@ ${script}
   for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null, chunk = null, media = [], stall = null, mod = runMod } = {}] of cases) {
     if (why) { skip(name, why); continue }
     if (!buffer) { check(name, false, 'the unit page did not assemble with the current kit'); continue }
-    if (!mod) { check(name, false, 'parts.mjs has no showSide(drive, compareIndex, side) to stub'); continue }
+    if (!mod) { check(name, false, 'parts.mjs has no expose(drive, target) to stub'); continue }
     let shotsDir = null
     if (shots) {
       shotsDir = join(base, `unit-shots-${++u}`)
@@ -1588,6 +1684,35 @@ ${script}
       : stall ? await withStall(cdp, { ...stall, settleMs: runMod.SETTLE_MS }, go) : await go()
     const after = { ...leaks(priv), timers: timers() }
     check(name, ok(out, shotsDir) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), shots: out.shots?.map((s) => s.file), before, after }))
+  }
+
+  // The nesting matrix, on two shell pages. Every cell parts.md allows must pass with its target's
+  // rows passing in every view and nothing undriven, and every cell it refuses must be refused with
+  // its own part-error and no other kind of fault, so no cell leaves the matrix unseen. The cells
+  // share containers, so a cell passes only if each earlier target's containers were put back.
+  const nestName = 'browser: the nesting matrix drives each target through every arrangement of hiding containers'
+  const refusedName = 'browser: the nesting matrix refuses a switch in a pane as a switch inside a switch'
+  if (why) { skip(nestName, why); skip(refusedName, why) }
+  else {
+    writeFileSync(join(base, 'nest.png'), zoomPng([200, 60, 40]))
+    const { pages, cells } = nestMatrix()
+    const viewNames = runMod.DOC_VIEWS.map((v) => v.name)
+    const before = { ...leaks(priv), timers: timers() }
+    const runPage = (page) => runMod.runChecks({ buffer: basePage(' data-base-shell', pages[page]), dir: base, media: ['nest.png'], chromium, tmp: priv })
+    const pass = await runPage('pass')
+    const refused = await runPage('refused')
+    const after = { ...leaks(priv), timers: timers() }
+    // A pass row's detail opens with the views that reported it.
+    const everyView = (name) => pass.checks.some((c) => c.name === name && c.result === 'pass' && viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v)))
+    const red = cells.filter((c) => c.missing || (!c.refused && !c.rows.every(everyView)))
+    const redWhy = (c) => c.missing ? 'no part on either page' : c.rows.filter((r) => !everyView(r)).map((r) => { const x = pass.checks.find((y) => y.name === r); return `${r}: ${x ? `${x.result} ${x.detail}` : 'no row'}` }).join('; ')
+    check(nestName, pass.result === 'pass' && pass.undriven.length === 0 && red.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
+      `${cells.filter((c) => !c.refused).length - red.length} of ${cells.filter((c) => !c.refused).length} cells pass, ${pass.result} ${JSON.stringify(pass.reason)}, undriven ${JSON.stringify(pass.undriven)}. ${red.slice(0, 6).map((c) => `${c.target} in ${c.arr}: ${redWhy(c)}`).join(' | ')} ${JSON.stringify({ before, after })}`)
+    const nests = (c) => viewNames.every((v) => refused.matrix.some((m) => m.view === v && m.state === runMod.PANES && m.faults.some((f) => f.kind === 'part-error' && f.detail === `switch: switch ${c.n} nests in another switch`)))
+    const kept = cells.filter((c) => c.refused && !nests(c))
+    const other = [...new Set(refused.matrix.flatMap((m) => m.faults).filter((f) => f.kind !== 'part-error').map((f) => `${f.kind}: ${f.detail}`))]
+    check(refusedName, refused.result === 'fail' && cells.some((c) => c.refused) && kept.length === 0 && other.length === 0,
+      `${kept.map((c) => `${c.target} in ${c.arr} (switch ${c.n}) not refused`).join(', ')} ${other.slice(0, 4).join(' | ')}`)
   }
 
   // The base leaves the response alone (ruling 2). One question block runs on a shell page and on

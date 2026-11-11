@@ -1,7 +1,7 @@
 // The browser check's half for the page shell: the `chrome` state and the question counts. run.mjs
 // calls it, and its header defines `drive` and the rules every function here keeps. Node built-ins
-// only, and no import of run.mjs, which imports this file. parts.mjs's reveal() shows a hidden
-// switch pane, and its showSide() a compare's hidden side.
+// only, and no import of run.mjs, which imports this file. parts.mjs's expose() makes a hidden
+// zoom reachable, and its restore() puts the page back.
 //
 //   chrome(drive)          the `chrome` state on a Document whose bytes hold body[data-base-shell]:
 //                          the theme switch, every zoom, the dock and the sections sheet. Returns
@@ -41,14 +41,13 @@
 //              values and `dark`. A click, then auto: <html> has no data-plans-theme, and the
 //              values equal those of the scheme the view emulates. Two more clicks, light then
 //              dark, each checked again under its own row. A click that can't land ends the theme.
-//   zoom n     a zoom inside a closed member of a named <details> group first opens that member
-//              through drive.openDetails, since nothing inside it can be clicked, and the walk
-//              reopens member 0 at its end. One inside a hidden switch pane is shown next through
-//              reveal(), when parts.mjs's model lists that pane; when it doesn't, as while parts.mjs
-//              is a stub, the row is unknown and says it was skipped. One inside a compare's hidden
-//              side is shown last, through showSide(), a click on the compare's own switch. The
-//              button's img must carry the src the bytes give zoom n. A click opens
-//              it: exactly one open dialog, modal, showing that image, decoded. A click on Actual
+//   zoom n     the button's img must carry the src the bytes give zoom n. A zoom that a closed
+//              <details>, a hidden switch pane or a compare's hidden side holds, nested in any
+//              order, is made reachable through expose() first, and one it can't reach fails with
+//              `revealing it: <the container that stayed hidden>`. Whatever the row's result,
+//              restore() then puts back what expose() changed, after any open dialog is closed,
+//              and a failure there fails a row that had passed. A click opens it: exactly one
+//              open dialog, modal, showing that image, decoded. A click on Actual
 //              size: the image's drawn width is its natural width over the ratio within 1 CSS px,
 //              the ratio being data-base-dpr on the authored img, else natural width over its
 //              width attribute, else 1. Close, then a second open and Escape: no dialog stays open
@@ -80,7 +79,7 @@
 
 import { readFileSync } from 'node:fs'
 
-import { reveal, showSide } from './parts.mjs'
+import { expose, restore } from './parts.mjs'
 
 const TOKENS = new URL('../../show/tokens.css', import.meta.url)
 const THEME = 'button.plans-theme'
@@ -128,11 +127,9 @@ function fallbacks() {
 /* ---------------------------------------------------------------- in-page */
 
 // What the built bytes call for, read with DOMParser: { mast, nav, rows: [{ id, title, asks }],
-// asks: [id], zooms: [{ src, dpr, width, pane, compare, side }] }. asks in a row are indexes into
-// asks, pane is the zoom's [data-base-when] index, or -1, and compare the figure.pb-compare index
-// whose .pb-side holds it, or -1, with that side's data-base-side. DOMParser parses with scripting
-// off, so a <noscript>'s content is elements here and text in the scripted page: every read skips
-// it, and a <template>'s, as parts.mjs's model does.
+// asks: [id], zooms: [{ src, dpr, width }] }. asks in a row are indexes into asks. DOMParser parses
+// with scripting off, so a <noscript>'s content is elements here and text in the scripted page:
+// every read skips it, and a <template>'s, as parts.mjs's model does.
 function plan(source) {
   const doc = new DOMParser().parseFromString(source, 'text/html')
   const all = (root, sel) => [...root.querySelectorAll(sel)].filter((el) => !el.closest('noscript, template'))
@@ -148,8 +145,6 @@ function plan(source) {
     if (!s.id || !h || h.localName !== 'h2') continue
     rows.push({ id: s.id, title: titleOf(h) || s.id, asks: all(s, 'fieldset[data-ask]').map((f) => asks.indexOf(f)) })
   }
-  const panes = all(doc, '[data-base-when]')
-  const compares = all(doc, 'figure.pb-compare')
   const zooms = []
   for (const img of all(doc, 'figure.pb-figure[data-base-zoom] img')) {
     if (img.closest('fieldset[data-ask]')) continue
@@ -157,10 +152,7 @@ function plan(source) {
     const dpr = raw === null ? 0 : raw.trim() === '' ? NaN : Number(raw)
     if (raw !== null && !(Number.isFinite(dpr) && dpr > 0)) continue
     const w = parseInt(img.getAttribute('width'), 10)
-    const side = img.closest('.pb-side')
-    const compare = side && side.parentElement ? compares.indexOf(side.parentElement) : -1
-    zooms.push({ src: img.getAttribute('src'), dpr, width: w > 0 ? w : 0, pane: panes.indexOf(img.closest('[data-base-when]')),
-      compare, side: compare >= 0 ? side.getAttribute('data-base-side') : null })
+    zooms.push({ src: img.getAttribute('src'), dpr, width: w > 0 ? w : 0 })
   }
   return { mast: all(doc, 'header.pb-mast').length > 0, nav: all(doc, '[data-base-contents]').length > 0, rows, asks: asks.map((f) => f.getAttribute('data-ask')), zooms }
 }
@@ -175,29 +167,12 @@ function themeNow(names) {
 
 function count(selector) { return document.querySelectorAll(selector).length }
 
-// Where zoom i's button stands: whether it is rendered, whether its pane is hidden, whether the
-// compare side that holds it is hidden, and the member index of the outermost closed named
-// <details> around it (0 for an unnamed one), or null.
-function zoomSpot(selector, i, pane) {
+// Whether zoom i's button exists, and the src of its img.
+function zoomSpot(selector, i) {
   const b = document.querySelectorAll(selector)[i]
   if (!b) return { missing: true }
   const img = b.querySelector('img')
-  const p = pane >= 0 ? document.querySelectorAll('[data-base-when]')[pane] : null
-  let details = null
-  for (let d = b.closest('details:not([open])'); d; d = d.parentElement && d.parentElement.closest('details:not([open])')) {
-    const name = d.getAttribute('name')
-    details = name ? [...document.querySelectorAll('details')].filter((x) => x.getAttribute('name') === name).indexOf(d) : 0
-  }
-  const side = b.closest('.pb-side')
-  const sideHidden = !!side && !!side.parentElement && side.parentElement.matches('figure.pb-compare') && !side.checkVisibility()
-  return { missing: false, src: img ? img.getAttribute('src') : null, shown: b.checkVisibility(), paneHidden: !!p && !p.checkVisibility(), sideHidden, details }
-}
-
-// Whether parts.mjs's model lists pane i, so reveal() can know it.
-function paneListed(i) {
-  const pc = globalThis.plansCheck
-  const m = pc.model(pc.source)
-  return !!m && Array.isArray(m.panes) && m.panes.some((p) => p && p.i === i)
+  return { missing: false, src: img ? img.getAttribute('src') : null }
 }
 
 // After a click on zoom i: the open dialogs, and the image that shows the opener's src, decoded.
@@ -386,25 +361,26 @@ async function themeClick(drive, t, mode) {
     : `the ${t.names.length} fallbacks are tokens.css's ${mode} values, and color-scheme is ${mode}`)
 }
 
-async function zoomStep(drive, z, i, movedDetails) {
+// Zoom n: made reachable, driven, then put back.
+async function zoomStep(drive, z, i) {
   const n = i + 1
-  let spot = await drive.call(zoomSpot, ZOOM, i, z.pane)
+  const spot = await drive.call(zoomSpot, ZOOM, i)
   if (spot.missing) return fail(`the page has no ${ZOOM} at index ${i}, and the bytes hold zoomable image ${z.src}`)
   if (spot.src !== z.src) return fail(`the button holds the img ${JSON.stringify(spot.src)}, and zoomable image ${n} in the bytes is ${JSON.stringify(z.src)}`)
-  if (!spot.shown && spot.details !== null) {
-    await drive.openDetails(spot.details)
-    movedDetails()
-    spot = await drive.call(zoomSpot, ZOOM, i, z.pane)
+  const ex = await expose(drive, { selector: ZOOM, index: i })
+  let r
+  try { r = ex.ok ? await zoomDrive(drive, z, i) : fail(`revealing it: ${ex.hidden}`) } catch (e) {
+    if (!drive.missed(e)) throw e
+    r = fail(e.message)
   }
-  if (!spot.shown && z.pane >= 0 && spot.paneHidden) {
-    if (!(await drive.call(paneListed, z.pane))) return { result: 'unknown', detail: `skipped: it sits in switch pane ${z.pane + 1}, which is hidden, and parts.mjs's model lists no such pane for reveal() to show` }
-    if (!(await reveal(drive, z.pane))) return fail(`reveal() could not show switch pane ${z.pane + 1}, which holds it`)
-    spot = await drive.call(zoomSpot, ZOOM, i, z.pane)
-  }
-  if (!spot.shown && z.compare >= 0 && spot.sideHidden) {
-    if (!(await showSide(drive, z.compare, z.side))) return fail(`a click on compare ${z.compare + 1}'s switch could not show its ${z.side} side, which holds it`)
-  }
+  if (!ex.changes.length) return r
+  if (r.result !== 'pass') await drive.closeDialogs()
+  const back = await restore(drive, ex.changes)
+  return back.failed && r.result === 'pass' ? fail(`after the zoom, ${back.failed}`) : r
+}
 
+// Zoom i's dialog: open, Actual size, Close, a second open and Escape.
+async function zoomDrive(drive, z, i) {
   await drive.click({ kind: 'base', selector: ZOOM, index: i })
   const o = await drive.call(zoomOpened, ZOOM, i, WAIT_MS)
   if (o.open !== 1 || !o.modal || !o.img || !o.decoded) {
@@ -478,11 +454,9 @@ export async function chrome(drive) {
     }
   }
 
-  let moved = false
-  for (const [i, z] of p.zooms.entries()) await run(`zoom ${i + 1}`, () => zoomStep(drive, z, i, () => { moved = true }))
+  for (const [i, z] of p.zooms.entries()) await run(`zoom ${i + 1}`, () => zoomStep(drive, z, i))
   const made = await drive.call(count, ZOOM)
   for (let i = p.zooms.length; i < made; i++) steps.push({ name: `chrome: zoom ${i + 1}`, result: 'fail', detail: `the page made ${made} zoom buttons, and the bytes hold ${p.zooms.length} zoomable images` })
-  if (moved) await drive.openDetails(0)
 
   if (p.rows.length) {
     const watch = p.nav ? 'nav' : p.mast ? 'mast' : 'section'
