@@ -220,7 +220,7 @@ The table or list stays the readable text, and the drawn track is `aria-hidden`.
 - `data-base-min` and `data-base-max` on the table set the bounds, each a decimal in the value form. A bound that leaves out a value, or a row sum in a stacked chart, is a `part-error`. So is a stacked chart with a `data-base-min` other than 0.
 - One value column draws in ink, and a row with `data-base-status="changed"` takes the accent. Two to six columns draw in `--plans-chart-1` to `--plans-chart-6`, and the `thead` cells are the legend, each with a colour swatch. There, a changed row keeps its series colours, and only its label takes the accent ◆.
 
-**Shared scales.** Charts in one `[data-base-switch]` box that have the same `data-base-unit` share one scale across the panes, so a bar keeps its length when the reader switches panes. A chart with no unit, or a different unit, keeps its own scale. In a share group, every chart that states `data-base-min` or `data-base-max` states the same value as the others that state it, or it is a `part-error`. Charts that state no bound take the group's.
+**Shared scales.** Charts in one `[data-base-switch]` box that have the same `data-base-unit` and the same layout, stacked or side by side, share one scale across the panes, so a bar keeps its length when the reader switches panes. A chart with no unit, or a different unit, keeps its own scale. In a share group, every chart that states `data-base-min` or `data-base-max` states the same value as the others that state it, or it is a `part-error`. Charts that state no bound take the group's.
 
 A value over time is a bars chart with one row per period. There's no line-plot part.
 

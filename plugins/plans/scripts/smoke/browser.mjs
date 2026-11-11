@@ -1234,6 +1234,31 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 </div>
 </main>`)
   const shareRows = (out) => ['short', 'long'].every((s) => passRow(out, `chart: Phase time, written ${s}. (grouped, shared)`))
+  // A switch with a chart in each of two panes, every chart in ms. A share group also needs one
+  // layout, so a stacked chart and a side-by-side one keep their own scales, and two stacked
+  // charts share one. Each pair has different largest values, so a shared scale would show.
+  const stackedChart = (caption, rows) => `<figure>
+      <table data-base-chart="bars" data-base-unit="ms" data-base-stack>
+        <thead><tr><th>Job</th><th>Read</th><th>Write</th></tr></thead>
+        <tbody>${rows.map(([th, a, b]) => `<tr><th>${th}</th><td><data value="${a}">${a}</data></td><td><data value="${b}">${b}</data></td></tr>`).join('')}</tbody>
+      </table>
+      <figcaption>${caption}</figcaption>
+    </figure>`
+  const sideChart = (caption, rows) => `<figure>
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Job</th><th>Time</th></tr></thead>
+        <tbody>${rows.map(([th, a]) => `<tr><th>${th}</th><td><data value="${a}">${a}</data></td></tr>`).join('')}</tbody>
+      </table>
+      <figcaption>${caption}</figcaption>
+    </figure>`
+  const layoutPage = (a, b) => basePage('', `<main>
+<h1>Layout unit</h1>
+<div data-base-switch>
+  <div data-base-key="form"><span>Form</span> <button type="button" value="a" aria-pressed="true" disabled>A</button> <button type="button" value="b" aria-pressed="false" disabled>B</button></div>
+  <div data-base-when="form=a">${a}</div>
+  <div data-base-when="form=b">${b}</div>
+</div>
+</main>`)
   const shareDetail = /^Phase time, written long\.: track [\d.]+ px, and Phase time, written short\. in its share group has [\d.]+ px$/
   // A bars chart and a timeline whose page script runs after the kit has drawn: the kit's
   // DOMContentLoaded listener is added in the head, before the page's own. The oracle reads the
@@ -1477,6 +1502,13 @@ ${script}
       sharePage(' style="grid-template-columns: minmax(0, 1fr) 12rem"'),
       (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
         && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.PANES && c.faults.some((f) => shareDetail.test(f.detail))))],
+    ['browser: a stacked and a side-by-side chart with one unit in one switch keep their own scales', undefined,
+      layoutPage(stackedChart('Stage time, stacked.', [['Nightly', 40, 60], ['Hourly', 10, 20]]), sideChart('Stage time, side by side.', [['Nightly', 30], ['Hourly', 12]])),
+      (out) => out.result === 'pass' && passRow(out, 'chart: Stage time, stacked. (stacked)') && passRow(out, 'chart: Stage time, side by side. (grouped)')
+        && !out.checks.some((c) => c.name.startsWith('chart:') && c.name.includes('shared'))],
+    ['browser: two stacked charts with one unit in one switch share one scale', undefined,
+      layoutPage(stackedChart('Stage time, nightly.', [['Plan', 40, 60], ['Build', 10, 20]]), stackedChart('Stage time, hourly.', [['Plan', 20, 30], ['Build', 5, 10]])),
+      (out) => out.result === 'pass' && passRow(out, 'chart: Stage time, nightly. (stacked, shared)') && passRow(out, 'chart: Stage time, hourly. (stacked, shared)')],
     ['browser: a bars row a page script removes is chart-geometry', undefined,
       scriptedBars("const rows = document.querySelectorAll('[data-base-chart] tbody tr'); rows[rows.length - 1].remove()"),
       geometryAlone(/^Jobs per queue\.: row 3 col 1 is not in the page's table$/)],

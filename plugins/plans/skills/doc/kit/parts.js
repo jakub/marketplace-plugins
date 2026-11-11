@@ -130,7 +130,7 @@ const readBars = (table, bad) => {
 const drawBars = list => {
   const groups = []
   for (const c of list) {
-    const g = c.box && c.unit && groups.find(x => x[0].box === c.box && x[0].unit === c.unit)
+    const g = c.box && c.unit && groups.find(x => x[0].box === c.box && x[0].unit === c.unit && x[0].stack === c.stack)
     g ? g.push(c) : groups.push([c])
   }
   for (const g of groups) {

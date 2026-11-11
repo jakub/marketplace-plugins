@@ -249,14 +249,15 @@ export function model(source) {
   const captions = charts.map((c) => c.caption)
   for (const c of charts) c.label = c.caption && captions.indexOf(c.caption) === captions.lastIndexOf(c.caption) ? (c.caption.length > 60 ? c.caption.slice(0, 59) + '…' : c.caption) : `chart ${c.n}`
 
-  // Share groups: valid bars charts in one switch with one non-empty unit. The first stated bound
-  // in the group is the group's, every other stated one must equal it, and with none stated the
-  // group spans every member's values, or row sums when stacked, and 0 (ruling 3).
+  // Share groups: valid bars charts in one switch with one non-empty unit and one layout, stacked
+  // or side by side, since a row sum and a single value never compare bar for bar. The first
+  // stated bound in the group is the group's, every other stated one must equal it, and with none
+  // stated the group spans every member's values, or row sums when stacked, and 0 (ruling 3).
   const groups = []
   for (const c of charts) {
     if (c.kind !== 'bars' || !c.ok) continue
     c.vals = c.stack ? c.rows.map((r) => r.values.reduce((a, b) => a + b, 0)) : c.rows.flatMap((r) => r.values)
-    const g = c.box !== null && c.unit ? groups.find((x) => x[0].box === c.box && x[0].unit === c.unit) : null
+    const g = c.box !== null && c.unit ? groups.find((x) => x[0].box === c.box && x[0].unit === c.unit && x[0].stack === c.stack) : null
     if (g) g.push(c)
     else groups.push([c])
   }
