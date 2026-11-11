@@ -360,9 +360,14 @@ const NAMED = [
 // its traits, so each trait gets its own case.
 const PANES_STATES = ['initial', 'details-open', 'panes']
 const chartRow = (trait) => [`${trait} chart rows pass`,new RegExp(`^chart: .+ \\((?:[a-z-]+, )*${trait}(?:, [a-z-]+)*\\)$`)]
+const exactRow = (name) => [name, new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)]
+// Each combination row of switch n, by its exact name. A third element of true makes the case need
+// the row to pass in every view of the mode, so a walk that skipped a combination, or reached it in
+// fewer views, fails.
+const combinations = (n, names) => names.map((s) => [...exactRow(`panes: switch ${n} ${s}`), true])
 const PANES_NAMED = [
-  ['every combination of a one-key switch', /^panes: switch 1 period=\w+$/],
-  ['every combination of a two-key switch', /^panes: switch 2 host=\w+ cache=\w+$/],
+  ...combinations(1, ['period=week', 'period=month', 'period=quarter']),
+  ...combinations(2, ['host=alpha cache=cold', 'host=alpha cache=warm', 'host=beta cache=cold', 'host=beta cache=warm']),
   ['one ArrowRight per key group', /^panes: switch \d+ \w+ arrow$/],
   ['a compare driven from its own switch', /^panes: compare 1 (before|after)$/],
   ['a compare revealed inside a pane', /^panes: compare 2 (before|after)$/],
@@ -371,7 +376,6 @@ const PANES_NAMED = [
 // A shell page with questions runs every state. good-base names each row it must drive, one case
 // per row, so a combination, a zoom or a theme the walk skipped has no row and fails its case.
 const BASE_STATES = ['initial', 'details-open', 'panes', 'chrome', 'interaction']
-const exactRow = (name) => [name, new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)]
 const BASE_NAMED = [
   ...['scheme=light', 'scheme=dark', 'scheme arrow'].map((s) => exactRow(`panes: switch 1 ${s}`)),
   ...['device=phone cache=cold', 'device=phone cache=warm', 'device=desktop cache=cold', 'device=desktop cache=warm', 'device arrow', 'cache arrow']
@@ -444,7 +448,7 @@ const CASES = [
   { dir: 'good-base', args: ['--shots', 'shots'], exit: 0, shots: true, states: BASE_STATES, copy: 'copied-verified', named: BASE_NAMED },
   // Grouped bars in a 2×2 switch built Inline: every pane stays within 2,000 px.
   { dir: 'inline-parts', args: ['--inline'], exit: 0, states: PANES_STATES, named: [
-    ['every combination of a 2×2 switch', /^panes: switch 1 region=\w+ quarter=q\d$/],
+    ...combinations(1, ['region=north quarter=q1', 'region=north quarter=q2', 'region=south quarter=q1', 'region=south quarter=q2']),
     ...['grouped', 'shared'].map(chartRow),
   ] },
   ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind, ...(PART_BAD.has(kind) ? { alone: true, match: PART_BAD.get(kind) } : {}) })),
@@ -1670,9 +1674,13 @@ async function browserSection({ ROOT, check, skip }) {
         const states = c.states ?? ['initial', 'details-open']
         check(name, r.status === 0 && j.result === 'pass' && kinds.length === 0 && j.matrix.length === (c.args.includes('--inline') ? runMod.INLINE_VIEWS : runMod.DOC_VIEWS).length * states.length && j.digest === sha(bytes) && (j.copy ?? null) === (c.copy ?? null),
           `status ${r.status} result ${j.result} reason ${JSON.stringify(j.reason)} faults ${kinds.join(',')} cells ${j.matrix?.length} copy ${j.copy}\n${r.stderr}`)
-        for (const [label, re] of c.named ?? []) {
+        const viewNames = (c.args.includes('--inline') ? runMod.INLINE_VIEWS : runMod.DOC_VIEWS).map((v) => v.name)
+        for (const [label, re, everyView] of c.named ?? []) {
           const rows = (j.checks ?? []).filter((x) => re.test(x.name))
-          check(`browser: ${c.dir} ${label}`, rows.length > 0 && rows.every((x) => x.result === 'pass'), rows.length ? rows.filter((x) => x.result !== 'pass').map((x) => `${x.name}: ${x.result} ${x.detail}`).join(' | ') : 'no such check in the result')
+          // A pass row's detail opens with the views that reported it.
+          const missed = (x) => (everyView ? viewNames.filter((v) => !(x.detail ?? '').split(': ')[0].split(', ').includes(v)) : [])
+          const bad = rows.filter((x) => x.result !== 'pass' || missed(x).length)
+          check(`browser: ${c.dir} ${label}`, rows.length > 0 && bad.length === 0, rows.length ? bad.map((x) => `${x.name}: ${x.result} ${x.detail}${missed(x).length ? ` (not in ${missed(x).join(', ')})` : ''}`).join(' | ') : 'no such check in the result')
         }
         if (c.shots) {
           const shots = join(work, 'shots')
