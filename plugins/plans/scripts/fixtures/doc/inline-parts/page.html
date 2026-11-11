@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Request time by region and quarter</title>
+<!-- plans:kit -->
+<style>
+body { margin: 0; color: var(--plans-ink); font: 15px/1.5 var(--plans-sans); }
+h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
+figure { margin: 0; }
+</style>
+</head>
+<body>
+<main>
+<h2>Request time by region and quarter</h2>
+<div data-base-switch>
+  <p data-base-key="region"><span>Region</span>
+    <button type="button" value="north" aria-pressed="true" disabled>North</button>
+    <button type="button" value="south" disabled>South</button>
+  </p>
+  <p data-base-key="quarter"><span>Quarter</span>
+    <button type="button" value="q1" aria-pressed="true" disabled>Q1</button>
+    <button type="button" value="q2" disabled>Q2</button>
+  </p>
+  <div data-base-when="region=north quarter=q1">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Route</th><th>p50</th><th>p95</th></tr></thead>
+        <tbody>
+          <tr><th>/upload</th><td><data value="84">84</data></td><td><data value="310">310</data></td></tr>
+          <tr data-base-status="changed"><th>/status</th><td><data value="12">12</data></td><td><data value="48">48</data></td></tr>
+          <tr><th>/list</th><td><data value="40">40</data></td><td><data value="150">150</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>North, Q1, from synthetic samples.</figcaption>
+    </figure>
+  </div>
+  <div data-base-when="region=north quarter=q2">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Route</th><th>p50</th><th>p95</th></tr></thead>
+        <tbody>
+          <tr><th>/upload</th><td><data value="70">70</data></td><td><data value="260">260</data></td></tr>
+          <tr><th>/status</th><td><data value="11">11</data></td><td><data value="40">40</data></td></tr>
+          <tr><th>/list</th><td><data value="35">35</data></td><td><data value="120">120</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>North, Q2, from synthetic samples.</figcaption>
+    </figure>
+  </div>
+  <div data-base-when="region=south quarter=q1">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Route</th><th>p50</th><th>p95</th></tr></thead>
+        <tbody>
+          <tr><th>/upload</th><td><data value="120">120</data></td><td><data value="480">480</data></td></tr>
+          <tr><th>/status</th><td><data value="18">18</data></td><td><data value="66">66</data></td></tr>
+          <tr><th>/list</th><td><data value="52">52</data></td><td><data value="190">190</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>South, Q1, from synthetic samples. The longest bar sets the shared scale.</figcaption>
+    </figure>
+  </div>
+  <div data-base-when="region=south quarter=q2">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Route</th><th>p50</th><th>p95</th></tr></thead>
+        <tbody>
+          <tr><th>/upload</th><td><data value="98">98</data></td><td><data value="350">350</data></td></tr>
+          <tr><th>/status</th><td><data value="15">15</data></td><td><data value="52">52</data></td></tr>
+          <tr><th>/list</th><td><data value="44">44</data></td><td><data value="160">160</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>South, Q2, from synthetic samples.</figcaption>
+    </figure>
+  </div>
+</div>
+</main>
+</body>
+</html>

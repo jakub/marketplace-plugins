@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: chart-geometry</title>
+<!-- plans:kit -->
+<style>.plans-bar { translate: 12px; }</style>
+</head>
+<body>
+<main>
+<h1>Bars drawn 12 px off their values</h1>
+<figure>
+  <table data-base-chart="bars" data-base-unit="ms">
+    <thead><tr><th>Phase</th><th>Before</th><th>After</th></tr></thead>
+    <tbody>
+      <tr><th>Parse</th><td><data value="120">120</data></td><td><data value="95">95</data></td></tr>
+      <tr><th>Render</th><td><data value="340">340</data></td><td><data value="210">210</data></td></tr>
+    </tbody>
+  </table>
+  <figcaption>Median phase time. Page CSS moves every bar 12 px right.</figcaption>
+</figure>
+</main>
+</body>
+</html>

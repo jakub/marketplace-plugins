@@ -322,7 +322,16 @@ import { deflateSync, inflateSync } from 'node:zlib'
 // page.html) must appear here, and every row must have its directory.
 const BAD = ['exception', 'console-csp', 'request-outside', 'load-failed', 'http-status', 'media-decode', 'page-overflow',
   'clipped', 'a-target', 'form', 'outbound-link', 'srcset', 'poster', 'css-url', 'svg-href', 'svg-viewbox', 'svg-label',
-  'svg-wide', 'svg-text-small', 'chart-text-small', 'empty-title', 'media-undeclared']
+  'svg-wide', 'svg-text-small', 'chart-text-small', 'empty-title', 'media-undeclared',
+  'part-error', 'chart-geometry', 'chart-overlap', 'base-state-budget']
+// The parts kinds, each with the pattern its detail must match. Each fails alone: no other kind
+// may appear in any cell, since a stub that also broke the walk or the layout proves nothing.
+const PART_BAD = new Map([
+  ['part-error', /^switch: switch 1 pane "size=small" /],
+  ['chart-geometry', /: row \d+ col \d+ drawn [\d.]+-[\d.]+ px, expected [\d.]+-[\d.]+ px$/],
+  ['chart-overlap', /: "Parse 120" and "120 ms" intersect$/],
+  ['base-state-budget', /^switch 1: 25 combinations, limit 16$/],
+])
 const BAD_INLINE = ['inline-height', 'inline-kit-hook', 'inline-frame', 'inline-shell']
 // The BAD_INLINE kinds the builder refuses before the browser runs, each with its detail.
 const STATIC_INLINE = new Map([['inline-shell', /^<body> carries data-base-shell$/]])
@@ -342,6 +351,19 @@ const NAMED = [
   ['a note line of spaces keeps its spaces', /^interaction: a note line of spaces$/],
   ['copy after one press', /^interaction: copy after one press$/],
   ['copy with a note edit between two presses', /^interaction: copy with a note edit between two presses$/],
+]
+// A page with a switch or a compare adds the panes state to every view. The panes rows name a
+// step; the final display step reports under its switch's last combination. A chart row names
+// its traits, so each trait gets its own case.
+const PANES_STATES = ['initial', 'details-open', 'panes']
+const chartRow = (trait) => [`${trait} chart rows pass`,new RegExp(`^chart: .+ \\((?:[a-z-]+, )*${trait}(?:, [a-z-]+)*\\)$`)]
+const PANES_NAMED = [
+  ['every combination of a one-key switch', /^panes: switch 1 period=\w+$/],
+  ['every combination of a two-key switch', /^panes: switch 2 host=\w+ cache=\w+$/],
+  ['one ArrowRight per key group', /^panes: switch \d+ \w+ arrow$/],
+  ['a compare driven from its own switch', /^panes: compare 1 (before|after)$/],
+  ['a compare revealed inside a pane', /^panes: compare 2 (before|after)$/],
+  ...['grouped', 'stacked', 'negative', 'all-zero', 'shared', 'timeline'].map(chartRow),
 ]
 // Kit negative fixtures under bad-kit/: [directory, fault, pattern its detail must match].
 const KIT_BAD = [
@@ -396,7 +418,16 @@ const CASES = [
   // Absolute media paths in an Inline page, through a src and a <source> list: html_preview
   // inlines them, so the check serves none of them and raises no fault for them.
   { dir: 'inline-skipped-media', args: ['--inline'], exit: 0 },
-  ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind })),
+  // Every part with no shell and no questions: grouped, stacked, negative and all-zero bars, a
+  // shared scale across a period switch, a two-key switch, a compare beside it and one inside a
+  // pane, a packed two-lane timeline, and a table that overflows at 390.
+  { dir: 'good-base-plain', args: [], exit: 0, states: PANES_STATES, named: PANES_NAMED },
+  // Grouped bars in a 2×2 switch built Inline: every pane stays within 2,000 px.
+  { dir: 'inline-parts', args: ['--inline'], exit: 0, states: PANES_STATES, named: [
+    ['every combination of a 2×2 switch', /^panes: switch 1 region=\w+ quarter=q\d$/],
+    ...['grouped', 'shared'].map(chartRow),
+  ] },
+  ...BAD.map((kind) => ({ dir: `bad/${kind}`, args: [], exit: 1, fault: kind, ...(PART_BAD.has(kind) ? { alone: true, match: PART_BAD.get(kind) } : {}) })),
   ...CSS_URL.map(([dir, matches]) => ({ dir: `bad/${dir}`, args: [], exit: 1, fault: 'css-url', matches })),
   // Two broken loading="lazy" images far down the page, which the browser never loads by itself.
   { dir: 'bad/media-decode-lazy', args: [], exit: 1, fault: 'media-decode', matches: [
@@ -1378,7 +1409,7 @@ async function browserSection({ ROOT, check, skip }) {
           : (j.matrix ?? []).flatMap((cell) => cell.faults)
         const named = found.filter((f) => f.kind === c.fault && (!c.match || c.match.test(f.detail)))
         const every = (c.matches ?? []).every((re) => named.some((f) => re.test(f.detail)))
-        check(name, r.status === 1 && j.result === 'fail' && named.length > 0 && every && !existsSync(out) && j.digest === null && (!c.static || (j.matrix ?? []).length === 0),
+        check(name, r.status === 1 && j.result === 'fail' && named.length > 0 && every && !existsSync(out) && j.digest === null && (!c.static || (j.matrix ?? []).length === 0) && (!c.alone || kinds.every((k) => k === c.fault)),
           `status ${r.status} result ${j.result} faults ${kinds.join(',')}\n${r.stderr}`)
       }
       check(`browser: ${c.dir} leaves no profile or Chromium behind`, clean(before) && clean(after), JSON.stringify({ before, after }))

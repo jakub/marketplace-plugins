@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: chart-overlap</title>
+<!-- plans:kit -->
+<style>table[data-base-chart] tbody tr:first-child th { text-align: right; translate: 0 1.45rem; }</style>
+</head>
+<body>
+<main>
+<h1>A row label pushed onto its value</h1>
+<figure>
+  <table data-base-chart="bars" data-base-unit="ms">
+    <thead><tr><th>Phase</th><th>Time</th></tr></thead>
+    <tbody>
+      <tr><th>Parse 120</th><td><data value="120">120 ms</data></td></tr>
+      <tr><th>Render</th><td><data value="340">340 ms</data></td></tr>
+    </tbody>
+  </table>
+  <figcaption>Median phase time. Page CSS moves the first label down onto its value.</figcaption>
+</figure>
+</main>
+</body>
+</html>
