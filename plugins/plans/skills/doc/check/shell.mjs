@@ -1,7 +1,7 @@
 // The browser check's half for the page shell: the `chrome` state and the question counts. run.mjs
 // calls it, and its header defines `drive` and the rules every function here keeps. Node built-ins
 // only, and no import of run.mjs, which imports this file. parts.mjs's reveal() shows a hidden
-// switch pane.
+// switch pane, and its showSide() a compare's hidden side.
 //
 //   chrome(drive)          the `chrome` state on a Document whose bytes hold body[data-base-shell]:
 //                          the theme switch, every zoom, the dock and the sections sheet. Returns
@@ -41,7 +41,9 @@
 //              dark, each checked again under its own row. A click that can't land ends the theme.
 //   zoom n     a zoom inside a hidden switch pane is shown first through reveal(), when parts.mjs's
 //              model lists that pane; when it doesn't, as while parts.mjs is a stub, the row is
-//              unknown and says it was skipped. One inside a closed member of a named <details>
+//              unknown and says it was skipped. One inside a compare's hidden side is shown next,
+//              through showSide(), a click on the compare's own switch. One inside a closed member
+//              of a named <details>
 //              group opens that member through drive.openDetails, and the walk reopens member 0
 //              at its end. The button's img must carry the src the bytes give zoom n. A click opens
 //              it: exactly one open dialog, modal, showing that image, decoded. A click on Actual
@@ -76,7 +78,7 @@
 
 import { readFileSync } from 'node:fs'
 
-import { reveal } from './parts.mjs'
+import { reveal, showSide } from './parts.mjs'
 
 const TOKENS = new URL('../../show/tokens.css', import.meta.url)
 const THEME = 'button.plans-theme'
@@ -124,8 +126,9 @@ function fallbacks() {
 /* ---------------------------------------------------------------- in-page */
 
 // What the built bytes call for, read with DOMParser: { mast, nav, rows: [{ id, title, asks }],
-// asks: [id], zooms: [{ src, dpr, width, pane }] }. asks in a row are indexes into asks, and pane
-// is the zoom's [data-base-when] index, or -1.
+// asks: [id], zooms: [{ src, dpr, width, pane, compare, side }] }. asks in a row are indexes into
+// asks, pane is the zoom's [data-base-when] index, or -1, and compare the figure.pb-compare index
+// whose .pb-side holds it, or -1, with that side's data-base-side.
 function plan(source) {
   const doc = new DOMParser().parseFromString(source, 'text/html')
   const asks = [...doc.querySelectorAll('fieldset[data-ask]')]
@@ -141,6 +144,7 @@ function plan(source) {
     rows.push({ id: s.id, title: titleOf(h) || s.id, asks: [...s.querySelectorAll('fieldset[data-ask]')].map((f) => asks.indexOf(f)) })
   }
   const panes = [...doc.querySelectorAll('[data-base-when]')]
+  const compares = [...doc.querySelectorAll('figure.pb-compare')]
   const zooms = []
   for (const img of doc.querySelectorAll('figure.pb-figure[data-base-zoom] img')) {
     if (img.closest('fieldset[data-ask], noscript')) continue
@@ -148,7 +152,10 @@ function plan(source) {
     const dpr = raw === null ? 0 : raw.trim() === '' ? NaN : Number(raw)
     if (raw !== null && !(Number.isFinite(dpr) && dpr > 0)) continue
     const w = parseInt(img.getAttribute('width'), 10)
-    zooms.push({ src: img.getAttribute('src'), dpr, width: w > 0 ? w : 0, pane: panes.indexOf(img.closest('[data-base-when]')) })
+    const side = img.closest('.pb-side')
+    const compare = side && side.parentElement ? compares.indexOf(side.parentElement) : -1
+    zooms.push({ src: img.getAttribute('src'), dpr, width: w > 0 ? w : 0, pane: panes.indexOf(img.closest('[data-base-when]')),
+      compare, side: compare >= 0 ? side.getAttribute('data-base-side') : null })
   }
   return { mast: !!doc.querySelector('header.pb-mast'), nav: !!doc.querySelector('[data-base-contents]'), rows, asks: asks.map((f) => f.getAttribute('data-ask')), zooms }
 }
@@ -163,8 +170,9 @@ function themeNow(names) {
 
 function count(selector) { return document.querySelectorAll(selector).length }
 
-// Where zoom i's button stands: whether it is rendered, whether its pane is hidden, and the member
-// index of the outermost closed named <details> around it (0 for an unnamed one), or null.
+// Where zoom i's button stands: whether it is rendered, whether its pane is hidden, whether the
+// compare side that holds it is hidden, and the member index of the outermost closed named
+// <details> around it (0 for an unnamed one), or null.
 function zoomSpot(selector, i, pane) {
   const b = document.querySelectorAll(selector)[i]
   if (!b) return { missing: true }
@@ -175,7 +183,9 @@ function zoomSpot(selector, i, pane) {
     const name = d.getAttribute('name')
     details = name ? [...document.querySelectorAll('details')].filter((x) => x.getAttribute('name') === name).indexOf(d) : 0
   }
-  return { missing: false, src: img ? img.getAttribute('src') : null, shown: b.checkVisibility(), paneHidden: !!p && !p.checkVisibility(), details }
+  const side = b.closest('.pb-side')
+  const sideHidden = !!side && !!side.parentElement && side.parentElement.matches('figure.pb-compare') && !side.checkVisibility()
+  return { missing: false, src: img ? img.getAttribute('src') : null, shown: b.checkVisibility(), paneHidden: !!p && !p.checkVisibility(), sideHidden, details }
 }
 
 // Whether parts.mjs's model lists pane i, so reveal() can know it.
@@ -379,6 +389,10 @@ async function zoomStep(drive, z, i, movedDetails) {
   if (!spot.shown && z.pane >= 0 && spot.paneHidden) {
     if (!(await drive.call(paneListed, z.pane))) return { result: 'unknown', detail: `skipped: it sits in switch pane ${z.pane + 1}, which is hidden, and parts.mjs's model lists no such pane for reveal() to show` }
     if (!(await reveal(drive, z.pane))) return fail(`reveal() could not show switch pane ${z.pane + 1}, which holds it`)
+    spot = await drive.call(zoomSpot, ZOOM, i, z.pane)
+  }
+  if (!spot.shown && z.compare >= 0 && spot.sideHidden) {
+    if (!(await showSide(drive, z.compare, z.side))) return fail(`a click on compare ${z.compare + 1}'s switch could not show its ${z.side} side, which holds it`)
     spot = await drive.call(zoomSpot, ZOOM, i, z.pane)
   }
   if (!spot.shown && spot.details !== null) {

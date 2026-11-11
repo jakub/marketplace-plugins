@@ -30,6 +30,11 @@
 //                            that hold it, on their switch's buttons, settles, and returns whether
 //                            the pane has a box. A click that misses throws the step failure
 //                            drive.click throws, for the caller to catch with drive.missed.
+//   showSide(drive, compareIndex, side)
+//                            where the compare at that model index shows its switch and the side
+//                            ('before' or 'after') has no box, clicks the switch's button for that
+//                            side and settles. Returns whether the side has a box. A click that
+//                            misses throws as reveal's does.
 //
 // panes. The model's errors are part-error faults. Budget: a valid switch has as many combinations
 // as the product of its keys' value counts, over 16 is base-state-budget `switch <n>: <k>
@@ -665,6 +670,16 @@ export async function panes(drive) {
     }
   }
   return { faults, steps }
+}
+
+export async function showSide(drive, compareIndex, side) {
+  const info = await drive.call(compareLook, compareIndex)
+  if (info && info.sw && !info[side]) {
+    await drive.click({ kind: 'base', selector: SIDE, index: info.buttons[side] })
+    await drive.settle()
+  }
+  const now = await drive.call(compareLook, compareIndex)
+  return !!now && now[side]
 }
 
 export async function reveal(drive, paneIndex) {
