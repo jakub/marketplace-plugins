@@ -48,8 +48,9 @@
 // combination, which the state's screenshot shows.
 //   After each action the step settles and asserts that exactly the panes the model predicts have
 // a box: every pane of a valid switch whose box has a box, unless a closed <details> between the
-// pane and its box hides it. Then it probes. A named <details> group inside a pane that the step
-// revealed is probed once per member, last member first, ending on the first (ruling 11). A step
+// pane and its box hides it. Then it probes. A named <details> group inside a pane or a compare
+// side that the step revealed is probed once per member, last member first, ending on the first
+// (ruling 11). A step
 // row's result is its drive and its pane assertion; what the probes found joins the cell as its
 // own faults, and the row's detail names the faults no earlier probe of the state found, so the
 // step that first showed a fault says so. A failed step, a click that missed or a wrong pane, ends
@@ -422,18 +423,23 @@ function prep(source) {
   return { m, buttons, live: [count('[data-base-switch]'), count('[data-base-when]'), count('figure.pb-compare'), count('[data-base-chart]')] }
 }
 
-// Which panes and switch boxes have a box, which panes a closed <details> inside their box hides,
-// the largest named <details> group with a member in each pane, and the focused key button.
+// Which panes, compare sides and switch boxes have a box, which panes a closed <details> inside
+// their box hides, the largest named <details> group with a member in each pane and each side, and
+// the focused key button. sides holds each compare's before and after, in document order.
 function look() {
   const has = (el) => !!el && el.getClientRects().length > 0
   const size = (name) => [...document.querySelectorAll('details')].filter((d) => d.getAttribute('name') === name).length
+  const group = (el) => Math.max(0, ...[...new Set([...el.querySelectorAll('details')].map((d) => d.getAttribute('name')).filter(Boolean))].map(size))
   return {
     panes: [...document.querySelectorAll('[data-base-when]')].map((p) => {
       let blocked = false
       for (let a = p.parentElement; a && !a.matches('[data-base-switch]'); a = a.parentElement) if (a.localName === 'details' && !a.open) blocked = true
-      const names = new Set([...p.querySelectorAll('details')].map((d) => d.getAttribute('name')).filter(Boolean))
-      return { shown: has(p), blocked, group: Math.max(0, ...[...names].map(size)) }
+      return { shown: has(p), blocked, group: group(p) }
     }),
+    sides: [...document.querySelectorAll('figure.pb-compare')].flatMap((fig) => ['before', 'after'].map((s) => {
+      const side = [...fig.children].find((c) => c.classList.contains('pb-side') && c.getAttribute('data-base-side') === s)
+      return { shown: has(side), group: side ? group(side) : 0 }
+    })),
     boxes: [...document.querySelectorAll('[data-base-switch]')].map(has),
     focus: [...document.querySelectorAll('[data-base-key] button')].indexOf(document.activeElement),
   }
@@ -524,12 +530,13 @@ export async function panes(drive) {
     }
     return wrong
   }
-  // The probes of one step, named <details> groups in panes it revealed probed member by member.
-  // Returns the faults no earlier probe of this state found, for the row's detail.
+  // The probes of one step, named <details> groups in panes and compare sides it revealed probed
+  // member by member. Returns the faults no earlier probe of this state found, for the row's detail.
   const probeStep = async (now) => {
     const fresh = []
     const run = async () => { for (const f of await drive.probe()) { const k = `${f.kind}\0${f.detail}`; if (!seen.has(k)) { seen.add(k); fresh.push(f) } } }
-    const group = Math.max(0, ...now.panes.filter((p, i) => p.shown && !prev.panes[i].shown).map((p) => p.group))
+    const revealed = (list, was) => list.filter((x, i) => x.shown && !was[i].shown)
+    const group = Math.max(0, ...[...revealed(now.panes, prev.panes), ...revealed(now.sides, prev.sides)].map((x) => x.group))
     if (group > 1) {
       for (let k = group - 1; k >= 1; k--) { await drive.openDetails(k); await drive.settle(); await run() }
       await drive.openDetails(0)

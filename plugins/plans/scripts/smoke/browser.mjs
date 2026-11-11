@@ -1291,6 +1291,25 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
       page('<p>A script adds a key button after load.</p>\n<script>const k = document.createElement("div"); k.setAttribute("data-base-key", "k"); const b = document.createElement("button"); b.type = "button"; b.value = "x"; b.textContent = "Injected"; k.append(b); document.querySelector("main").append(k)</script>'),
       (out) => out.result === 'pass' && out.undriven.length === 1 && out.undriven[0] === 'button[type="button"][value="x"] "Injected"'
         && noPartDrive(out) && out.matrix.every((c) => runMod.STATES.includes(c.state))],
+    // A named <details> group in a compare's before side, which is hidden at load in every view, so
+    // only the step that shows it can probe it. Its second member holds a line that never wraps:
+    // the paragraph's box stays in the column, so only page-overflow sees the line, and only while
+    // that member is open. The step must open each member in turn, as it does in a revealed pane.
+    ['browser: a details group in a compare side is probed member by member when the side shows', undefined,
+      basePage('', `<main>
+<h1>Compare group unit</h1>
+<figure class="pb-compare">
+  <div class="pb-side" data-base-side="before"><h3>Before</h3>
+    <details name="steps"><summary>Step one</summary><p>A short step.</p></details>
+    <details name="steps"><summary>Step two</summary><p style="white-space: nowrap">${'A line that never wraps. '.repeat(12)}</p></details>
+  </div>
+  <div class="pb-side" data-base-side="after"><h3>After</h3><p>The new text.</p></div>
+  <figcaption>The steps before and after.</figcaption>
+</figure>
+</main>`),
+      (out) => out.result === 'fail'
+        && ['390-light', '390-dark'].every((v) => has(out, v, 'panes', 'page-overflow') || has(out, v, 'panes', 'clipped'))
+        && out.checks.some((c) => c.name === 'panes: compare 1 before' && c.result === 'pass' && /^390-light, .*new in this step: (page-overflow|clipped) /.test(c.detail))],
     // The capture of the tile at y 16384, the last tile at scale 2 and at scale 1, past its
     // deadline on every attempt. Each view is retried, ends in its first state with the deadline
     // fault, and its listed tiles stop at 16384, an unknown gap. The list and the directory hold
