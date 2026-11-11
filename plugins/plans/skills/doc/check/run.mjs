@@ -198,7 +198,11 @@
 // page-overflow, clipped, a-target, form and outbound-link (kit pages), srcset, poster, css-url,
 // svg-href, svg-viewbox, svg-label, svg-wide, svg-text-small and chart-text-small (every Document
 // view, and 360 in Inline), empty-title (Document only), media-undeclared, and in Inline mode
-// inline-height, inline-kit-hook and inline-frame. From the base states: part-drive (a failed
+// inline-height, inline-kit-hook and inline-frame. The DOM probe also counts each kind of base
+// part in WRITTEN in the live page against the built bytes, read as baseNeeds reads them: more in
+// the page than in the bytes is part-error `markup: <n> <kind> in the page, <m> in the built
+// bytes: base markup is written, never made by script`, since every base state and the chart
+// oracle are read from the bytes, so a part only script makes has no check. From the base states: part-drive (a failed
 // drive step), and what parts.mjs and shell.mjs
 // return, such as chart-geometry, chart-overlap and base-state-budget. Chromium 155 prints no "Refused to" line for a CSP block, so
 // console-csp also reads Log.entryAdded with source `security` and loadingFailed with
@@ -707,6 +711,14 @@ function probe(cfg) {
     if (!cfg.declared.includes(src)) add('media-undeclared', el, `src="${src}" is not in the source the builder read`)
   }
 
+  // A base part is written in the page: one its script made has no check, since every base state
+  // is read from the built bytes. querySelectorAll never reaches a <template>'s content, and the
+  // bytes' read skips it too.
+  for (const [kind, m] of Object.entries(cfg.written)) {
+    const n = document.querySelectorAll(kind).length
+    if (n > m) add('part-error', null, `markup: ${n} ${kind} in the page, ${m} in the built bytes: base markup is written, never made by script`)
+  }
+
   const height = root.scrollHeight
   if (cfg.inline) {
     if (height > cfg.heightMax) add('inline-height', null, `the content is ${height} px tall, over the ${cfg.heightMax} px Inline budget`)
@@ -982,20 +994,29 @@ function inputs({ send, evaluate }) {
   return { mouse, click, key }
 }
 
+// The kinds of base part the probe counts in the live page, by the selector it counts with.
+const WRITTEN = ['[data-base-chart]', '[data-base-switch]', 'figure.pb-compare', 'body[data-base-shell]', '[data-base-contents]']
+
 // The base states a page requires, read from its built bytes with scan.mjs, never from what its
 // script made, so a base whose script doesn't run can't skip its own check. A tag inside an HTML
 // <template> is inert and counts for nothing. panes: a tag with data-base-switch, or a <figure>
 // with the class token pb-compare. chrome: a Document whose <body> start tag carries
 // data-base-shell (the parser joins a second <body> tag's attributes to the first). charts: a tag
-// with data-base-chart, which turns chartFaults on.
+// with data-base-chart, which turns chartFaults on. written: how many of each WRITTEN kind the
+// bytes hold, body[data-base-shell] being 1 when any <body> start tag carries it.
 function baseNeeds(source, inline) {
-  const need = { panes: false, chrome: false, charts: false }
+  const need = { panes: false, chrome: false, charts: false, written: Object.fromEntries(WRITTEN.map((k) => [k, 0])) }
   for (const t of scan(source).tokens) {
     if (t.type !== 'start' || t.template) continue
-    if (attr(t, 'data-base-switch')) need.panes = true
-    if (t.name === 'figure' && (attr(t, 'class')?.value ?? '').split(/[\t\n\f\r ]+/).includes('pb-compare')) need.panes = true
-    if (attr(t, 'data-base-chart')) need.charts = true
-    if (!inline && t.name === 'body' && attr(t, 'data-base-shell')) need.chrome = true
+    const n = need.written
+    if (attr(t, 'data-base-switch')) { need.panes = true; n['[data-base-switch]']++ }
+    if (t.name === 'figure' && (attr(t, 'class')?.value ?? '').split(/[\t\n\f\r ]+/).includes('pb-compare')) { need.panes = true; n['figure.pb-compare']++ }
+    if (attr(t, 'data-base-chart')) { need.charts = true; n['[data-base-chart]']++ }
+    if (attr(t, 'data-base-contents')) n['[data-base-contents]']++
+    if (t.name === 'body' && attr(t, 'data-base-shell')) {
+      n['body[data-base-shell]'] = 1
+      if (!inline) need.chrome = true
+    }
   }
   return need
 }
@@ -1383,7 +1404,7 @@ async function runView(browser, ctx, v, rec) {
     // stream. Each fault joins the state's cell, and each row chartFaults returns joins rec.steps.
     // Returns the probe's result and the faults this call measured.
     const measure = async () => {
-      const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken, mediaBroken: settled.mediaBroken }))
+      const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken, mediaBroken: settled.mediaBroken, written: ctx.written }))
       // Hooks in any measured state make it a kit page. A hook that appears when <details> opens
       // needs a kit error, or the response and interaction checks, as much as one at load.
       if (got.kitPage) kitPage = true

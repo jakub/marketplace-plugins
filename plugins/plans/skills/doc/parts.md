@@ -8,7 +8,7 @@ Every part shows its content before script runs. Script adds controls, tracks an
 
 ## Write only base names
 
-- You write `pb-` classes and `data-base-*` attributes. Script makes the `plans-` classes and the `data-plans-*` attributes. Never write those yourself. The check reports a script-made name in your markup as `part-error` with the detail `markup: <tag> carries <name>`.
+- You write `pb-` classes and `data-base-*` attributes. Script makes the `plans-` classes and the `data-plans-*` attributes. Never write those yourself. The check reports a script-made name in your markup as `part-error` with the detail `markup: <tag> carries <name>`. Base markup is written in the page, and a base part that your script inserts, such as a chart cloned from a `<template>`, is a `part-error`.
 - `look.css` keeps its own names: `.title-block`, `.margin`, `.grid-rules` and `.num`.
 - Script never sets an `id`, never writes `document.title`, never writes inside a `fieldset[data-ask]`, and never adds a kit hook. It moves no element you wrote, except to wrap a zoomable `img` in a button.
 - Script writes the page only when something changes: a section comes into view, a question changes state, the reader acts, or a chart's box changes width. It never writes on each scroll frame, because on a page with questions each write costs the kit one full validation.

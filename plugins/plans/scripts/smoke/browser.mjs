@@ -1209,6 +1209,26 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 </main>`)
   const geometryAlone = (re) => (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
     && out.matrix.some((c) => c.faults.some((f) => re.test(f.detail)))
+  // A chart only in a <template>, which the bytes' read and the model both skip, and the same page
+  // with a script that clones it before DOMContentLoaded, so the kit draws a chart no oracle checks.
+  const templatedChart = (script) => basePage('', `<main>
+<h1>Template unit</h1>
+<template id="later">
+<figure>
+  <table data-base-chart="bars">
+    <thead><tr><th>Queue</th><th>Jobs</th></tr></thead>
+    <tbody>
+      <tr><th>mail</th><td><data value="12">12</data></td></tr>
+      <tr><th>sms</th><td><data value="7">7</data></td></tr>
+    </tbody>
+  </table>
+  <figcaption>Jobs per queue.</figcaption>
+</figure>
+</template>
+<p>The chart waits in a template.</p>
+${script}
+</main>`)
+  const clonedChart = 'markup: 1 [data-base-chart] in the page, 0 in the built bytes: base markup is written, never made by script'
   const stubDir = join(base, 'stub-check')
   mkdirSync(join(stubDir, 'doc/check'), { recursive: true })
   mkdirSync(join(stubDir, 'show'))
@@ -1391,6 +1411,11 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
       geometryAlone(/^Jobs per queue\.: row 1 col 1 is not in the page's table$/)],
     ['browser: a timeline item a page script removes is chart-geometry', undefined, scriptedTimeline,
       geometryAlone(/^From the draft to the ship date\.: item 3 is not in the page's list$/)],
+    ['browser: a chart only in an unused template passes with no chart row', undefined, templatedChart(''),
+      (out) => out.result === 'pass' && !out.checks.some((c) => c.name.startsWith('chart:'))],
+    ['browser: a chart a page script clones from a template is part-error', undefined,
+      templatedChart('<script>document.querySelector("main").append(document.getElementById("later").content.cloneNode(true))</script>'),
+      (out) => out.result === 'fail' && out.matrix.length > 0 && out.matrix.every((c) => c.faults.length > 0 && c.faults.every((f) => f.kind === 'part-error' && f.detail === clonedChart))],
     // The capture of the tile at y 16384, the last tile at scale 2 and at scale 1, past its
     // deadline on every attempt. Each view is retried, ends in its first state with the deadline
     // fault, and its listed tiles stop at 16384, an unknown gap. The list and the directory hold
