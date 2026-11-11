@@ -41,13 +41,13 @@
 //              values and `dark`. A click, then auto: <html> has no data-plans-theme, and the
 //              values equal those of the scheme the view emulates. Two more clicks, light then
 //              dark, each checked again under its own row. A click that can't land ends the theme.
-//   zoom n     a zoom inside a hidden switch pane is shown first through reveal(), when parts.mjs's
-//              model lists that pane; when it doesn't, as while parts.mjs is a stub, the row is
-//              unknown and says it was skipped. One inside a compare's hidden side is shown next,
-//              through showSide(), a click on the compare's own switch. One inside a closed member
-//              of a named <details>
-//              group opens that member through drive.openDetails, and the walk reopens member 0
-//              at its end. The button's img must carry the src the bytes give zoom n. A click opens
+//   zoom n     a zoom inside a closed member of a named <details> group first opens that member
+//              through drive.openDetails, since nothing inside it can be clicked, and the walk
+//              reopens member 0 at its end. One inside a hidden switch pane is shown next through
+//              reveal(), when parts.mjs's model lists that pane; when it doesn't, as while parts.mjs
+//              is a stub, the row is unknown and says it was skipped. One inside a compare's hidden
+//              side is shown last, through showSide(), a click on the compare's own switch. The
+//              button's img must carry the src the bytes give zoom n. A click opens
 //              it: exactly one open dialog, modal, showing that image, decoded. A click on Actual
 //              size: the image's drawn width is its natural width over the ratio within 1 CSS px,
 //              the ratio being data-base-dpr on the authored img, else natural width over its
@@ -391,6 +391,11 @@ async function zoomStep(drive, z, i, movedDetails) {
   let spot = await drive.call(zoomSpot, ZOOM, i, z.pane)
   if (spot.missing) return fail(`the page has no ${ZOOM} at index ${i}, and the bytes hold zoomable image ${z.src}`)
   if (spot.src !== z.src) return fail(`the button holds the img ${JSON.stringify(spot.src)}, and zoomable image ${n} in the bytes is ${JSON.stringify(z.src)}`)
+  if (!spot.shown && spot.details !== null) {
+    await drive.openDetails(spot.details)
+    movedDetails()
+    spot = await drive.call(zoomSpot, ZOOM, i, z.pane)
+  }
   if (!spot.shown && z.pane >= 0 && spot.paneHidden) {
     if (!(await drive.call(paneListed, z.pane))) return { result: 'unknown', detail: `skipped: it sits in switch pane ${z.pane + 1}, which is hidden, and parts.mjs's model lists no such pane for reveal() to show` }
     if (!(await reveal(drive, z.pane))) return fail(`reveal() could not show switch pane ${z.pane + 1}, which holds it`)
@@ -398,11 +403,6 @@ async function zoomStep(drive, z, i, movedDetails) {
   }
   if (!spot.shown && z.compare >= 0 && spot.sideHidden) {
     if (!(await showSide(drive, z.compare, z.side))) return fail(`a click on compare ${z.compare + 1}'s switch could not show its ${z.side} side, which holds it`)
-    spot = await drive.call(zoomSpot, ZOOM, i, z.pane)
-  }
-  if (!spot.shown && spot.details !== null) {
-    await drive.openDetails(spot.details)
-    movedDetails()
   }
 
   await drive.click({ kind: 'base', selector: ZOOM, index: i })

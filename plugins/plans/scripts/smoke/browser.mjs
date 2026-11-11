@@ -1181,6 +1181,26 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 </figure>
 </section>
 </main>`)
+  // The same compare in the second member of a named <details> group, which the chrome state
+  // loads closed: its switch can't be clicked until that member opens.
+  const zoomGroupPage = basePage(' data-base-shell', `<header class="pb-mast"><h1>Zoom group unit</h1><p class="pb-lede">A compare in the second member of a details group.</p></header>
+<div class="pb-brief"><nav data-base-contents aria-label="Sections"></nav></div>
+<main>
+<section id="one" data-base-status="changed"><h2>The one section</h2>
+<details name="steps"><summary>Step one</summary><p>A short step.</p></details>
+<details name="steps"><summary>Step two</summary>
+<figure class="pb-compare">
+  <div class="pb-side" data-base-side="before"><h3>Before</h3>
+    <figure class="pb-figure" data-base-zoom><img src="zoom-before.png" alt="The list before" width="80" height="40"><figcaption>Before the change.</figcaption></figure>
+  </div>
+  <div class="pb-side" data-base-side="after"><h3>After</h3>
+    <figure class="pb-figure" data-base-zoom><img src="zoom-after.png" alt="The list after" width="80" height="40"><figcaption>After the change.</figcaption></figure>
+  </div>
+  <figcaption>One change, before and after.</figcaption>
+</figure>
+</details>
+</section>
+</main>`)
   // A bars chart and a timeline whose page script runs after the kit has drawn: the kit's
   // DOMContentLoaded listener is added in the head, before the page's own. The oracle reads the
   // rows and items from the built bytes, so one the script removes fails chart-geometry alone.
@@ -1411,6 +1431,10 @@ ${script}
     ['browser: with showSide stubbed, a zoom in a compare\'s hidden side fails to drive', undefined, zoomPage,
       (out) => out.result === 'fail' && has(out, '390-light', 'chrome', 'part-drive') && passRow(out, 'chrome: zoom 1', 'fail'),
       { media: zoomMedia, mod: stubMod }],
+    ['browser: a zoom in a compare in a closed details member is driven in every view', undefined, zoomGroupPage,
+      (out) => out.result === 'pass' && passRow(out, 'chrome: zoom 1') && passRow(out, 'chrome: zoom 2')
+        && !passRow(out, 'chrome: zoom 1', 'fail') && !passRow(out, 'chrome: zoom 2', 'fail')
+        && runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.CHROME) === 1), { media: zoomMedia }],
     ['browser: a bars row a page script removes is chart-geometry', undefined,
       scriptedBars("const rows = document.querySelectorAll('[data-base-chart] tbody tr'); rows[rows.length - 1].remove()"),
       geometryAlone(/^Jobs per queue\.: row 3 col 1 is not in the page's table$/)],
