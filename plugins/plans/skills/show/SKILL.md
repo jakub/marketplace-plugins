@@ -1,6 +1,6 @@
 ---
 name: show
-description: Decide where a visual goes before you make it, whenever a visual, chart, table, diagram, mockup, screenshot set or any HTML output is in play. Picks one of three tiers by seven ordered rules, among a Sketch in chat, an Inline HTML render in the T3 thread and a published Document, says when to ask through the host question tool instead of a page, and covers the fallbacks when render tools, the plans CLI, Node or Chromium are missing. Use it before plans:doc, before plans:publish, and before any html_render call.
+description: Decide when a reply needs a visual and where it goes, whenever a visual, chart, table, diagram, mockup, screenshot set or any HTML output is in play. Says when to show one by default, then picks one of three tiers by seven ordered rules, among a Sketch in chat, an Inline HTML render in the T3 thread and a published Document, says when to ask through the host question tool instead of a page, and covers the fallbacks when render tools, the plans CLI, Node or Chromium are missing. Use it on a reply that compares numbers, explains a code change or reports a UI change, before plans:doc, before plans:publish, and before any html_render call.
 ---
 
 # show: pick the tier for a visual
@@ -14,6 +14,42 @@ A visual goes to one of three tiers:
 Inside T3 Code, Inline is the usual tier. A render can hold a figure, a table, a prose diff and a small script that switches between states, and the reader sees it without opening a link. Reach for a Document when the content needs to leave the thread or outgrows the budget.
 
 Publication, retention, and where a URL may go follow the `Delivery policy` section of `plans:publish`. Read that section there. This skill does not repeat it.
+
+## Show it by default
+
+The routing rules below start once a visual is in play. This section says when one should be. When you report to the user, a result that reads faster as a picture gets one, by these three triggers. Then route it by "Route the visual".
+
+- **Numbers the user compares.** Three or more values of one measure, or one measure at three or more points in time, get a chart. One before-and-after pair stays a sentence with both values. In a Document or an Inline render, use the bars or the timeline part from `parts.md` in the `plans:doc` skill's directory. In a Sketch, draw text bars as the recipe below shows.
+- **A code change's structure.** A change that moves a call, a data path, a boundary or a state transition gets a diagram of that change, drawn as `diagrams.md` in the `plans:doc` skill's directory shows. A rename, a typo, a version number or one config value gets none. A list of the changed files drawn as boxes is not a diagram.
+- **A UI change.** Anything the user would see differently gets a screenshot of the changed state, with the viewport and the revision named, and a before and after pair when both exist. In a PR round, `babysit` already makes the annotated pair, so don't make a second one. A mockup is a proposal, not a capture, so never present one as a screenshot.
+
+Don't show one in these cases:
+
+- The answer is one number, a yes or no, or one sentence.
+- The user asked for text.
+- A status reply carries no new result.
+
+Use the fewest visuals that carry the result, and don't redraw one in every progress update. A reader who sees the same chart three times stops looking at it.
+
+A seat keeps its assignment. A seat whose task is to make a visual makes it. Any other seat hands back the numbers, the screenshot paths and the changed files, and the orchestrator shows them, because only the orchestrator's reply reaches the user.
+
+❌ "Cold start went from 840 to 410 ms, first paint from 1,210 to 620 ms, and rebuild from 96 to 94 ms."
+✅ A bars chart with one row per measure and a column each for before and after, then one sentence: "Cold start and first paint halved, and rebuild didn't move."
+
+❌ Four boxes in a row, one per changed file: `build.mjs`, `parts.js`, `shell.js`, `run.mjs`.
+✅ The send path before and after, with the retry edge moved from the client to the queue and drawn in the accent.
+
+A Sketch draws text bars in a fenced block. Scale the largest value to 30 `█`, round each bar to whole blocks, print the value after the bar, and say the unit, the scale, the place and the date above the bars:
+
+```text
+Start times in ms, fractal, 2026-11-10, median of 20 runs (one █ is about 40 ms)
+cold start   before  █████████████████████           840
+             after   ██████████                      410
+first paint  before  ██████████████████████████████  1,210
+             after   ███████████████                 620
+rebuild      before  ██                              96
+             after   ██                              94
+```
 
 ## Route the visual
 
@@ -64,6 +100,8 @@ Look under both prefixes. A tool that the host lists as deferred is present. Loa
 
 Inline output is hand-written HTML on `tokens.css`, the stylesheet in this skill's directory. It sits in the reply column on the thread's own background, so it paints no page of its own.
 
+An Inline render that uses a part from `parts.md`, such as a bars chart, a switch or a compare, is built with `build.mjs --inline`, as step 9 describes, because the builder inlines the parts' CSS and script. Leave out the shell: the builder refuses shell markup in an Inline render, since the T3 frame owns the theme and has no room for a dock. A render with no part may still paste `tokens.css`, as steps 1 and 2 describe.
+
 1. Read `tokens.css` from the directory of this SKILL.md. On Claude Code that is `${CLAUDE_SKILL_DIR}/tokens.css`. If that variable arrives unexpanded, as it does on Codex, resolve `tokens.css` relative to this SKILL.md.
 2. Write one self-contained document. Paste the whole of `tokens.css` at the top of its inline `<style>`.
 3. Take every colour from the `--plans-*` custom properties that `tokens.css` declares. They read the theme variables that T3 injects and fall back to fixed values outside T3. Never declare a bare T3 name such as `--background`.
@@ -75,7 +113,7 @@ Inline output is hand-written HTML on `tokens.css`, the stylesheet in this skill
 6. To show a local image, write its absolute path in `src`. `html_preview` inlines it.
 7. Draw figures as inline SVG, following `diagrams.md` in the `plans:doc` skill's directory.
 8. Scripts run, so a small script can switch tabs or open rows. Keep each one small, and measure every state it produces.
-9. To show a prose rewrite, give the page its own directory as `plans:doc` describes. Write the page with a `<!-- plans:kit -->` line in `<head>` instead of the pasted `tokens.css`, and add a diff placeholder as `plans:doc` describes. Build it with `build.mjs --inline`. The builder sits in the `plans:doc` skill's directory: `${CLAUDE_SKILL_DIR}/../doc/build.mjs` on Claude Code, or `../doc/build.mjs` relative to this SKILL.md when the variable arrives unexpanded. It inlines the palette and the change marks, checks the page at 360 and 728 in light and dark, and writes `<stem>.inline.html`. Render that file. The builder's check never replaces `html_preview`.
+9. To show a prose rewrite or use a part, give the page its own directory as `plans:doc` describes. Write the page with a `<!-- plans:kit -->` line in `<head>` instead of the pasted `tokens.css`. Add a diff placeholder as `plans:doc` describes, or the parts the render uses. Build it with `build.mjs --inline`. The builder sits in the `plans:doc` skill's directory: `${CLAUDE_SKILL_DIR}/../doc/build.mjs` on Claude Code, or `../doc/build.mjs` relative to this SKILL.md when the variable arrives unexpanded. It inlines the palette, the change marks and the parts, checks the page at 360 and 728 in light and dark, and writes `<stem>.inline.html`. Render that file. The builder's check never replaces `html_preview`.
 10. Measure the page as described in "Measure the Inline budget". A page over the budget matches rule 5, so it becomes a Document.
 11. Call `html_render` with the larger of the two `contentHeight` values as `height`.
 

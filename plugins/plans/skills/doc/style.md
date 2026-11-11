@@ -9,7 +9,7 @@ A Document looks like a technical drawing or a revised standards page: a white g
 - **Show the grid, and prefer hairlines to boxes.** Put a `--plans-hair` or `--plans-rule` line between things instead of a box around them.
 - **Set numbers in tabular figures.** Put `.num` on any number that lines up in a column or changes between revisions, so the digits stay in place.
 - **Keep labels readable.** A label is sentence case, at body size or one step smaller, in `--plans-ink-2`. Tiny tracked capitals are not the default.
-- **Design both color schemes.** The tokens switch with `prefers-color-scheme`. Take every color from a `--plans-*` token, never from a hex value, and look at the dark screenshots as closely as the light ones.
+- **Design both color schemes.** The tokens switch with `prefers-color-scheme`, and under the shell the theme switch can override it. Take every color from a `--plans-*` token, never from a hex value, and look at the dark screenshots as closely as the light ones.
 
 ❌ `h2 { color: var(--plans-accent-text); }` on every section heading.
 ✅ Leave the heading in ink, and put the accent on the one changed row below it.
@@ -24,6 +24,8 @@ A Document looks like a technical drawing or a revised standards page: a white g
 - a gray panel only behind code
 
 `look.css` sets body text at 16 to 17 px, a measure of about 66 characters, and headings no larger than 2 times the body. Keep page styles inside those limits.
+
+The base adds parts of its own: status chips, callouts, tiles, framed figures, compares, switches, tables, notes, steps, code excerpts and charts, plus the phone-first shell. `parts.md` has them. Use a part before you style your own version of it.
 
 Put page styles in a `<style>` element after the `<!-- plans:kit -->` line, so they build on the kit. Read only `--plans-*` tokens in them.
 
@@ -54,7 +56,7 @@ Hang each `h2` number in a column of its own, so the heading text lines up with 
 
 ### A margin callout
 
-`.margin` sits in the outer column at 900 px and wider, with a hairline leader back to the text. Below 900 px it folds under its paragraph. Put it right before or inside the paragraph it annotates, and keep it to one or two sentences.
+In the plain layout, on a page without `data-base-shell`, `.margin` sits in the outer column at 900 px and wider, with a hairline leader back to the text. Below 900 px it folds under its paragraph. Under the shell there is no outer column, so a `.margin` note always folds into its cell or under its paragraph. Put it right before or inside the paragraph it annotates, and keep it to one or two sentences.
 
 ```html
 <p>
@@ -101,3 +103,7 @@ Mark the one row that changed with an accent bar, and leave every other row in i
 - serif body text and billboard type
 - web fonts. `--plans-sans` and `--plans-mono` already name the system stacks.
 - a CSS `url()` that points at a file. The viewer blocks the request, and the build check fails it.
+- a sticky sidebar or a sticky top bar. Under the shell the right edge holds content, and the dock carries the navigation at every width.
+- traffic-light status colours, such as green for done and red for failed. A status reads from its glyph and its word, and only `changed` takes the accent.
+- an authored chart coordinate: a bar width, an offset or an SVG point placed by hand for a value. A chart part places each mark from its value, so the drawing can't drift from the number.
+- a `prefers-color-scheme` query in page CSS under the base, or a `<picture>` source switched by scheme. The theme switch sets the scheme on the page, and a query reads the system setting, so the page would disagree with the reader's pick.
