@@ -3,12 +3,26 @@
 // Chromium through cdp.mjs. Node built-ins only.
 //
 //   runChecks({ buffer, inline, dir, media, skippedMedia, chromium, shots, tmp, deadlineMs })
-//     -> Promise<{ result, reason, matrix, checks, copy, undriven }>
+//     -> Promise<{ result, reason, matrix, checks, copy, undriven, shots }>
 //     matrix        one { view, state, ms, faults } per cell, ms the cell's wall time or null
 //     buffer        the final Buffer build.mjs will write
 //     media         the src values scan.mjs declared; skippedMedia the Inline absolute paths
 //     chromium      the executable findChromium found
-//     shots         a directory for `<w>-<scheme>-<state>.png`, or null
+//     shots         a directory for the screenshots below, or null. The result's `shots` lists
+//                   each file written there as { file, view, state, tile, y, height, scale }
+//
+// Screenshots. With a shots directory, each cell is captured after its probe, from scroll position
+// 0, by Page.captureScreenshot clips of at most floor(SHOT_MAX / dsf) CSS px tall, so no tile is
+// over SHOT_MAX device px, at y 0, then each tile's end, down to the page's scrollHeight. The first
+// tile is `<w>-<scheme>-<state>.png`, later ones `.2.png`, `.3.png` and so on, so a page that fits
+// in one tile gets the one file it always got. A clip at y 8192 on a 16,861 px page at 390 px and
+// dsf 2 returned the true content on the real viewer, 2026-11-10. In the result's list, file is
+// the name inside the directory, tile counts from 1, y and height are CSS px, and scale is the
+// view's dsf. A tile joins the list once its file is written. The list holds each view's last
+// attempt only, and a retry removes the files the attempt before it wrote. A cell whose listed
+// tiles do not cover 0 to its page height without a gap, because a capture or a write failed or
+// the run stopped, is unknown `tiles` (`<view> <state>: tiles cover 0-<y> of <h> px`), never a
+// pass. A fault outranks it, as every unknown.
 //   It never throws: every failure of its own lands in an unknown result. checks holds one
 //   `browser` row, then one row per interaction step and copy case, named as below, each pass,
 //   fail or unknown across the views that ran it.
@@ -170,7 +184,7 @@
 // cell that is missing is unknown `incomplete`, and each eager image or copy that settle left
 // unresolved is unknown `media-unsettled`, one per view, state and element.
 
-import { closeSync, constants, mkdirSync, openSync, writeSync } from 'node:fs'
+import { closeSync, constants, mkdirSync, openSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { COMMAND_MS, CdpError, launch } from './cdp.mjs'
@@ -1063,9 +1077,28 @@ async function interact(io, rec, viewName) {
 
 /* ---------------------------------------------------------------- shots */
 
+// A write that fails after the open removes its partial file, so only whole PNGs reach the
+// directory.
 function writeShot(path, bytes) {
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o644)
-  try { for (let off = 0; off < bytes.length;) off += writeSync(fd, bytes, off, bytes.length - off) } finally { closeSync(fd) }
+  try {
+    try { for (let off = 0; off < bytes.length;) off += writeSync(fd, bytes, off, bytes.length - off) } finally { closeSync(fd) }
+  } catch (e) {
+    try { unlinkSync(path) } catch {}
+    throw e
+  }
+}
+
+// The cells of one attempt whose tiles do not cover 0 to the page's height, as `tiles` unknowns.
+function tileGaps(rec) {
+  return rec.planned.flatMap((p) => {
+    let covered = 0
+    for (const t of rec.shots.filter((s) => s.view === p.view && s.state === p.state).sort((a, b) => a.y - b.y)) {
+      if (t.y > covered) break
+      covered = Math.max(covered, t.y + t.height)
+    }
+    return covered < p.height ? [{ kind: 'tiles', detail: `${p.view} ${p.state}: tiles cover 0-${covered} of ${p.height} px` }] : []
+  })
 }
 
 /* ---------------------------------------------------------------- one view */
@@ -1188,10 +1221,24 @@ async function runView(browser, ctx, v, rec) {
         // The cell is in rec before its screenshot, so a capture or write that fails keeps it.
         const cell = cellOf(rec, v.name, state)
         if (ctx.shots) {
-          const w = Math.min(Math.ceil(got.width), Math.floor(SHOT_MAX / v.dsf))
-          const h = Math.min(Math.ceil(got.height), Math.floor(SHOT_MAX / v.dsf))
-          const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: w, height: h, scale: 1 } })
-          writeShot(join(ctx.shots, `${v.width}-${v.scheme}-${state}.png`), Buffer.from(data, 'base64'))
+          // Tiles by clip offset from scroll position 0, each at most SHOT_MAX device px tall. The
+          // plan joins rec before the first capture, so a tile that never lands leaves a gap that
+          // runChecks reads, and each tile joins rec.shots only once its file is written.
+          await evaluate(call(scrollHome))
+          const tile = Math.floor(SHOT_MAX / v.dsf)
+          const w = Math.min(Math.ceil(got.width), tile)
+          const h = Math.ceil(got.height)
+          rec.planned.push({ view: v.name, state, height: h })
+          let y = 0, n = 1
+          do {
+            const height = Math.min(tile, h - y)
+            const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y, width: w, height, scale: 1 } })
+            const file = `${v.name}-${state}${n === 1 ? '' : `.${n}`}.png`
+            writeShot(join(ctx.shots, file), Buffer.from(data, 'base64'))
+            rec.shots.push({ file, view: v.name, state, tile: n, y, height, scale: v.dsf })
+            y += height
+            n++
+          } while (y < h)
         }
         cell.ms = Date.now() - since
         since = Date.now()
@@ -1222,7 +1269,10 @@ const hang = (e) => e instanceof CdpError && Object.hasOwn(HANG, e.kind)
 // One view with the retry rule. Each attempt's record joins recs before it runs, so runChecks
 // sees every fault it measured even when the attempt, or the whole run, stops early. Returns
 // { flaky } or throws for an unknown.
-const freshRec = () => ({ cells: [], steps: [], copies: [], unknowns: [], state: STATES[0] })
+// rec.planned and rec.shots are the attempt's screenshot plan and the files it wrote. A retry first
+// removes the files the attempt before it wrote, so the directory and the manifest both hold one
+// attempt's set.
+const freshRec = () => ({ cells: [], steps: [], copies: [], unknowns: [], planned: [], shots: [], state: STATES[0] })
 async function viewWithRetry(browser, ctx, v, recs) {
   const attempt = () => { const r = freshRec(); recs.push(r); return r }
   try {
@@ -1231,6 +1281,7 @@ async function viewWithRetry(browser, ctx, v, recs) {
   } catch (e) {
     if (!hang(e)) throw e
     if (!(await browser.ping())) throw new CdpError('deadline', `${v.name}: ${e.message}, and the browser stopped answering`)
+    if (ctx.shots) for (const s of recs.at(-1).shots) { try { unlinkSync(join(ctx.shots, s.file)) } catch {} }
     const again = attempt()
     try {
       await runView(browser, ctx, v, again)
@@ -1269,7 +1320,7 @@ const unknownOf = (e) => {
 
 export async function runChecks({ buffer, inline = false, dir, media = [], skippedMedia = [], chromium, shots = null, tmp, deadlineMs = BUILD_MS }) {
   const views = inline ? INLINE_VIEWS : DOC_VIEWS
-  const out = { result: 'unknown', reason: null, matrix: [], checks: [], copy: null, undriven: [] }
+  const out = { result: 'unknown', reason: null, matrix: [], checks: [], copy: null, undriven: [], shots: [] }
   const unknowns = []
   let timer, stop
   // One { recs, flaky } per view, with every attempt's record, filled as the views run and read
@@ -1327,8 +1378,10 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
   const last = runs.map((r) => r.recs.at(-1) ?? freshRec())
   const steps = last.flatMap((r) => r.steps)
   const copies = last.flatMap((r) => r.copies)
-  // Each view's own unknowns, then its flaky retry, in view order, and the run's own error last.
-  unknowns.unshift(...runs.flatMap((r, i) => [...last[i].unknowns, ...(r.flaky ? [{ kind: 'flaky', detail: r.flaky }] : [])]))
+  out.shots = last.flatMap((r) => r.shots)
+  // Each view's own unknowns and tile gaps, then its flaky retry, in view order, and the run's own
+  // error last.
+  unknowns.unshift(...runs.flatMap((r, i) => [...last[i].unknowns, ...tileGaps(last[i]), ...(r.flaky ? [{ kind: 'flaky', detail: r.flaky }] : [])]))
   const have = new Set(out.matrix.map((c) => `${c.view}/${c.state}`))
   const required = ctx.kitDoc ? [...STATES, INTERACTION] : STATES
   const missing = views.flatMap((v) => required.map((s) => `${v.name}/${s}`)).filter((k) => !have.has(k))

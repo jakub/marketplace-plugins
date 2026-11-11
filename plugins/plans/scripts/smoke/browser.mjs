@@ -314,6 +314,7 @@ import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { PassThrough, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
+import { deflateSync, inflateSync } from 'node:zlib'
 
 // The fixture table. dir is relative to fixtures/doc/. A pass case expects exit 0; a fault case
 // expects exit 1 and its named fault in some matrix cell, or with `static`, a failed check of that
@@ -390,6 +391,8 @@ const CASES = [
   { dir: 'bad-kit/copy', args: [], exit: 1, fault: 'copy', match: /says "Copied", but the clipboard holds the check's sentinel/ },
   ...KIT_BAD.map(([dir, fault, match]) => ({ dir: `bad-kit/${dir}`, args: [], exit: 1, fault, match })),
   { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: true },
+  // A plain page 20,000 CSS px tall, captured as tiles in every view.
+  { dir: 'good-base-tall', args: ['--shots', 'shots'], exit: 0, shots: true },
   // Absolute media paths in an Inline page, through a src and a <source> list: html_preview
   // inlines them, so the check serves none of them and raises no fault for them.
   { dir: 'inline-skipped-media', args: ['--inline'], exit: 0 },
@@ -454,6 +457,124 @@ const CASES = [
   // 360 whatever the meta says, so the 360 views must too.
   { dir: 'bad-inline/inline-no-viewport', args: ['--inline'], exit: 1, fault: 'page-overflow' },
 ]
+
+// good-base-tall's page height and its bands: each band's top row in CSS px and its colour, which
+// the fixture's CSS sets. Each top row sits on a tile join at scale 2 or 1, or at the bottom.
+const TALL_HEIGHT = 20000
+const SENTINELS = [[8191, [255, 0, 0]], [8192, [0, 160, 0]], [16383, [0, 0, 255]], [16384, [255, 0, 255]], [19992, [0, 170, 170]]]
+
+/* ---------------------------------------------------------------- PNG */
+
+const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+// The IHDR width and height of PNG bytes, or null when they are not a PNG.
+function pngSize(buf) {
+  if (buf.length < 24 || !buf.subarray(0, 8).equals(PNG_SIG) || buf.toString('latin1', 12, 16) !== 'IHDR') return null
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+}
+// Decodes an 8-bit RGB or RGBA, non-interlaced PNG through node:zlib, undoing all five filter
+// types. Returns { width, height, pixel(x, y) -> [r, g, b] }. Anything else throws.
+function decodePng(buf) {
+  if (!buf.subarray(0, 8).equals(PNG_SIG)) throw new Error('not a PNG')
+  let ihdr = null
+  const idat = []
+  for (let at = 8; at + 8 <= buf.length;) {
+    const len = buf.readUInt32BE(at), type = buf.toString('latin1', at + 4, at + 8), data = buf.subarray(at + 8, at + 8 + len)
+    if (type === 'IHDR') ihdr = { width: data.readUInt32BE(0), height: data.readUInt32BE(4), depth: data[8], color: data[9], interlace: data[12] }
+    else if (type === 'IDAT') idat.push(data)
+    else if (type === 'IEND') break
+    at += 12 + len
+  }
+  if (!ihdr || ihdr.depth !== 8 || (ihdr.color !== 2 && ihdr.color !== 6) || ihdr.interlace !== 0) throw new Error(`unsupported PNG ${JSON.stringify(ihdr)}`)
+  const bpp = ihdr.color === 6 ? 4 : 3, stride = ihdr.width * bpp
+  const raw = inflateSync(Buffer.concat(idat))
+  if (raw.length !== ihdr.height * (stride + 1)) throw new Error(`inflated ${raw.length} bytes, expected ${ihdr.height * (stride + 1)}`)
+  const px = Buffer.alloc(stride * ihdr.height)
+  for (let y = 0; y < ihdr.height; y++) {
+    const f = raw[y * (stride + 1)], src = y * (stride + 1) + 1, row = y * stride, up = row - stride
+    const left = (i) => (i >= bpp ? px[row + i - bpp] : 0)
+    const above = (i) => (y > 0 ? px[up + i] : 0)
+    const diag = (i) => (y > 0 && i >= bpp ? px[up + i - bpp] : 0)
+    if (f === 0) raw.copy(px, row, src, src + stride)
+    else if (f === 1) for (let i = 0; i < stride; i++) px[row + i] = (raw[src + i] + left(i)) & 255
+    else if (f === 2) for (let i = 0; i < stride; i++) px[row + i] = (raw[src + i] + above(i)) & 255
+    else if (f === 3) for (let i = 0; i < stride; i++) px[row + i] = (raw[src + i] + ((left(i) + above(i)) >> 1)) & 255
+    else if (f === 4) {
+      for (let i = 0; i < stride; i++) {
+        const a = left(i), b = above(i), c = diag(i), p = a + b - c
+        const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c)
+        px[row + i] = (raw[src + i] + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 255
+      }
+    } else throw new Error(`row ${y} has filter type ${f}`)
+  }
+  return { width: ihdr.width, height: ihdr.height, pixel: (x, y) => { const o = y * stride + x * bpp; return [px[o], px[o + 1], px[o + 2]] } }
+}
+// A PNG of the given RGB rows, each row filtered with its own type from filters, so the decoder
+// meets every filter type on known pixels.
+function encodePng(width, rows, filters, bpp = 3) {
+  const stride = width * bpp
+  const lines = rows.map((r, y) => {
+    const f = filters[y % filters.length]
+    const prev = y ? rows[y - 1] : Buffer.alloc(stride)
+    const out = Buffer.alloc(stride + 1)
+    out[0] = f
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? r[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0, p = a + b - c
+      const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c)
+      const pred = [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f]
+      out[i + 1] = (r[i] - pred) & 255
+    }
+    return out
+  })
+  const chunk = (type, data) => {
+    const head = Buffer.alloc(8)
+    head.writeUInt32BE(data.length, 0)
+    head.write(type, 4, 'latin1')
+    return Buffer.concat([head, data, Buffer.alloc(4)])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(rows.length, 4)
+  ihdr[8] = 8
+  ihdr[9] = bpp === 4 ? 6 : 2
+  return Buffer.concat([PNG_SIG, chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.concat(lines))), chunk('IEND', Buffer.alloc(0))])
+}
+function pngUnits({ check }) {
+  for (const bpp of [3, 4]) {
+    const width = 5
+    const rows = Array.from({ length: 10 }, (_, y) => Buffer.from(Array.from({ length: width * bpp }, (_, i) => (y * 37 + i * 53 + ((i * y) % 7) * 29) & 255)))
+    const got = decodePng(encodePng(width, rows, [0, 1, 2, 3, 4], bpp))
+    let same = got.width === width && got.height === rows.length
+    for (let y = 0; same && y < rows.length; y++) for (let x = 0; x < width; x++) same &&= got.pixel(x, y).every((v, k) => v === rows[y][x * bpp + k])
+    check(`png: the smoke's decoder reads all five filter types in ${bpp === 4 ? 'RGBA' : 'RGB'}`, same)
+  }
+}
+
+// Each cell's tiles from a screenshot list, in y order, keyed `<view> <state>`.
+const tilesByCell = (shots) => {
+  const cells = new Map()
+  for (const s of shots) {
+    const k = `${s.view} ${s.state}`
+    if (!cells.has(k)) cells.set(k, [])
+    cells.get(k).push(s)
+  }
+  for (const list of cells.values()) list.sort((a, b) => a.y - b.y)
+  return cells
+}
+// The problems with one cell's tiles: a gap or overlap, a bad number or name, a tile over the cap,
+// or one that doesn't end at height. An empty list means the tiles cover 0 to height exactly.
+const tileProblems = (key, list, height, shotMax) => {
+  const out = []
+  let end = 0
+  list.forEach((t, k) => {
+    if (t.y !== end) out.push(`${key}: tile ${t.tile} starts at ${t.y}, not ${end}`)
+    if (t.tile !== k + 1) out.push(`${key}: tile ${k + 1} is numbered ${t.tile}`)
+    if (t.file !== `${t.view}-${t.state}${k ? `.${k + 1}` : ''}.png`) out.push(`${key}: tile ${k + 1} is named ${t.file}`)
+    if (t.height <= 0 || t.height * t.scale > shotMax) out.push(`${key}: tile ${t.tile} is ${t.height} px at scale ${t.scale}`)
+    end = t.y + t.height
+  })
+  if (end !== height) out.push(`${key}: tiles cover 0-${end} of ${height} px`)
+  return out
+}
 
 const tick = () => new Promise((r) => setImmediate(r))
 const settled = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e }))
@@ -828,9 +949,10 @@ async function untilTrue(fn, ms, step = 10) {
   return fn()
 }
 
-function runBuild(BUILD, args, env, { onSpawn } = {}) {
+// cwd is the build's working directory, which a relative --shots resolves against.
+function runBuild(BUILD, args, env, { onSpawn, cwd } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BUILD, '--json', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(process.execPath, [BUILD, '--json', ...args], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     child.stdout.on('data', (b) => { stdout += b })
     child.stderr.on('data', (b) => { stderr += b })
@@ -1047,6 +1169,17 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
         && !out.matrix.some((c) => c.faults.some((f) => f.kind === 'kit-error'))
         && out.matrix.filter((c) => c.state === 'interaction').length === views
         && out.checks.some((c) => c.name === 'interaction: initial response' && c.result === 'pass')],
+    // The capture of the tile at y 16384, the last tile at scale 2 and at scale 1, past its
+    // deadline on every attempt. Each view is retried, ends in its first state with the deadline
+    // fault, and its listed tiles stop at 16384, an unknown gap. The list and the directory hold
+    // the retry's tiles alone, and nothing names the tile that never landed.
+    ['browser: a failed last tile is not a pass', undefined, kitPage('good-base-tall'),
+      (out, dir) => out.result === 'fail'
+        && runMod.DOC_VIEWS.every((v) => has(out, v.name, 'initial', 'deadline')
+          && unknownRow(out, new RegExp(`^tiles: ${v.name} initial: tiles cover 0-16384 of ${TALL_HEIGHT} px$`)))
+        && out.shots.length > 0 && out.shots.every((s) => s.state === 'initial' && s.y + s.height <= 16384)
+        && out.shots.map((s) => s.file).sort().join(',') === readdirSync(dir).sort().join(','),
+      { shots: true, fail: () => (m, p) => (m === 'Page.captureScreenshot' && p.clip?.y === 16384 ? 'timeout' : null) }],
   ]
   let u = 0
   for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null, chunk = null, media = [], stall = null } = {}] of cases) {
@@ -1062,8 +1195,45 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     const out = fail ? await withFailing(cdp, fail(), go) : pageThrow ? await withPageThrow(cdp, pageThrow(), go) : chunk ? await withChunk(cdp, { ...chunk, hit: chunk.hit() }, go)
       : stall ? await withStall(cdp, { ...stall, settleMs: runMod.SETTLE_MS }, go) : await go()
     const after = { ...leaks(priv), timers: timers() }
-    check(name, ok(out) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), before, after }))
+    check(name, ok(out, shotsDir) && clean(before) && clean(after) && after.timers === before.timers, JSON.stringify({ result: out.result, reason: out.reason, matrix: out.matrix, checks: out.checks.filter((c) => c.name === 'browser'), shots: out.shots?.map((s) => s.file), before, after }))
   }
+
+  // good-base-tall, checked once with screenshots: each cell's tiles cover the page with no gap,
+  // and each band's colour is in the tile and on the row the list says hold its top row.
+  const coverName = 'browser: good-base-tall tiles cover each cell with no gap'
+  const sentinelName = 'browser: good-base-tall every sentinel is in a tile'
+  if (why) { skip(coverName, why); skip(sentinelName, why); return }
+  const dir = join(base, 'unit-shots-tall')
+  mkdirSync(dir)
+  const before = { ...leaks(priv), timers: timers() }
+  const out = await runMod.runChecks({ buffer: kitPage('good-base-tall'), dir: base, chromium, tmp: priv, shots: dir })
+  const after = { ...leaks(priv), timers: timers() }
+  const cells = tilesByCell(out.shots)
+  const want = runMod.DOC_VIEWS.flatMap((v) => runMod.STATES.map((s) => `${v.name} ${s}`))
+  const gaps = [...want.filter((k) => !cells.has(k)).map((k) => `${k}: no tiles`), ...[...cells].flatMap(([k, tiles]) => tileProblems(k, tiles, TALL_HEIGHT, runMod.SHOT_MAX))]
+  const files = out.shots.map((s) => s.file).sort().join(',')
+  check(coverName, out.result === 'pass' && cells.size === want.length && gaps.length === 0 && files === readdirSync(dir).sort().join(',')
+    && clean(before) && clean(after) && after.timers === before.timers,
+    `result ${out.result} ${JSON.stringify(out.reason)} ${gaps.slice(0, 8).join(' | ')} ${JSON.stringify({ before, after })}`)
+  const misses = []
+  for (const [k, tiles] of cells) {
+    for (const t of tiles) {
+      const held = SENTINELS.filter(([y]) => t.y <= y && y < t.y + t.height)
+      if (!held.length) continue
+      let png
+      try { png = decodePng(readFileSync(join(dir, t.file))) } catch (e) { misses.push(`${t.file}: ${e.message}`); continue }
+      const x = Math.floor(png.width / 2)
+      for (const [y, rgb] of held) {
+        // Every device row of the band's top CSS row, at the middle column.
+        for (let r = (y - t.y) * t.scale; r < (y - t.y + 1) * t.scale; r++) {
+          const got = png.pixel(x, r)
+          if (got.some((v, i) => Math.abs(v - rgb[i]) > 2)) misses.push(`${k}: sentinel ${y} in ${t.file} row ${r} is rgb(${got}), expected rgb(${rgb})`)
+        }
+      }
+    }
+    for (const [y] of SENTINELS) if (!tiles.some((t) => t.y <= y && y < t.y + t.height)) misses.push(`${k}: no tile holds sentinel ${y}`)
+  }
+  check(sentinelName, out.result === 'pass' && cells.size === want.length && misses.length === 0, misses.slice(0, 8).join(' | '))
 }
 
 // The fixture directories: every directory under root holding a page.html, relative to root.
@@ -1091,6 +1261,7 @@ async function browserSection({ ROOT, check, skip }) {
   try {
     // --- Node-only, never skipped.
     await pipeUnits({ check, cdp })
+    pngUnits({ check })
     await childExitUnit({ check, cdp, base })
     await serveUnits({ check, serveMod, serveUrl: pathToFileURL(join(DOC, 'check/serve.mjs')).href, base })
 
@@ -1120,7 +1291,7 @@ async function browserSection({ ROOT, check, skip }) {
       const work = join(base, `case${++n}`)
       cpSync(join(FIX, c.dir), work, { recursive: true })
       const before = leaks(priv)
-      const r = await runBuild(BUILD, [...c.args, join(work, 'page.html')], env)
+      const r = await runBuild(BUILD, [...c.args, join(work, 'page.html')], env, { cwd: work })
       const after = leaks(priv)
       const j = r.json ?? {}
       const kinds = [...new Set((j.matrix ?? []).flatMap((cell) => cell.faults.map((f) => f.kind)))]
@@ -1138,9 +1309,25 @@ async function browserSection({ ROOT, check, skip }) {
           const shots = join(work, 'shots')
           const want = (c.args.includes('--inline') ? runMod.INLINE_VIEWS : runMod.DOC_VIEWS).flatMap((v) => states.map((st) => `${v.name}-${st}.png`))
           const have = existsSync(shots) ? readdirSync(shots) : []
-          const pngs = want.every((f) => have.includes(f) && readFileSync(join(shots, f)).subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+          const pngs = want.every((f) => have.includes(f) && pngSize(readFileSync(join(shots, f))) !== null)
           const res = have.includes('result.json') ? JSON.parse(readFileSync(join(shots, 'result.json'), 'utf8')) : {}
           check(`browser: ${c.dir} --shots writes one PNG per cell and result.json`, pngs && res.result === 'pass' && res.buildId === j.buildId, have.join(','))
+          // result.json lists exactly the PNGs in the directory, each as tall as its entry says,
+          // and every cell's tiles cover its page with no gap.
+          const list = Array.isArray(res.shots) ? res.shots : []
+          const wrong = []
+          const listed = list.map((s) => s.file).sort(), onDisk = have.filter((f) => f.endsWith('.png')).sort()
+          if (listed.join(',') !== onDisk.join(',')) wrong.push(`listed ${listed.join(',')} but the directory holds ${onDisk.join(',')}`)
+          for (const s of list) {
+            const size = onDisk.includes(s.file) ? pngSize(readFileSync(join(shots, s.file))) : null
+            if (!size || size.height !== s.height * s.scale) wrong.push(`${s.file}: IHDR ${JSON.stringify(size)}, entry ${s.height} px at scale ${s.scale}`)
+          }
+          const cells = tilesByCell(list)
+          if (cells.size !== want.length) wrong.push(`${cells.size} cells listed, expected ${want.length}`)
+          // Only the tall fixture's page height is known here. Elsewhere the tiles must still run
+          // from 0 without a gap.
+          for (const [k, tiles] of cells) wrong.push(...tileProblems(k, tiles, c.dir === 'good-base-tall' ? TALL_HEIGHT : tiles.at(-1).y + tiles.at(-1).height, runMod.SHOT_MAX))
+          check(`browser: ${c.dir} result.json lists every screenshot it wrote`, wrong.length === 0, wrong.slice(0, 8).join(' | '))
         }
       } else {
         const found = c.static

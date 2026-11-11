@@ -350,11 +350,25 @@ export default async function ({ ROOT, check, skip }) {
       const d = fresh()
       writeFileSync(join(d, 'p.html'), page())
       writeFileSync(join(d, 'bad.html'), page({ head: '' }))
-      run(['--shots', 'shots', join(d, 'p.html')])
+      run(['--shots', 'shots', join(d, 'p.html')], d)
       const ok = JSON.parse(readFileSync(join(d, 'shots', 'result.json'), 'utf8'))
-      run(['--shots', 'badshots', join(d, 'bad.html')])
+      run(['--shots', 'badshots', join(d, 'bad.html')], d)
       const bad = JSON.parse(readFileSync(join(d, 'badshots', 'result.json'), 'utf8'))
       check('build --shots: result.json holds the build id and result, on fail too', /^[0-9a-f]{64}$/.test(ok.buildId) && ok.result === 'unknown' && bad.result === 'fail', JSON.stringify([ok, bad]))
+      check('build --shots: result.json lists no screenshots when none landed', Array.isArray(ok.shots) && ok.shots.length === 0 && Array.isArray(bad.shots) && bad.shots.length === 0, JSON.stringify([ok.shots, bad.shots]))
+    }
+
+    // From a working directory that is not the input's, a relative --shots lands under the working
+    // directory, a relative --out still lands beside the input, and --json carries elapsedMs.
+    {
+      const d = fresh(), elsewhere = fresh()
+      writeFileSync(join(d, 'p.html'), page())
+      const r = run(['--json', '--out', 'named.html', '--shots', 'sh', join(d, 'p.html')], elsewhere)
+      check('build --shots: a relative DIR resolves against the working directory, and --out against the input',
+        r.status === 3 && readJson(join(elsewhere, 'sh', 'result.json'))?.buildId === r.json?.buildId && !existsSync(join(d, 'sh'))
+        && r.json?.out === join(d, 'named.html') && statSync(join(d, 'named.html')).isFile() && readdirSync(elsewhere).join(',') === 'sh',
+        `status ${r.status} input dir ${readdirSync(d).join(',')} cwd ${readdirSync(elsewhere).join(',')} ${r.stderr}`)
+      check('build --json: elapsedMs is a whole number of ms from the start of main', Number.isInteger(r.json?.elapsedMs) && r.json.elapsedMs >= 0, String(r.json?.elapsedMs))
     }
 
     // --shots replaces result.json by rename, so whatever held that name keeps its bytes.
@@ -363,7 +377,7 @@ export default async function ({ ROOT, check, skip }) {
       writeFileSync(join(d, 'p.html'), page({ head: '' }))
       writeFileSync(join(d, 'p.built.html'), OLD)
       linkSync(join(d, 'p.built.html'), join(d, 'result.json'))
-      const r = run(['--json', '--shots', '.', join(d, 'p.html')])
+      const r = run(['--json', '--shots', '.', join(d, 'p.html')], d)
       const receipt = readJson(join(d, 'result.json'))
       check('build --shots: a refusal replaces a hard-linked result.json and leaves its other link alone',
         r.status === 1 && readFileSync(join(d, 'p.built.html'), 'utf8') === OLD && receipt?.result === 'fail' && temps(d).length === 0,
@@ -374,7 +388,7 @@ export default async function ({ ROOT, check, skip }) {
       writeFileSync(join(d, 'p.html'), page())
       writeFileSync(join(d, 'target.txt'), OLD)
       symlinkSync('target.txt', join(d, 'result.json'))
-      const r = run(['--json', '--shots', '.', join(d, 'p.html')])
+      const r = run(['--json', '--shots', '.', join(d, 'p.html')], d)
       check('build --shots: a symlink at result.json is replaced, and its target keeps its bytes',
         r.status === 3 && readFileSync(join(d, 'target.txt'), 'utf8') === OLD && !lstatSync(join(d, 'result.json')).isSymbolicLink() && readJson(join(d, 'result.json'))?.result === 'unknown' && temps(d).length === 0,
         `status ${r.status} ${r.stderr}`)
@@ -390,7 +404,7 @@ export default async function ({ ROOT, check, skip }) {
       writeFileSync(join(shots, '390-light-initial.png'), OLD)
       linkSync(join(shots, '390-light-initial.png'), join(shots, 'kept.png'))
       const chromium = fakeChromium(d, `for s in "${shots}"/.plans-shots.*.tmp; do printf new > "$s/390-light-initial.png"; done`)
-      const r = run(['--json', '--shots', 'shots', join(d, 'p.html')], base, { env: { PLANS_CHROMIUM: chromium } })
+      const r = run(['--json', '--shots', 'shots', join(d, 'p.html')], d, { env: { PLANS_CHROMIUM: chromium } })
       const files = readdirSync(shots).sort().join(',')
       check('build --shots: a screenshot replaces its name by rename and leaves a hard link alone',
         r.status === 3 && readFileSync(join(shots, '390-light-initial.png'), 'utf8') === 'new' && readFileSync(join(shots, 'kept.png'), 'utf8') === OLD,
@@ -405,20 +419,20 @@ export default async function ({ ROOT, check, skip }) {
       const d = fresh()
       writeFileSync(join(d, 'p.html'), page())
       mkdirSync(join(d, 'shots', 'result.json'), { recursive: true })
-      const r = run(['--json', '--shots', 'shots', join(d, 'p.html')])
+      const r = run(['--json', '--shots', 'shots', join(d, 'p.html')], d)
       check('build --shots: a result.json that cannot be written is a write check in the printed result',
         r.status === 3 && r.json?.result === 'unknown' && writes(r).some((w) => /result\.json \(EISDIR\)$/.test(w)), `status ${r.status} ${r.stdout}`)
       const f = fresh()
       writeFileSync(join(f, 'p.html'), page({ head: '' }))
       mkdirSync(join(f, 'shots', 'result.json'), { recursive: true })
-      const s = run(['--json', '--shots', 'shots', join(f, 'p.html')])
+      const s = run(['--json', '--shots', 'shots', join(f, 'p.html')], f)
       check('build --shots: a refusal whose result.json cannot be written stays exit 1 and names the write',
         s.status === 1 && s.json?.result === 'fail' && s.json?.reason?.kind === 'marker' && writes(s).length === 1, `status ${s.status} ${s.stdout}`)
       const g = fresh(), shots = join(g, 'shots')
       writeFileSync(join(g, 'p.html'), page())
       mkdirSync(join(shots, '390-light-initial.png'), { recursive: true })
       const chromium = fakeChromium(g, `for s in "${shots}"/.plans-shots.*.tmp; do printf new > "$s/390-light-initial.png"; done`)
-      const t = run(['--json', '--shots', 'shots', join(g, 'p.html')], base, { env: { PLANS_CHROMIUM: chromium } })
+      const t = run(['--json', '--shots', 'shots', join(g, 'p.html')], g, { env: { PLANS_CHROMIUM: chromium } })
       check('build --shots: a screenshot that cannot be put in place is a write check in the printed result',
         t.status === 3 && writes(t).some((w) => /390-light-initial\.png \(EISDIR\)$/.test(w)), `status ${t.status} ${t.stdout}`)
 
@@ -431,7 +445,7 @@ export default async function ({ ROOT, check, skip }) {
           const h = fresh()
           writeFileSync(join(h, 'p.html'), page())
           mkdirSync(join(h, 'shots', blocked), { recursive: true })
-          const u = run(['--json', '--shots', 'shots', join(h, 'p.html')], base, { env: { PLANS_CHROMIUM: real.path }, timeout: 240000 })
+          const u = run(['--json', '--shots', 'shots', join(h, 'p.html')], h, { env: { PLANS_CHROMIUM: real.path }, timeout: 240000 })
           const receipt = readJson(join(h, 'shots', 'result.json'))
           check(`build --shots: a passing build whose ${what} cannot be written exits 3, written and unknown`,
             u.status === 3 && u.json?.result === 'unknown' && u.json?.reason?.kind === 'write' && u.json?.digest !== null &&

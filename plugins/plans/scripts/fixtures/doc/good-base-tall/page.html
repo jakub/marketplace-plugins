@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A tall page with sentinels at the tile joins</title>
+<!-- plans:kit -->
+<style>
+  /* The bands are placed against the initial containing block, so their y is the page's y and
+     they span the full width. smoke/browser.mjs holds the same colours in SENTINELS. */
+  body { position: static; }
+  .sentinel { position: absolute; left: 0; right: 0; height: 8px; }
+  #sentinel-8191 { top: 8191px; background: rgb(255, 0, 0); }
+  #sentinel-8192 { top: 8192px; background: rgb(0, 160, 0); }
+  #sentinel-16383 { top: 16383px; background: rgb(0, 0, 255); }
+  #sentinel-16384 { top: 16384px; background: rgb(255, 0, 255); }
+  #sentinel-bottom { top: 19992px; background: rgb(0, 170, 170); }
+</style>
+</head>
+<body>
+<main>
+<h1>A tall page with sentinels at the tile joins</h1>
+<p>This page is 20,000 CSS px tall. A solid band 8 px tall sits at y 8191, 8192, 16383 and 16384, where the screenshot tiles join at scale 2 and at scale 1, and one sits at the bottom. Each band starts on the row the smoke checks, and a later band covers the rows below an earlier one.</p>
+</main>
+<div class="sentinel" id="sentinel-8191" aria-label="sentinel at 8191" role="img"></div>
+<div class="sentinel" id="sentinel-8192" aria-label="sentinel at 8192" role="img"></div>
+<div class="sentinel" id="sentinel-16383" aria-label="sentinel at 16383" role="img"></div>
+<div class="sentinel" id="sentinel-16384" aria-label="sentinel at 16384" role="img"></div>
+<div class="sentinel" id="sentinel-bottom" aria-label="sentinel at the bottom" role="img"></div>
+</body>
+</html>

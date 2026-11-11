@@ -16,7 +16,8 @@
 // kept as text.
 //
 // Output. `<stem>.built.html` (Document mode) or `<stem>.inline.html` (`--inline`) in INPUT's
-// directory. A relative `--out` resolves against INPUT's directory, not the working directory.
+// directory. A relative `--out` resolves against INPUT's directory, not the working directory,
+// while a relative `--shots` resolves against the working directory.
 // `--out` must sit directly in that directory, end in `.html`, and differ from INPUT by path and by
 // device and inode, so a hard link to INPUT is refused. An existing output that is a symlink or not
 // a regular file is refused. The bytes go to `.<out>.<random hex>.tmp`, opened `wx`, then fsync,
@@ -118,14 +119,20 @@
 // with the result unknown, from the browser check or from a --shots write below.
 //
 // `--json` prints one object on stdout: result (pass | fail | unknown), reason {kind, detail},
-// buildId, digest, out, bytes, matrix [{view, state, faults[]}], checks [{name, result, detail}],
-// copy (copied-verified | blocked-selected | unknown | null), undriven [] and skippedMedia [].
-// digest and bytes are null unless the file was written. Human lines go to stderr.
+// buildId, digest, out, bytes, matrix [{view, state, ms, faults[]}] with ms the cell's wall time
+// or null, checks [{name, result, detail}], copy (copied-verified | blocked-selected | unknown |
+// null), undriven [], skippedMedia [] and elapsedMs, an integer: the wall time from the start of
+// main() to the output. digest and bytes are null unless the file was written. Human lines go to
+// stderr.
 //
-// `--shots DIR` resolves a relative DIR against INPUT's directory, as `--out` does, creates it,
-// and writes `result.json` there with the build id and the result, on fail too, plus one full-page
-// `<w>-<scheme>-<state>.png` per matrix cell the browser check reached, capped at 16384 px. A DIR
-// that can't be created is a `write` refusal, with no result.json. result.json gets its own temp
+// `--shots DIR` resolves a relative DIR against the working directory, once, before anything is
+// read relative to INPUT, unlike `--out`. It creates DIR and writes `result.json` there with the
+// build id, the result and `shots`, on fail too, plus each screenshot of each matrix cell the
+// browser check reached: `<w>-<scheme>-<state>.png`, and for a page taller than 16384 device px
+// more tiles `.2.png`, `.3.png` and so on, as run.mjs's header says. `shots` lists one
+// { file, view, state, tile, y, height, scale } per screenshot that landed in DIR, file relative
+// to DIR, and is [] when none did. A DIR that can't be created is a `write` refusal, with no
+// result.json. result.json gets its own temp
 // file and rename. The browser check writes its PNGs into a fresh `.plans-shots.<random hex>.tmp`
 // directory inside DIR, and the builder renames each into DIR, then removes that directory, which
 // the signal and exit handlers also remove. A hard link or symlink at any of those names keeps its
@@ -550,15 +557,20 @@ function stageShots(dir) {
 }
 
 // Renames every staged PNG into the shots directory, then removes the staging directory. Returns
-// one message per screenshot it could not put in place.
+// { lost, landed }: one message per screenshot it could not put in place, and the set of names it
+// did.
 function settleShots(dir, staging) {
   const lost = []
+  const landed = new Set()
   let names = []
   try { names = readdirSync(staging.pin.at()) } catch (e) {
     lost.push(`cannot read the staged screenshots in ${join(dir.path, staging.name)} (${e.code ?? 'error'})`)
   }
   for (const name of names) {
-    try { renameSync(staging.pin.at(name), dir.at(name)) } catch (e) {
+    try {
+      renameSync(staging.pin.at(name), dir.at(name))
+      landed.add(name)
+    } catch (e) {
       lost.push(`cannot write ${join(dir.path, name)} (${e.code ?? 'error'})`)
     }
   }
@@ -567,7 +579,7 @@ function settleShots(dir, staging) {
   try { rmSync(dir.at(staging.name), { recursive: true, force: true }) } catch {}
   scratch.delete(staging.path)
   syncDir(dir)
-  return lost
+  return { lost, landed }
 }
 
 // The output path for an input, or a Refusal. inDir is the input's pinned directory.
@@ -590,6 +602,7 @@ function outputPath(input, inputStat, outArg, inline, inDir) {
 }
 
 async function main(argv) {
+  const started = Date.now()
   let opts
   try { opts = parseArgs(argv) } catch (e) {
     if (!(e instanceof Usage)) throw e
@@ -604,6 +617,8 @@ async function main(argv) {
   const input = resolve(opts.input)
   let shots = null
   const shotsLost = []
+  // The browser check's screenshot list, cut to the files settleShots put in place.
+  let shotList = []
   // Finishes the --shots writes, lets a failed one change the result as the header says, then
   // prints the result.
   const finish = (code) => {
@@ -617,14 +632,17 @@ async function main(argv) {
     }
     for (const m of shotsLost) lost(m)
     if (shots) {
-      const receipt = Buffer.from(JSON.stringify({ buildId: result.buildId, result: result.result, reason: result.reason }, null, 2) + '\n', 'utf8')
+      const receipt = Buffer.from(JSON.stringify({ buildId: result.buildId, result: result.result, reason: result.reason, shots: shotList }, null, 2) + '\n', 'utf8')
       try { replaceFile(shots, 'result.json', receipt) } catch (e) {
         const m = `cannot write ${join(shots.path, 'result.json')} (${e.code ?? 'error'})`
         process.stderr.write(`build.mjs: ${m}\n`)
         lost(m)
       }
     }
-    if (opts.json) process.stdout.write(JSON.stringify(result) + '\n')
+    if (opts.json) {
+      result.elapsedMs = Date.now() - started
+      process.stdout.write(JSON.stringify(result) + '\n')
+    }
     return code
   }
   const refuse = (faults) => {
@@ -638,7 +656,7 @@ async function main(argv) {
   }
 
   if (opts.shots !== null) {
-    const dir = resolve(dirname(input), opts.shots)
+    const dir = resolve(opts.shots)
     try {
       mkdirSync(dir, { recursive: true })
       shots = pinDir(dir)
@@ -692,7 +710,11 @@ async function main(argv) {
     }
     process.stderr.write(`build.mjs: checking ${basename(out)} in ${found.path}\n`)
     browser = await runChecks({ buffer: built.buffer, inline: opts.inline, dir, media: built.media, skippedMedia: built.skippedMedia, chromium: found.path, shots: stagedAt })
-    if (staging) shotsLost.push(...settleShots(shots, staging))
+    if (staging) {
+      const { lost, landed } = settleShots(shots, staging)
+      shotsLost.push(...lost)
+      shotList = browser.shots.filter((s) => landed.has(s.file))
+    }
   }
   result.matrix = browser.matrix
   result.checks.push(...browser.checks)
