@@ -17,10 +17,11 @@
   &[data-base-kind=warning]{border-color:var(--plans-accent);&>b:first-child{color:var(--plans-accent-text)}}
   &[data-base-kind=decided]{border-color:var(--plans-ink)}
 }
-/* The list clips its first 1px, so the first tile in a line shows no left rule. */
+/* The list clips its first 1px, so the first tile in a line shows no left rule. 4 tiles share a
+   line from 30rem, 5 or 6 from 45rem, else they split 2+2, 3+2 or 3+3. */
 .pb-tiles{
-  display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,7rem),1fr));margin:0 0 1.25rem;padding:0;clip-path:inset(0 0 0 1px);border-top:2px solid var(--plans-ink);list-style:none;
-  &:has(>:nth-child(4):last-child){grid-template-columns:repeat(auto-fit,minmax(min(100%,9.5rem),1fr))}
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(clamp(16.6%,(45rem - 100%)*999,33.3%),1fr));margin:0 0 1.25rem;padding:0;clip-path:inset(0 0 0 1px);border-top:2px solid var(--plans-ink);list-style:none;
+  &:has(>:nth-child(4):last-child){grid-template-columns:repeat(auto-fit,minmax(clamp(24.9%,(30rem - 100%)*999,49.9%),1fr))}
   &>li{min-width:0;padding:.45rem .6rem .5rem;border:solid var(--plans-hair);border-width:0 0 1px 1px}
   & b{display:block;font-size:1.375rem;line-height:1.15;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
   & span{display:block;margin-top:.15rem;color:var(--plans-ink-2);font-size:.8125rem;line-height:1.3}

@@ -12,7 +12,7 @@ body[data-base-shell] {
   .pb-mast > h1 { margin: 0 0 .6rem; font-size: 1.625rem; }
   .pb-mast > .title-block { grid-column: 1; margin: 0; }
   .pb-mast > .plans-theme { grid-column: 2; }
-  .pb-lede { margin: 0 0 .9rem; font-size: 1.0625rem; line-height: 1.5; }
+  .pb-lede { font-size: 1.0625rem; line-height: 1.5; }
   .pb-brief { margin: 0 0 1.5rem; }
 
   :is(.plans-theme, .plans-dock-sections, .plans-sheet-close, .plans-zoom-size, .plans-zoom-close) {
@@ -56,13 +56,12 @@ body[data-base-shell] {
   .plans-sheet > .plans-rows { grid-column: 1 / -1; margin-top: .5rem; }
   :is(.plans-sheet, .plans-zoom)::backdrop { background: color-mix(in srgb, var(--plans-fb-ground) 75%, transparent); }
 
-  .plans-zoom-open { position: relative; display: block; inline-size: fit-content; max-inline-size: 100%; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; cursor: zoom-in; }
-  .plans-zoom-open > img { display: block; }
+  .plans-zoom-open { position: relative; display: block; inline-size: fit-content; max-inline-size: 100%; padding: 0; border: 0; background: none; color: inherit; cursor: zoom-in; }
   /* The image's phone cap, so the badge sits on the image. */
   [data-base-frame=phone] .plans-zoom-open { max-inline-size: min(100%, 22rem); }
   .plans-zoom-open::after {
     content: "Zoom"; position: absolute; inset: auto .375rem .375rem auto; padding: .125rem .375rem;
-    border: 1px solid; background: var(--plans-fb-ground); color: var(--plans-ink); font: 600 .75rem/1.4 var(--plans-sans);
+    border: 1px solid; background: var(--plans-fb-ground); font: 600 .75rem/1.4 var(--plans-sans);
   }
   .plans-zoom {
     position: fixed; inset: 0; inline-size: 100%; block-size: 100%; max-inline-size: none; max-block-size: none;

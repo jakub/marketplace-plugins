@@ -67,6 +67,8 @@ Three to six headline numbers, each with a short label.
 
 Script adds nothing. Put only numbers you measured or counted in a tile.
 
+Three tiles always share one line. Four share a line when the list is at least 30rem wide, and five or six when it is at least 45rem wide. In a narrower list they split into two even lines: 2 and 2, 3 and 2, or 3 and 3. No tile ever sits alone on a line.
+
 ### Figure
 
 ```html
