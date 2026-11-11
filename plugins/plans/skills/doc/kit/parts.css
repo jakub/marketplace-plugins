@@ -12,7 +12,7 @@
   &:is([data-base-status=changed],[data-plans-status=changed]){border-color:var(--plans-accent);background:var(--plans-accent-surface);&::before{content:"◆"/"";color:var(--plans-accent-text)}}
 }
 .pb-callout{
-  display:block;margin:1.25rem 0;padding:.45rem 0 .5rem .9rem;border-left:3px solid var(--plans-rule);
+  margin:1.25rem 0;padding:.45rem 0 .5rem .9rem;border-left:3px solid var(--plans-rule);
   &>:last-child{margin-bottom:0}
   &[data-base-kind=warning]{border-color:var(--plans-accent);&>b:first-child{color:var(--plans-accent-text)}}
   &[data-base-kind=decided]{border-color:var(--plans-ink)}
@@ -56,10 +56,10 @@
 }
 [data-base-switch] [data-base-when][hidden]{display:none!important}
 
-.pb-table{max-width:100%;margin:0 0 1.25rem;overflow-x:auto;&:focus-visible{outline:2px solid var(--plans-focus)}}
+.pb-table{container-type:inline-size;margin:0 0 1.25rem;overflow-x:auto;&:focus-visible{outline:2px solid var(--plans-focus)}}
 :is(.pb-table,[data-base-chart=bars]){
   &:is(table),& table{border-collapse:collapse;margin:0;font-size:.94em;line-height:1.4}
-  & caption{padding-bottom:.4rem;color:var(--plans-ink-2);text-align:left}
+  & caption{max-width:100cqi;padding-bottom:.4rem;color:var(--plans-ink-2);text-align:left}
   & :is(th,td){padding:.45rem .8rem .45rem 0;border-bottom:1px solid var(--plans-hair);text-align:left;vertical-align:top}
   & thead th{padding-top:0;border-color:var(--plans-ink);color:var(--plans-ink-2);font-weight:600}
   & td:is(.num,:has(>data)){font-variant-numeric:tabular-nums;text-align:right}

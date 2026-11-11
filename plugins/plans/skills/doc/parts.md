@@ -149,7 +149,7 @@ The check visits every combination of each switch's keys, at most 16 per switch 
 </div>
 ```
 
-Give the table a `caption`. The `.pb-table` box holds that one table and nothing else. A box without a captioned table, with a second child, or inside a question is a `part-error`. When the table is wider than its box, script makes the box a focusable scroll region named by the caption, so a keyboard reader can scroll it. There's no height cap. A sticky header is fine only where the box itself scrolls.
+Give the table a `caption`. The `.pb-table` box holds that one table and nothing else. A box without a captioned table, with a second child, or inside a question is a `part-error`. When the table is wider than its box, script makes the box a focusable scroll region named by the caption, so a keyboard reader can scroll it. The caption wraps inside the box, so the reader never scrolls to read it. There's no height cap. A sticky header is fine only where the box itself scrolls.
 
 ### Notes
 
