@@ -4,6 +4,7 @@
 //
 //   runChecks({ buffer, inline, dir, media, skippedMedia, chromium, shots, tmp, deadlineMs })
 //     -> Promise<{ result, reason, matrix, checks, copy, undriven }>
+//     matrix        one { view, state, ms, faults } per cell, ms the cell's wall time or null
 //     buffer        the final Buffer build.mjs will write
 //     media         the src values scan.mjs declared; skippedMedia the Inline absolute paths
 //     chromium      the executable findChromium found
@@ -12,8 +13,9 @@
 //   `browser` row, then one row per interaction step and copy case, named as below, each pass,
 //   fail or unknown across the views that ran it.
 //
-// Views. Document mode: 390x844 with mobile emulation at dsf 2, and 1440x900 at dsf 1, each in
-// light and dark through Emulation.setEmulatedMedia. Inline mode: 360 (dsf 2) and 728 (dsf 1),
+// Views. Document mode: 390x844 with mobile emulation at dsf 2 in light and dark, 1100x900 at
+// dsf 1 in light, and 1440x900 at dsf 1 in light and dark, the scheme set through
+// Emulation.setEmulatedMedia. Inline mode: 360 (dsf 2) and 728 (dsf 1),
 // both without mobile emulation, because T3 renders an Inline page in an iframe, which lays out at
 // its own width and ignores a viewport meta, where mobile emulation would lay a page without one
 // out 980 px wide. Each is at height 80 so the content height is read from scrollHeight rather
@@ -103,11 +105,13 @@
 // null on a page with no response region.
 //
 // Faults are stable names (SYNTH's table). From the event stream of each state: exception,
-// kit-error, console-csp, request-outside, load-failed and http-status. From the DOM probe:
-// media-decode, page-overflow, clipped, a-target, form and outbound-link (kit pages), srcset,
-// poster, css-url, svg-href, svg-viewbox, svg-label, svg-wide, svg-text-small (390 and 360
-// only), empty-title (Document only), media-undeclared, and in Inline mode inline-height,
-// inline-kit-hook and inline-frame. Chromium 155 prints no "Refused to" line for a CSP block, so
+// kit-error, part-error (a console line that starts with `plans-part: `, detailed by the rest of
+// the line and joined to a cell once; unlike kit-error it never stops the interaction script),
+// console-csp, request-outside, load-failed and http-status. From the DOM probe: media-decode,
+// page-overflow, clipped, a-target, form and outbound-link (kit pages), srcset, poster, css-url,
+// svg-href, svg-viewbox, svg-label, svg-wide, svg-text-small and chart-text-small (every Document
+// view, and 360 in Inline), empty-title (Document only), media-undeclared, and in Inline mode
+// inline-height, inline-kit-hook and inline-frame. Chromium 155 prints no "Refused to" line for a CSP block, so
 // console-csp also reads Log.entryAdded with source `security` and loadingFailed with
 // blockedReason `csp`. css-url reads the declarations the CSSOM parsed, in document.styleSheets,
 // document.adoptedStyleSheets and every [style], and the text the CSSOM keeps raw: custom
@@ -129,6 +133,8 @@
 // drawn at another size, mirrored or not, is measured at the size that box holds it. Neither reads
 // the individual rotate property. Shadow roots are not walked by any probe. In Inline mode the
 // skipped absolute media paths raise no network or decode fault, since html_preview inlines them.
+// chart-text-small reads each element holding a text node with a box inside [data-base-chart],
+// outside SVG, at its computed font size times pxScale times visualViewport.scale.
 // An SVG that is not rendered (getScreenCTM null, or no client rects) is skipped by svg-wide and
 // svg-text-small, and SVG text size is font size times the CTM's vertical scale times
 // visualViewport.scale, so a page without a viewport meta that mobile emulation shrinks shows its
@@ -184,9 +190,11 @@ const STATUS_MS = 5000
 const STATUS_QUIET_MS = 250
 
 const view = (width, height, dsf, mobile, scheme, small) => ({ name: `${width}-${scheme}`, width, height, dsf, mobile, scheme, small })
+// Every Document view is small: a narrow grid cell at 1100 or 1440 is narrower than a phone column.
 export const DOC_VIEWS = [
   view(390, 844, 2, true, 'light', true), view(390, 844, 2, true, 'dark', true),
-  view(1440, 900, 1, false, 'light', false), view(1440, 900, 1, false, 'dark', false),
+  view(1100, 900, 1, false, 'light', true),
+  view(1440, 900, 1, false, 'light', true), view(1440, 900, 1, false, 'dark', true),
 ]
 export const INLINE_VIEWS = [
   view(360, 80, 2, false, 'light', true), view(360, 80, 2, false, 'dark', true),
@@ -576,6 +584,24 @@ function probe(cfg) {
       if (px < cfg.floor - 1e-3) add('svg-text-small', t, `renders at ${px.toFixed(1)} px, under ${cfg.floor} px`)
     }
   }
+  // Chart text, once per element that holds a text node with a box. SVG text inside a chart is
+  // svg-text-small's, so it is not read twice.
+  if (cfg.small) {
+    const seen = new Set()
+    for (const chart of document.querySelectorAll('[data-base-chart]')) {
+      const walker = document.createTreeWalker(chart, NodeFilter.SHOW_TEXT)
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const el = n.parentElement
+        if (!el || seen.has(el) || n.data.trim() === '' || el.namespaceURI === SVGNS) continue
+        const r = document.createRange()
+        r.selectNodeContents(n)
+        if (r.getClientRects().length === 0) continue
+        seen.add(el)
+        const px = parseFloat(getComputedStyle(el).fontSize) * pxScale(el) * scale
+        if (px < cfg.floor - 1e-3) add('chart-text-small', el, `renders at ${px.toFixed(1)} px, under ${cfg.floor} px`)
+      }
+    }
+  }
 
   if (!cfg.inline && document.title.trim() === '') add('empty-title', null, 'document.title is empty')
 
@@ -749,6 +775,7 @@ function eventFaults(origin, skipped, refused) {
       case 'Runtime.consoleAPICalled': {
         const text = (p.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ')
         if (text.startsWith('plans-kit:')) add('kit-error', clip(text))
+        if (text.startsWith('plans-part: ')) add('part-error', clip(text.slice('plans-part: '.length)))
         if (text.startsWith('Refused to')) add('console-csp', clip(text))
         break
       }
@@ -1053,6 +1080,8 @@ function cellOf(rec, view, state) {
 // One view. rec: { cells, steps, copies, unknowns, state }, filled as the view runs, so a retry
 // starts from a fresh one. rec.state is the state being measured, whose cell a fault joins.
 async function runView(browser, ctx, v, rec) {
+  // A cell's ms runs from the end of the state before it, or from the view's start for the first.
+  let since = Date.now()
   const { browserContextId } = await browser.send('Target.createBrowserContext', { disposeOnDetach: true })
   try {
     if (!ctx.inline) await browser.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: ctx.origin, browserContextId })
@@ -1089,7 +1118,12 @@ async function runView(browser, ctx, v, rec) {
     }
     // A fault joins rec the moment it is measured. Events wait in `events` until the state's probe,
     // or until the view ends, whichever comes first.
-    const fault = (kind, detail) => cellOf(rec, v.name, rec.state).faults.push({ kind, detail })
+    // A part logs each fault once, but its line joins a cell once even if it comes again.
+    const fault = (kind, detail) => {
+      const cell = cellOf(rec, v.name, rec.state)
+      if (kind === 'part-error' && cell.faults.some((f) => f.kind === kind && f.detail === detail)) return
+      cell.faults.push({ kind, detail })
+    }
     const add = eventFaults(ctx.origin, ctx.skipped, ctx.refused)
     let seen = 0
     const drain = () => { for (; seen < events.length; seen++) add(events[seen], fault) }
@@ -1152,13 +1186,15 @@ async function runView(browser, ctx, v, rec) {
           }
         }
         // The cell is in rec before its screenshot, so a capture or write that fails keeps it.
-        cellOf(rec, v.name, state)
+        const cell = cellOf(rec, v.name, state)
         if (ctx.shots) {
           const w = Math.min(Math.ceil(got.width), Math.floor(SHOT_MAX / v.dsf))
           const h = Math.min(Math.ceil(got.height), Math.floor(SHOT_MAX / v.dsf))
           const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: w, height: h, scale: 1 } })
           writeShot(join(ctx.shots, `${v.width}-${v.scheme}-${state}.png`), Buffer.from(data, 'base64'))
         }
+        cell.ms = Date.now() - since
+        since = Date.now()
       }
       if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls, driven))
     } catch (e) {
@@ -1209,19 +1245,21 @@ async function viewWithRetry(browser, ctx, v, recs) {
 }
 
 // The matrix from every attempt of every view: one cell per view and state, in the order first
-// reached, holding each distinct fault any attempt saw there.
+// reached, holding each distinct fault any attempt saw there, and the ms of the last attempt that
+// finished the state, or null when none did.
 function mergeCells(recsPerView) {
   const cells = new Map()
   for (const recs of recsPerView) {
     for (const rec of recs) {
       for (const c of rec.cells) {
         const key = `${c.view}/${c.state}`
-        if (!cells.has(key)) cells.set(key, { view: c.view, state: c.state, faults: new Map() })
+        if (!cells.has(key)) cells.set(key, { view: c.view, state: c.state, ms: null, faults: new Map() })
+        if (c.ms !== undefined) cells.get(key).ms = c.ms
         for (const f of c.faults) cells.get(key).faults.set(`${f.kind}\0${f.detail}`, f)
       }
     }
   }
-  return [...cells.values()].map((c) => ({ view: c.view, state: c.state, faults: [...c.faults.values()] }))
+  return [...cells.values()].map((c) => ({ view: c.view, state: c.state, ms: c.ms, faults: [...c.faults.values()] }))
 }
 
 const unknownOf = (e) => {

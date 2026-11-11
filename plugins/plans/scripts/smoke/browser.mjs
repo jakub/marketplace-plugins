@@ -321,11 +321,11 @@ import { createHash } from 'node:crypto'
 // page.html) must appear here, and every row must have its directory.
 const BAD = ['exception', 'console-csp', 'request-outside', 'load-failed', 'http-status', 'media-decode', 'page-overflow',
   'clipped', 'a-target', 'form', 'outbound-link', 'srcset', 'poster', 'css-url', 'svg-href', 'svg-viewbox', 'svg-label',
-  'svg-wide', 'svg-text-small', 'empty-title', 'media-undeclared']
+  'svg-wide', 'svg-text-small', 'chart-text-small', 'empty-title', 'media-undeclared']
 const BAD_INLINE = ['inline-height', 'inline-kit-hook', 'inline-frame', 'inline-shell']
 // The BAD_INLINE kinds the builder refuses before the browser runs, each with its detail.
 const STATIC_INLINE = new Map([['inline-shell', /^<body> carries data-base-shell$/]])
-// A kit page adds the interaction state to every view, so its matrix has 12 cells. `named` maps
+// A kit page adds the interaction state to every view, so its matrix has 15 cells. `named` maps
 // a case name to a pattern over the result's `interaction: ...` check names: the case passes when
 // at least one check matches and every match passed.
 const KIT_STATES = ['initial', 'details-open', 'interaction']
@@ -371,8 +371,8 @@ const CSS_URL = [
   ['css-url-after-string', [/^url\(after\.png\) in style /, /^url\(after-raw\.png\) in style /]],
 ]
 const CASES = [
-  { dir: 'reading', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'] },
-  { dir: 'good', args: ['--shots', 'shots'], exit: 0, shots: ['390', '1440'], states: KIT_STATES, copy: 'copied-verified', named: NAMED },
+  { dir: 'reading', args: ['--shots', 'shots'], exit: 0, shots: true },
+  { dir: 'good', args: ['--shots', 'shots'], exit: 0, shots: true, states: KIT_STATES, copy: 'copied-verified', named: NAMED },
   // The clipboard API rejects and execCommand returns false: the kit leaves the whole response
   // selected, and the copy check passes it as blocked.
   { dir: 'good-copy-blocked', args: [], exit: 0, states: KIT_STATES, copy: 'blocked-selected', named: [
@@ -389,7 +389,7 @@ const CASES = [
   // A page script turns the kit's "blocked" status into "Copied". The read-back finds the sentinel.
   { dir: 'bad-kit/copy', args: [], exit: 1, fault: 'copy', match: /says "Copied", but the clipboard holds the check's sentinel/ },
   ...KIT_BAD.map(([dir, fault, match]) => ({ dir: `bad-kit/${dir}`, args: [], exit: 1, fault, match })),
-  { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: ['360', '728'] },
+  { dir: 'inline', args: ['--inline', '--shots', 'shots'], exit: 0, shots: true },
   // Absolute media paths in an Inline page, through a src and a <source> list: html_preview
   // inlines them, so the check serves none of them and raises no fault for them.
   { dir: 'inline-skipped-media', args: ['--inline'], exit: 0 },
@@ -954,6 +954,9 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
   const has = (out, view, state, kind) => out.matrix.some((c) => c.view === view && c.state === state && c.faults.some((f) => f.kind === kind))
   const unknownRow = (out, re) => out.checks.some((c) => c.name === 'browser' && c.result === 'unknown' && re.test(c.detail))
   const target = page('<p><a href="#top" target="_blank">a fault in every cell</a></p>')
+  const views = runMod.DOC_VIEWS.length
+  // A kit page that logs one plans-part line twice at load.
+  const partLine = (dir) => buildMod.assemble(readFileSync(join(FIX, dir, 'page.html'), 'utf8').replace('</main>', '<script>console.error("plans-part: switch: a pane names key size, which its box does not have"); console.error("plans-part: switch: a pane names key size, which its box does not have")</script>\n</main>'), { inline: false, kit: buildMod.readKit(), readSibling: () => '' }).buffer
   const cases = [
     // The initial state holds a fault, and opening <details> blocks the page past the deadline.
     ['runChecks: a cell measured before the deadline keeps its fault, so the run fails', 4000,
@@ -1004,13 +1007,13 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     ['runChecks: a kit hook that appears when <details> opens requires the interaction checks', undefined,
       page('<details id="more"><summary>More</summary><p>Hidden.</p></details>\n<script>document.getElementById("more").addEventListener("toggle", (e) => { if (!e.target.open || document.querySelector("[data-ask]")) return; const f = document.createElement("fieldset"); f.setAttribute("data-ask", "late"); e.target.append(f) })</script>'),
       (out) => out.result === 'fail' && has(out, '390-light', 'interaction', 'response-mismatch') && !has(out, '390-light', 'initial', 'response-mismatch')
-        && out.matrix.filter((c) => c.state === 'interaction').length === 4],
+        && out.matrix.filter((c) => c.state === 'interaction').length === views],
     // The target crashes or detaches just after a command's reply, in the same chunk. Each view
     // reads its controls last, or the probe of its last state once the first view has read them.
     // The crash or detach decides how the view ends, so it reaches the retry rule: one is a retry
     // that passed, unknown flaky, and two in a row are the fault on the cell being measured.
     ['runChecks: a crash that arrives with the reply to the last command of a view retries it', undefined, page('<p>A quiet page.</p>'),
-      (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page crashed \(Inspector\.targetCrashed\) once/.test(out.reason.detail) && out.matrix.length === 8,
+      (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page crashed \(Inspector\.targetCrashed\) once/.test(out.reason.detail) && out.matrix.length === 2 * views,
       { chunk: { hit: nth('Runtime.evaluate', /function controls/, 1), events: [CRASH] } }],
     ['runChecks: a crash with the reply to the last command of both attempts is a target-crashed fault', undefined, page('<p>A quiet page.</p>'),
       (out) => out.result === 'fail' && has(out, '390-light', 'details-open', 'target-crashed') && out.matrix.flatMap((c) => c.faults).length === 1,
@@ -1022,7 +1025,7 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
       (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page crashed/.test(out.reason.detail),
       { chunk: { hit: nth('Page.navigate', /./, 1), events: [['Page.loadEventFired', { timestamp: 0 }], CRASH] } }],
     ['runChecks: a detach that arrives with the reply to the last command of a view retries it', undefined, page('<p>A quiet page.</p>'),
-      (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page's target detached \(Inspector\.detached: Render process gone\.\) once/.test(out.reason.detail) && out.matrix.length === 8,
+      (out) => out.result === 'unknown' && out.reason.kind === 'flaky' && /^390-light: the page's target detached \(Inspector\.detached: Render process gone\.\) once/.test(out.reason.detail) && out.matrix.length === 2 * views,
       { chunk: { hit: nth('Runtime.evaluate', /function controls/, 1), events: [DETACH] } }],
     ['runChecks: a detach with the reply to the last command of both attempts is a target-detached fault', undefined, page('<p>A quiet page.</p>'),
       (out) => out.result === 'fail' && has(out, '390-light', 'details-open', 'target-detached') && out.matrix.flatMap((c) => c.faults).length === 1,
@@ -1031,9 +1034,19 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     // state of every view is unknown media-unsettled, never a pass.
     ['runChecks: a media copy that neither loads nor fails within the settle cap is unknown', undefined,
       page('<video preload="none" src="stall.webm" width="160" height="90"></video>'),
-      (out) => out.result === 'unknown' && out.reason.kind === 'media-unsettled' && out.matrix.length === 8 && out.matrix.every((c) => c.faults.length === 0)
-        && out.checks.filter((c) => c.name === 'browser' && c.result === 'unknown' && /^media-unsettled: \S+ (initial|details-open): the preload="metadata" copy of <video> stall\.webm neither loaded nor failed within \d+ ms$/.test(c.detail)).length === 8,
+      (out) => out.result === 'unknown' && out.reason.kind === 'media-unsettled' && out.matrix.length === 2 * views && out.matrix.every((c) => c.faults.length === 0)
+        && out.checks.filter((c) => c.name === 'browser' && c.result === 'unknown' && /^media-unsettled: \S+ (initial|details-open): the preload="metadata" copy of <video> stall\.webm neither loaded nor failed within \d+ ms$/.test(c.detail)).length === 2 * views,
       { media: ['stall.webm'], stall: { pattern: '*stall.webm', capMs: 300 } }],
+    // A plans-part line is a part-error with the rest of the line as its detail, once in its cell
+    // though the page logged it twice, and it leaves the kit's interaction run on.
+    ['browser: a plans-part line is a part-error', undefined, partLine('good-for-labels'),
+      (out) => out.result === 'fail' && out.reason.kind === 'part-error'
+        && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === 'initial'
+          && c.faults.filter((f) => f.kind === 'part-error').length === 1
+          && c.faults.some((f) => f.kind === 'part-error' && f.detail === 'switch: a pane names key size, which its box does not have')))
+        && !out.matrix.some((c) => c.faults.some((f) => f.kind === 'kit-error'))
+        && out.matrix.filter((c) => c.state === 'interaction').length === views
+        && out.checks.some((c) => c.name === 'interaction: initial response' && c.result === 'pass')],
   ]
   let u = 0
   for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null, chunk = null, media = [], stall = null } = {}] of cases) {
@@ -1115,7 +1128,7 @@ async function browserSection({ ROOT, check, skip }) {
       if (c.exit === 0) {
         const bytes = existsSync(out) ? readFileSync(out) : Buffer.alloc(0)
         const states = c.states ?? ['initial', 'details-open']
-        check(name, r.status === 0 && j.result === 'pass' && kinds.length === 0 && j.matrix.length === 4 * states.length && j.digest === sha(bytes) && (j.copy ?? null) === (c.copy ?? null),
+        check(name, r.status === 0 && j.result === 'pass' && kinds.length === 0 && j.matrix.length === (c.args.includes('--inline') ? runMod.INLINE_VIEWS : runMod.DOC_VIEWS).length * states.length && j.digest === sha(bytes) && (j.copy ?? null) === (c.copy ?? null),
           `status ${r.status} result ${j.result} reason ${JSON.stringify(j.reason)} faults ${kinds.join(',')} cells ${j.matrix?.length} copy ${j.copy}\n${r.stderr}`)
         for (const [label, re] of c.named ?? []) {
           const rows = (j.checks ?? []).filter((x) => re.test(x.name))
@@ -1123,7 +1136,7 @@ async function browserSection({ ROOT, check, skip }) {
         }
         if (c.shots) {
           const shots = join(work, 'shots')
-          const want = c.shots.flatMap((w) => ['light', 'dark'].flatMap((s) => states.map((st) => `${w}-${s}-${st}.png`)))
+          const want = (c.args.includes('--inline') ? runMod.INLINE_VIEWS : runMod.DOC_VIEWS).flatMap((v) => states.map((st) => `${v.name}-${st}.png`))
           const have = existsSync(shots) ? readdirSync(shots) : []
           const pngs = want.every((f) => have.includes(f) && readFileSync(join(shots, f)).subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
           const res = have.includes('result.json') ? JSON.parse(readFileSync(join(shots, 'result.json'), 'utf8')) : {}
