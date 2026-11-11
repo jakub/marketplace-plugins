@@ -1177,6 +1177,38 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 </figure>
 </section>
 </main>`)
+  // A bars chart and a timeline whose page script runs after the kit has drawn: the kit's
+  // DOMContentLoaded listener is added in the head, before the page's own. The oracle reads the
+  // rows and items from the built bytes, so one the script removes fails chart-geometry alone.
+  const scriptedBars = (script) => basePage('', `<main>
+<h1>Chart unit</h1>
+<figure>
+  <table data-base-chart="bars">
+    <thead><tr><th>Queue</th><th>Jobs</th></tr></thead>
+    <tbody>
+      <tr><th>mail</th><td><data value="12">12</data></td></tr>
+      <tr><th>sms</th><td><data value="7">7</data></td></tr>
+      <tr><th>push</th><td><data value="3">3</data></td></tr>
+    </tbody>
+  </table>
+  <figcaption>Jobs per queue.</figcaption>
+</figure>
+<script>document.addEventListener('DOMContentLoaded', () => { ${script} })</script>
+</main>`)
+  const scriptedTimeline = basePage('', `<main>
+<h1>Chart unit</h1>
+<figure>
+  <ol data-base-chart="timeline">
+    <li data-base-lane="Design"><time datetime="2026-10-01">1 Oct</time> to <time datetime="2026-10-10">10 Oct</time> Draft</li>
+    <li data-base-lane="Build"><time datetime="2026-10-12">12 Oct</time> to <time datetime="2026-10-20">20 Oct</time> Build</li>
+    <li data-base-lane="Build"><time datetime="2026-10-24">24 Oct</time> Ship</li>
+  </ol>
+  <figcaption>From the draft to the ship date.</figcaption>
+</figure>
+<script>document.addEventListener('DOMContentLoaded', () => { const items = document.querySelectorAll('[data-base-chart] > li'); items[items.length - 1].remove() })</script>
+</main>`)
+  const geometryAlone = (re) => (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
+    && out.matrix.some((c) => c.faults.some((f) => re.test(f.detail)))
   const stubDir = join(base, 'stub-check')
   mkdirSync(join(stubDir, 'doc/check'), { recursive: true })
   mkdirSync(join(stubDir, 'show'))
@@ -1351,6 +1383,14 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
     ['browser: with showSide stubbed, a zoom in a compare\'s hidden side fails to drive', undefined, zoomPage,
       (out) => out.result === 'fail' && has(out, '390-light', 'chrome', 'part-drive') && passRow(out, 'chrome: zoom 1', 'fail'),
       { media: zoomMedia, mod: stubMod }],
+    ['browser: a bars row a page script removes is chart-geometry', undefined,
+      scriptedBars("const rows = document.querySelectorAll('[data-base-chart] tbody tr'); rows[rows.length - 1].remove()"),
+      geometryAlone(/^Jobs per queue\.: row 3 col 1 is not in the page's table$/)],
+    ['browser: a bars chart a page script empties is chart-geometry', undefined,
+      scriptedBars("for (const tr of document.querySelectorAll('[data-base-chart] tbody tr')) tr.remove()"),
+      geometryAlone(/^Jobs per queue\.: row 1 col 1 is not in the page's table$/)],
+    ['browser: a timeline item a page script removes is chart-geometry', undefined, scriptedTimeline,
+      geometryAlone(/^From the draft to the ship date\.: item 3 is not in the page's list$/)],
     // The capture of the tile at y 16384, the last tile at scale 2 and at scale 1, past its
     // deadline on every attempt. Each view is retried, ends in its first state with the deadline
     // fault, and its listed tiles stop at 16384, an unknown gap. The list and the directory hold

@@ -62,10 +62,13 @@
 // that part: the walk closes any dialog, tries to put the switch back at its defaults, leaves the
 // switch out of later pane assertions and the final step, and goes on to the next part.
 //
-// The oracle. For each valid chart with a box: bars are matched by row and column, one drawn
-// .plans-bar with a box per value cell, measured against its .plans-track's padding box; timeline
-// marks by data-plans-item, one .plans-mark with a box per item, measured against the
-// .plans-lane-row that holds it. A missing or extra mark is chart-geometry. The expected extent
+// The oracle. For each valid chart with a box, from the model's rows and items, never the live
+// ones: bars are matched by row and column, one drawn .plans-bar with a box per value cell,
+// measured against its .plans-track's padding box; timeline marks by data-plans-item, one
+// .plans-mark with a box per item, measured against the .plans-lane-row that holds it. A value cell
+// or an item with no live counterpart, at the same row and column of the live table or the same
+// index in the live list, is chart-geometry `<chart>: row <r> col <c> is not in the page's table`
+// (or `item <n> is not in the page's list`), and so is a missing or extra mark. The expected extent
 // comes from the model's raw values: f(x) = (x - lo) / (hi - lo), a grouped bar from f(min(b, v))
 // to f(max(b, v)) with b the zero clamped to [lo, hi], a stacked segment from f(sum before) to
 // f(sum through), a point centred on f(t) and a span from f(start) to f(end), with f(t) = 0.5 over
@@ -79,7 +82,7 @@
 // (its text nodes and a timeline's lane labels), that intersect by more than 0.5 CSS px on both
 // axes are chart-overlap `<chart>: <a> and <b> intersect`. Each kind is reported at most 4 times
 // per chart per call. Each chart measured gets the row `chart: <label> (<traits>)`, fail with its
-// first fault or pass: label is the chart's caption (its table's <caption>, else its figure's
+// first fault or pass, a pass naming the bars or marks it measured: label is the chart's caption (its table's <caption>, else its figure's
 // <figcaption>), cut at 60 characters, or `chart <n>` when that is empty or another chart's
 // too; traits are grouped, stacked or timeline, then negative, all-zero and shared as they hold.
 
@@ -297,19 +300,20 @@ export function chartFaults(source) {
       geo(`${where} drawn ${at(got[0])}-${at(got[1])} px, expected ${at(want[0])}-${at(want[1])} px`)
     }
     const marks = []
-    let traits
+    let traits, measured = 0
     if (c.kind === 'bars') {
       const values = c.rows.flatMap((r) => r.values)
       traits = [c.stack ? 'stacked' : 'grouped', ...(values.some((v) => v < 0) ? ['negative'] : []), ...(values.every((v) => v === 0) ? ['all-zero'] : []), ...(c.shared > 1 ? ['shared'] : [])]
       const f = (x) => (x - c.lo) / (c.hi - c.lo), base = Math.min(Math.max(0, c.lo), c.hi)
       const trs = [...el.tBodies].flatMap((b) => [...b.rows])
       let matched = 0
-      trs.forEach((tr, r) => {
+      c.rows.forEach((row, r) => {
         let sum = 0
-        ;[...tr.cells].slice(1).forEach((td, k) => {
-          const v = c.rows[r].values[k]
+        row.values.forEach((v, k) => {
           const [a, b] = c.stack ? [sum, (sum += v)] : [Math.min(base, v), Math.max(base, v)]
           const where = `row ${r + 1} col ${k + 1}`
+          const td = trs[r] && trs[r].cells[k + 1]
+          if (!td) return geo(`${where} is not in the page's table`)
           const bars = [...td.querySelectorAll('.plans-bar')].filter(has)
           matched += bars.length
           const track = bars.length === 1 && bars[0].parentElement.closest('.plans-track')
@@ -317,6 +321,7 @@ export function chartFaults(source) {
           if (!track || !td.contains(track)) return geo(`${where} has its drawn bar outside a track in its cell`)
           const box = inner(track), rect = bars[0].getBoundingClientRect()
           edges(where, box, [rect.left, rect.right], span(box, f(a), f(b)))
+          measured++
           marks.push({ name: `the bar at ${where}`, rect })
           if (c.lo < 0) {
             const zero = [...track.querySelectorAll('.plans-zero')].filter(has)
@@ -357,8 +362,10 @@ export function chartFaults(source) {
       })
       // Each band's marks with their drawn boxes, for the packing replay.
       const placed = bands.map(() => [])
+      const lis = [...el.children]
       c.items.forEach((it, j) => {
         const where = `item ${j + 1}`
+        if (!lis[j]) return geo(`${where} is not in the page's list`)
         const list = byItem.get(j) ?? []
         if (list.length !== 1) return geo(`${where} has ${list.length} drawn marks, expected 1`)
         const mk = list[0], row = mk.parentElement && mk.parentElement.closest('.plans-lane-row')
@@ -370,6 +377,7 @@ export function chartFaults(source) {
           const [x] = span(box, f(it.start), f(it.start)), half = (rect.right - rect.left) / 2
           edges(where, box, [rect.left, rect.right], [x - half, x + half])
         }
+        measured++
         marks.push({ name: `the mark of item ${j + 1}`, rect })
         placed[lane].push({ j, start: it.start, row: rowsOf(band).indexOf(row), l: rect.left, r: rect.right })
       })
@@ -407,7 +415,7 @@ export function chartFaults(source) {
       }
     }
     out.push(...mine)
-    const n = c.kind === 'bars' ? `${c.rows.length * (c.rows[0] ? c.rows[0].values.length : 0)} bars` : `${c.items.length} marks`
+    const n = `${measured} ${c.kind === 'bars' ? 'bars' : 'marks'}`
     rows.push({ name: `chart: ${label} (${traits.join(', ')})`, result: mine.length ? 'fail' : 'pass', detail: mine.length ? mine[0].detail : `${n} within 1 px of their values, no overlap` })
   }
   return [...out, ...rows]
