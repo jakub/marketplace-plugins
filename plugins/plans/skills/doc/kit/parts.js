@@ -5,7 +5,7 @@
 const said = new Set()
 const fault = (part, what, s = 'plans-part: ' + part + ': ' + what) => said.has(s) || (said.add(s), console.error(s))
 const NAME = /^[a-z][a-z0-9-]*$/
-const DEC = /^-?\d+(\.\d+)?$/
+const num = v => /^-?\d+(\.\d+)?$/.test(v) && isFinite(v) ? +v : NaN
 const add = (to, tag) => to.appendChild(document.createElement(tag))
 const hook = el => el.querySelector('[data-ask], [data-note], [data-ask-summary], [data-respond]')
 const asked = el => el.closest('fieldset[data-ask]')
@@ -112,10 +112,10 @@ const charts = () => {
 
 const readBars = (table, bad) => {
   const stack = 'baseStack' in table.dataset
-  const [min, max] = [table.dataset.baseMin, table.dataset.baseMax].map(v => v == null ? null : DEC.test(v) ? +v : NaN)
+  const [min, max] = [table.dataset.baseMin, table.dataset.baseMax].map(v => v == null ? null : num(v))
   const rows = [...table.tBodies].flatMap(b => [...b.rows]).map(tr => {
     const tds = [...tr.cells].slice(1)
-    return { tr, tds, values: tds.map((td, d) => (d = td.querySelectorAll('data'))[1] || !DEC.test(d[0]?.value) ? NaN : +d[0].value) }
+    return { tr, tds, values: tds.map((td, d) => (d = td.querySelectorAll('data'))[1] ? NaN : num(d[0]?.value)) }
   })
   const cols = rows[0]?.tds.length
   const odd = rows.findIndex(({ tr, tds, values }) => tr.cells[0]?.localName !== 'th' || tds.length !== cols || tds.some(c => c.localName !== 'td') || values.some(v => !(v >= (stack ? 0 : -Infinity))))
