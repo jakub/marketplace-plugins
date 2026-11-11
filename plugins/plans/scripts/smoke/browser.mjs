@@ -1201,6 +1201,40 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 </details>
 </section>
 </main>`)
+  // Two panes of one switch, each a bars chart with one unit, bounds and values, whose value texts
+  // differ in length. tbody, when given, is an attribute on the long pane's <tbody>.
+  const sharePage = (tbody = '') => basePage('', `<main>
+<h1>Share unit</h1>
+<div data-base-switch>
+  <div data-base-key="form"><span>Form</span> <button type="button" value="short" aria-pressed="true" disabled>Short</button> <button type="button" value="long" aria-pressed="false" disabled>Long</button></div>
+  <div data-base-when="form=short">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms" data-base-min="0" data-base-max="100">
+        <thead><tr><th>Phase</th><th>Time</th></tr></thead>
+        <tbody>
+          <tr><th>Parse</th><td><data value="50">50</data></td></tr>
+          <tr><th>Render</th><td><data value="95">95</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Phase time, written short.</figcaption>
+    </figure>
+  </div>
+  <div data-base-when="form=long">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms" data-base-min="0" data-base-max="100">
+        <thead><tr><th>Phase</th><th>Time</th></tr></thead>
+        <tbody${tbody}>
+          <tr><th>Parse</th><td><data value="50">50 milliseconds</data></td></tr>
+          <tr><th>Render</th><td><data value="95">95 milliseconds</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Phase time, written long.</figcaption>
+    </figure>
+  </div>
+</div>
+</main>`)
+  const shareRows = (out) => ['short', 'long'].every((s) => passRow(out, `chart: Phase time, written ${s}. (grouped, shared)`))
+  const shareDetail = /^Phase time, written long\.: track [\d.]+ px, and Phase time, written short\. in its share group has [\d.]+ px$/
   // A bars chart and a timeline whose page script runs after the kit has drawn: the kit's
   // DOMContentLoaded listener is added in the head, before the page's own. The oracle reads the
   // rows and items from the built bytes, so one the script removes fails chart-geometry alone.
@@ -1435,6 +1469,14 @@ ${script}
       (out) => out.result === 'pass' && passRow(out, 'chrome: zoom 1') && passRow(out, 'chrome: zoom 2')
         && !passRow(out, 'chrome: zoom 1', 'fail') && !passRow(out, 'chrome: zoom 2', 'fail')
         && runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.CHROME) === 1), { media: zoomMedia }],
+    // The panes walk holds charts of one share group to tracks of one width, so the long texts must
+    // not shorten their pane's track, and page CSS that does fails.
+    ['browser: charts of one share group draw one value at one length across panes', undefined, sharePage(),
+      (out) => out.result === 'pass' && shareRows(out) && runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.PANES) === 1)],
+    ['browser: page CSS that widens one pane\'s value column is chart-geometry', undefined,
+      sharePage(' style="grid-template-columns: minmax(0, 1fr) 12rem"'),
+      (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
+        && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.PANES && c.faults.some((f) => shareDetail.test(f.detail))))],
     ['browser: a bars row a page script removes is chart-geometry', undefined,
       scriptedBars("const rows = document.querySelectorAll('[data-base-chart] tbody tr'); rows[rows.length - 1].remove()"),
       geometryAlone(/^Jobs per queue\.: row 3 col 1 is not in the page's table$/)],

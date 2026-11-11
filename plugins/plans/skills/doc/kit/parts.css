@@ -89,11 +89,11 @@ table[data-base-chart=bars]:has(.plans-track){
   & :is(th,td){padding:0;border:0}
   &>:is(caption,thead){display:block}
   &>thead>tr{display:flex;flex-wrap:wrap;gap:0 1rem;padding-bottom:.3rem;border-bottom:1px solid var(--plans-ink);font-size:.8125rem}
-  &>tbody{display:grid;grid-template-columns:minmax(0,1fr) max-content;column-gap:.75rem}
+  &>tbody{display:grid;grid-template-columns:minmax(0,1fr) 4.5rem;column-gap:.75rem}
   & tbody tr{display:grid;grid-column:1/-1;grid-template-columns:subgrid;padding:.4rem 0;border-bottom:1px solid var(--plans-hair)}
   & tbody th{grid-column:1/-1;font-weight:400}
   & td{display:grid;grid-column:1/-1;grid-template-columns:subgrid;align-items:center;padding-top:.2rem}
-  & data{grid-area:1/2;font-size:.875rem;white-space:nowrap}
+  & data{grid-area:1/2;font-size:.875rem}
   & .plans-track{position:relative;grid-area:1/1;height:.625rem}
   &[data-base-stack]{
     &>tbody{display:block}

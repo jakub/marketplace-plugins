@@ -12,14 +12,17 @@
 //     { switches: [{ i, n, ok, keys: [{ name, values, initial }], panes: [i], charts: [i] }],
 //       panes: [{ i, box, when, terms: [[key, value]], within: [i] }], compares: [{ i, ok, pane }],
 //       charts: [{ i, n, kind, caption, unit, stack, min, max, from, to, box, rows: [{ status,
-//                  values }], items: [{ lane, start, end, span }], ok, lo, hi, shared, lanes }],
+//                  values }], items: [{ lane, start, end, span }], ok, lo, hi, shared, group,
+//                  lanes, label }],
 //       errors: [detail] }
 //     i is the document-order index among [data-base-switch], [data-base-when], figure.pb-compare
 //     or [data-base-chart], outside <template> and <noscript>, and n is i + 1, as the kit numbers
 //     its log lines. A live element is the one at the same index in the page. box is the index of
 //     the switch that holds the pane or chart, or null; within lists the panes of the same switch
 //     that hold the pane. min and max are the stated bounds, lo and hi the scale the chart draws on
-//     after its share group (ruling 3), from and to the timeline's domain, times UTC ms. ok is
+//     after its share group (ruling 3), shared the size of that group and group its index among
+//     the page's groups, null for a chart in none, from and to the timeline's domain, times UTC
+//     ms. label names the chart in the oracle's rows and faults, as its header says. ok is
 //     false for a part with a markup error, whose detail is in errors as `<part>: <what>`, the part
 //     being switch, compare, bars, timeline or markup. The model is this file's own reading of the
 //     markup, built from parts.md and the rulings, and never from what the kit wrote.
@@ -61,6 +64,11 @@
 // step that first showed a fault says so. A failed step, a click that missed or a wrong pane, ends
 // that part: the walk closes any dialog, tries to put the switch back at its defaults, leaves the
 // switch out of later pane assertions and the final step, and goes on to the next part.
+//   A shared scale only holds if one value draws at one length in every pane, so each step, after
+// its probes, also reads the box and track widths of every valid chart with a box in a share group
+// of two or more. At the end of the walk, two charts of one group whose boxes had the same width, within
+// 0.5 CSS px, must have had tracks within 1 CSS px of each other, or the later one in document
+// order is chart-geometry `<chart>: track <a> px, and <other chart> in its share group has <b> px`.
 //
 // The oracle. For each valid chart with a box, from the model's rows and items, never the live
 // ones: bars are matched by row and column, one drawn .plans-bar with a box per value cell,
@@ -202,7 +210,7 @@ export function model(source) {
     const caption = el.localName === 'table' && el.caption ? text(el.caption) : fig ? text([...fig.children].find((c) => c.localName === 'figcaption')) : ''
     const boxEl = el.closest('[data-base-switch]')
     const c = { i, n, kind, caption, unit: el.getAttribute('data-base-unit') || null, stack: el.hasAttribute('data-base-stack'), min: null, max: null,
-      from: null, to: null, box: boxEl ? boxes.indexOf(boxEl) : null, rows: [], items: [], ok: true, lo: null, hi: null, shared: 1, lanes: [] }
+      from: null, to: null, box: boxEl ? boxes.indexOf(boxEl) : null, rows: [], items: [], ok: true, lo: null, hi: null, shared: 1, group: null, lanes: [] }
     const bad = (what) => { if (c.ok) { c.ok = false; err(`${kind === 'timeline' ? 'timeline' : 'bars'}: chart ${n} ${what}`) } }
     if (asked(el) || (el.parentElement && el.parentElement.closest('[data-base-chart]')) || el.querySelector('[data-base-chart]')) bad('holds a question, sits in one, or nests in a chart')
     else if (kind === 'bars' && el.localName === 'table') {
@@ -238,6 +246,8 @@ export function model(source) {
     if (c.box !== null) switches[c.box].charts.push(i)
     return c
   })
+  const captions = charts.map((c) => c.caption)
+  for (const c of charts) c.label = c.caption && captions.indexOf(c.caption) === captions.lastIndexOf(c.caption) ? (c.caption.length > 60 ? c.caption.slice(0, 59) + '…' : c.caption) : `chart ${c.n}`
 
   // Share groups: valid bars charts in one switch with one non-empty unit. The first stated bound
   // in the group is the group's, every other stated one must equal it, and with none stated the
@@ -250,12 +260,13 @@ export function model(source) {
     if (g) g.push(c)
     else groups.push([c])
   }
-  for (const g of groups) {
+  for (const [k, g] of groups.entries()) {
     const s0 = g.find((c) => c.min !== null), s1 = g.find((c) => c.max !== null)
     const lo = s0 ? s0.min : Math.min(...g.map((c) => Math.min(0, ...c.vals)))
     const hi = s1 ? s1.max : Math.max(...g.map((c) => Math.max(0, ...c.vals))) || (lo ? 0 : 1)
     for (const c of g) {
       c.shared = g.length
+      c.group = k
       const bad = (what) => { c.ok = false; err(`bars: chart ${c.n} ${what}`) }
       if ((s0 && c.min !== null && c.min !== lo) || (s1 && c.max !== null && c.max !== hi)) bad('states a bound its share group contradicts')
       else if (!(lo < hi) || c.vals.some((v) => v < lo || v > hi)) bad(`has a ${c.stack ? 'row sum' : 'value'} outside ${lo} to ${hi}`)
@@ -285,11 +296,10 @@ export function chartFaults(source) {
   // Viewport x of the fractions a <= b of a box, mirrored in right-to-left.
   const span = (box, a, b) => (box.rtl ? [box.l + box.w * (1 - b), box.l + box.w * (1 - a)] : [box.l + box.w * a, box.l + box.w * b])
   const hit = (p, q) => Math.min(p.right, q.right) - Math.max(p.left, q.left) > 0.5 && Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top) > 0.5
-  const captions = m.charts.map((c) => c.caption)
   for (const c of m.charts) {
     const el = els[c.i]
     if (!c.ok || !has(el)) continue
-    const label = c.caption && captions.indexOf(c.caption) === captions.lastIndexOf(c.caption) ? (c.caption.length > 60 ? c.caption.slice(0, 59) + '…' : c.caption) : `chart ${c.n}`
+    const label = c.label
     const mine = [], count = { 'chart-geometry': 0, 'chart-overlap': 0 }
     const add = (kind, what) => { if (count[kind]++ < 4) mine.push({ kind, detail: `${label}: ${what}` }) }
     const geo = (what) => add('chart-geometry', what)
@@ -493,10 +503,45 @@ function hasPane(i) {
   return !!p && p.getClientRects().length > 0
 }
 
+// Each valid chart in a share group of two or more that has a box: its index, and its box's and
+// its first drawn track's widths in CSS px, read from computed style.
+function tracks(source) {
+  const pc = globalThis.plansCheck
+  const m = pc.parts || (pc.parts = pc.model(source))
+  const has = (el) => !!el && el.getClientRects().length > 0
+  const els = document.querySelectorAll('[data-base-chart]')
+  const out = []
+  for (const c of m.charts) {
+    const el = els[c.i]
+    const track = c.ok && c.shared > 1 && has(el) ? [...el.querySelectorAll('.plans-track')].find(has) : null
+    if (track) out.push({ i: c.i, box: parseFloat(getComputedStyle(el).width), track: parseFloat(getComputedStyle(track).width) })
+  }
+  return out
+}
+
 /* ---------------------------------------------------------------- Node */
 
 const KEY = '[data-base-key] button'
 const SIDE = '.plans-compare-switch button'
+
+// The widths tracks() read at each step, as a Map of chart index to [{ box, track }]. A chart is
+// held to each earlier chart of its share group, in document order, at the same box width within
+// 0.5 px, and its first track more than 1 px off is its one fault.
+function trackFaults(m, widths) {
+  const faults = []
+  for (const c of m.charts) {
+    let off = null
+    for (const o of m.charts) {
+      if (off || o.i >= c.i || o.group === null || o.group !== c.group) continue
+      for (const a of widths.get(c.i) ?? []) {
+        const b = (widths.get(o.i) ?? []).find((b) => Math.abs(a.box - b.box) <= 0.5 && Math.abs(a.track - b.track) > 1)
+        if (b) { off = { o, a, b }; break }
+      }
+    }
+    if (off) faults.push({ kind: 'chart-geometry', detail: `${c.label}: track ${off.a.track.toFixed(1)} px, and ${off.o.label} in its share group has ${off.b.track.toFixed(1)} px` })
+  }
+  return faults
+}
 
 export async function panes(drive) {
   const faults = [], steps = []
@@ -518,6 +563,7 @@ export async function panes(drive) {
   const cur = new Map(walkable.map((s) => [s.i, s.keys.map((k) => k.initial)]))
   const broken = new Set()
   const seen = new Set()
+  const shared = m.charts.some((c) => c.ok && c.shared > 1), widths = new Map()
   let prev = await drive.call(look)
   const rowName = (s, vals) => `panes: switch ${s.n} ${s.keys.map((k, j) => `${k.name}=${vals[j]}`).join(' ')}`
   const press = async (s, j, value) => {
@@ -556,6 +602,7 @@ export async function panes(drive) {
       await drive.settle()
     }
     await run()
+    if (shared) for (const t of await drive.call(tracks, drive.source)) widths.set(t.i, [...(widths.get(t.i) ?? []), t])
     prev = now
     return fresh.length ? `new in this step: ${fresh.slice(0, 3).map((f) => `${f.kind} (${clip(f.detail, 100)})`).join('; ')}` : ''
   }
@@ -677,6 +724,7 @@ export async function panes(drive) {
       steps.push({ name, result: wrong.length ? 'fail' : 'pass', detail: wrong.length ? `the final step: ${wrong.join('; ')}` : found })
     }
   }
+  faults.push(...trackFaults(m, widths))
   return { faults, steps }
 }
 
