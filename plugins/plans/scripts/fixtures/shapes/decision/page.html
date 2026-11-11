@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The build cache fills its disk in eleven weeks</title>
+<!-- plans:kit -->
+<style>
+  .sketch { display: block; width: 100%; max-width: 30rem; height: auto; color: var(--plans-ink); }
+  .sketch .box { fill: none; stroke: currentColor; stroke-width: 1.5; }
+  .sketch .soft { fill: var(--plans-panel); stroke: var(--plans-rule); }
+  .sketch .chg { fill: var(--plans-accent-surface); stroke: var(--plans-accent); stroke-width: 1.5; }
+  .sketch .ln { fill: none; stroke: currentColor; stroke-width: 1.5; }
+  .sketch .dash { stroke-dasharray: 5 4; }
+  .sketch .head { fill: currentColor; }
+  .sketch text { font-family: var(--plans-sans); font-size: 15px; fill: currentColor; }
+  .sketch .sub { fill: var(--plans-ink-2); font-size: 13px; }
+  .sketch .strong { font-weight: 700; }
+</style>
+</head>
+<body data-base-shell>
+<header class="pb-mast">
+  <h1>The build cache fills its disk in eleven weeks</h1>
+  <p class="pb-lede">The cache holds 412 of 500 GB and gains 8 GB a week. Its hit rate fell from 82% to 61% on 14 October. Five decisions fix both, with no new hardware.</p>
+  <dl class="title-block">
+    <div><dt>Kind</dt><dd>Review</dd></div>
+    <div><dt>Date</dt><dd class="num">2026-11-11</dd></div>
+    <div><dt>Scope</dt><dd><code>ci/cache</code></dd></div>
+    <div><dt>Data</dt><dd>Synthetic</dd></div>
+  </dl>
+</header>
+<div class="pb-brief">
+  <ul class="pb-tiles">
+    <li><b class="num">11 wk</b> <span>until the disk is full</span></li>
+    <li><b class="num">61%</b> <span>hit rate, from 82%</span></li>
+    <li><b class="num">46%</b> <span>of the disk never evicted</span></li>
+    <li><b class="num">3</b> <span>truncated entries in 30 days</span></li>
+  </ul>
+  <nav data-base-contents aria-label="Sections"></nav>
+</div>
+<main>
+
+<section id="hit-rate" data-base-status="supported">
+  <h2>Hit rate</h2>
+  <div class="pb-row">
+    <div class="pb-span-4">
+      <p>The hit rate fell from 82% to 61% in the week the cache key changed. Every project dropped, and the projects with the most commits dropped most.</p>
+      <p>On 14 October the key gained a hash of the whole source tree. Since then every commit misses, a one-line typo fix included, and the build downloads all its dependencies again.</p>
+    </div>
+    <figure class="pb-span-8">
+      <table data-base-chart="bars" data-base-unit="%" data-base-max="100">
+        <thead><tr><th>Project</th><th>Before 14 Oct</th><th>After</th></tr></thead>
+        <tbody>
+          <tr><th>app</th><td><data value="84">84%</data></td><td><data value="58">58%</data></td></tr>
+          <tr><th>api</th><td><data value="81">81%</data></td><td><data value="63">63%</data></td></tr>
+          <tr><th>web</th><td><data value="86">86%</data></td><td><data value="60">60%</data></td></tr>
+          <tr><th>tools</th><td><data value="80">80%</data></td><td><data value="52">52%</data></td></tr>
+          <tr><th>docs</th><td><data value="77">77%</data></td><td><data value="71">71%</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Cache hits as a share of lookups, per project, in the four weeks either side of 14 October.</figcaption>
+    </figure>
+  </div>
+  <div class="pb-row">
+    <figure class="pb-code pb-span-6">
+      <figcaption><code>ci/cache/key.sh</code> lines 3-7 at <code>4e1a9c0</code>, the change of 14 October</figcaption>
+      <pre><code><span class="pb-dim">cache_key() {</span>
+<span class="pb-dim">  local image="$1" lock="$2"</span>
+<span class="pb-del">  hash "$image" "$lock"</span>
+<span class="pb-add">  hash "$image" "$lock" "$(tree_hash)"</span>
+<span class="pb-dim">}</span></code></pre>
+    </figure>
+    <fieldset data-ask="cache-key" class="pb-span-6">
+      <legend>What goes into the cache key?</legend>
+      <p>The tree hash makes every commit miss. Without it the hit rate comes back. But a change to a vendored file then reuses an old cache until the lockfile changes.</p>
+      <label><input type="radio" name="cache-key" value="image-lock" checked> The image and the lockfile
+        <span data-hint>As before 14 October. About 80% hits.</span></label>
+      <label><input type="radio" name="cache-key" value="image-lock-vendor"> The image, the lockfile and the vendor directory
+        <span data-hint>Catches vendored changes. Hashes 9,000 files on each build.</span></label>
+      <label><input type="radio" name="cache-key" value="tree"> The image, the lockfile and the tree hash, as now
+        <span data-then>Then the hit rate stays near 61%, and the disk fills a week sooner.</span></label>
+    </fieldset>
+  </div>
+</section>
+
+<section id="disk" data-base-status="supported">
+  <h2>Disk growth</h2>
+  <div class="pb-row">
+    <div class="pb-span-5">
+      <p>The disk gains about 8 GB a week. At that rate it is full in the week of 25 January, and a full disk fails every build, cached or not.</p>
+      <p>Growth rose by a third in the week of the key change, because every miss uploads a new entry. Entries live 30 days, but half of them never expire. <a href="#eviction">Eviction</a> says why.</p>
+      <aside class="pb-callout" data-base-kind="decided"><b>Decided.</b> The cache stays on its local 500 GB disk. A larger disk and object storage were ruled out on 30 October: object storage adds about 40 ms to each of the 1,800 lookups a build makes.</aside>
+    </div>
+    <figure class="pb-span-7">
+      <table data-base-chart="bars" data-base-unit="GB">
+        <thead><tr><th>Week of</th><th>Added</th></tr></thead>
+        <tbody>
+          <tr><th>15 Sep</th><td><data value="5.9">5.9 GB</data></td></tr>
+          <tr><th>22 Sep</th><td><data value="6.2">6.2 GB</data></td></tr>
+          <tr><th>29 Sep</th><td><data value="6.0">6.0 GB</data></td></tr>
+          <tr><th>6 Oct</th><td><data value="6.4">6.4 GB</data></td></tr>
+          <tr data-base-status="changed"><th>13 Oct, key change</th><td><data value="8.1">8.1 GB</data></td></tr>
+          <tr><th>20 Oct</th><td><data value="8.6">8.6 GB</data></td></tr>
+          <tr><th>27 Oct</th><td><data value="8.3">8.3 GB</data></td></tr>
+          <tr><th>3 Nov</th><td><data value="8.4">8.4 GB</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Data added to the cache each week, net of what the evictor removed.</figcaption>
+    </figure>
+  </div>
+  <div class="pb-row">
+    <figure class="pb-span-5">
+      <table data-base-chart="bars" data-base-unit="GB" data-base-max="500">
+        <thead><tr><th>Choice</th><th>Used on 27 Jan</th></tr></thead>
+        <tbody>
+          <tr><th>14 days</th><td><data value="318">318 GB</data></td></tr>
+          <tr><th>400 GB cap</th><td><data value="400">400 GB</data></td></tr>
+          <tr data-base-status="changed"><th>30 days, as now</th><td><data value="500">full</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Projected from the last four weeks, with eviction fixed. The scale ends at the disk's 500 GB.</figcaption>
+    </figure>
+    <fieldset data-ask="lifetime" class="pb-span-7">
+      <legend>How long does an entry live?</legend>
+      <p>Thirty days keeps old branches warm, but the disk fills in eleven weeks. Fourteen days frees about 180 GB on the first night. A size cap never lets the disk fill, but in a busy week it can evict entries from the same week.</p>
+      <label><input type="radio" name="lifetime" value="14d" checked> 14 days
+        <span data-hint>Frees about 180 GB on the first night.</span></label>
+      <label><input type="radio" name="lifetime" value="cap-400"> A 400 GB cap, oldest first
+        <span data-then>Then a branch idle for a week can lose its cache.</span></label>
+      <label><input type="radio" name="lifetime" value="30d"> 30 days, as now
+        <span data-then>Then the disk is full in the week of 25 January.</span></label>
+    </fieldset>
+  </div>
+</section>
+
+<section id="eviction" data-base-status="partial">
+  <h2>Eviction</h2>
+  <div class="pb-row">
+    <div class="pb-span-5">
+      <p>The evictor runs on build-a and walks build-a's index. Entries that build-b writes never appear in that index, so they never expire. They hold 46% of the disk.</p>
+      <p>The evictor ran every night in October. It did its job on half the data. The 46% is counted from the index files. Whether build-b ever had an evictor of its own is unknown.</p>
+    </div>
+    <figure class="pb-figure pb-span-7">
+      <svg class="sketch" viewBox="0 0 400 230" role="img" aria-label="build-a and build-b both write to the cache disk. The evictor on build-a reaches only the entries build-a wrote.">
+        <rect class="box" x="6" y="24" width="126" height="78"/>
+        <text class="strong" x="18" y="48">build-a</text>
+        <rect class="soft" x="18" y="62" width="102" height="28"/>
+        <text x="30" y="81">evictor</text>
+        <rect class="box" x="6" y="140" width="126" height="64"/>
+        <text class="strong" x="18" y="164">build-b</text>
+        <text class="sub" x="18" y="188">no evictor</text>
+        <rect class="box" x="210" y="8" width="184" height="214"/>
+        <text class="strong" x="222" y="32">cache-1 disk</text>
+        <rect class="soft" x="222" y="48" width="160" height="70"/>
+        <text x="234" y="74">from build-a</text>
+        <text class="sub" x="234" y="96">54%, evicted</text>
+        <rect class="chg" x="222" y="132" width="160" height="78"/>
+        <text x="234" y="158">from build-b</text>
+        <text class="sub" x="234" y="180">46%, never evicted</text>
+        <path class="ln" d="M132 48 H212"/>
+        <path class="head" d="M222 48 l-10 -5 v10 z"/>
+        <path class="ln dash" d="M120 76 C170 76 180 96 212 96"/>
+        <path class="head" d="M222 96 l-10 -5 v10 z"/>
+        <text class="sub" x="140" y="118">evicts</text>
+        <path class="ln" d="M132 172 H212"/>
+        <path class="head" d="M222 172 l-10 -5 v10 z"/>
+      </svg>
+      <figcaption>Today: two writers and one evictor. The evictor reads one index, so build-b's entries sit outside it.</figcaption>
+    </figure>
+  </div>
+  <fieldset data-ask="evictor">
+    <legend>Where does eviction run?</legend>
+    <p>On the cache host, one evictor sees every entry. The cache host then needs the evictor's key to the disk. On each runner, nothing new is shared, but two evictors must keep one age rule.</p>
+    <label><input type="radio" name="evictor" value="cache-host" checked> On the cache host, over the whole disk
+      <span data-hint>One job and one rule.</span></label>
+    <label><input type="radio" name="evictor" value="each-runner"> On each runner, over its own index
+      <span data-then>Then build-b gets a copy of the evictor and its timer.</span></label>
+  </fieldset>
+</section>
+
+<section id="races" data-base-status="unknown">
+  <h2>Write races</h2>
+  <div class="pb-row">
+    <div class="pb-span-6">
+      <p>Three times in 30 days, both runners built one commit at once and uploaded the same key. The second upload stopped short, and the next build that read the key got a truncated archive and failed.</p>
+      <p>Nobody has made the race happen on purpose. The cause is a reading of the log, not a test.</p>
+    </div>
+    <figure class="pb-code pb-span-6">
+      <figcaption><code>access.log</code> on cache-1, 2 November: every line for key <code>7f3a91</code></figcaption>
+      <pre><code><span class="pb-dim">03:14:07 build-a put  1.21 GB</span>
+<span class="pb-dim">03:14:09 build-b put  1.21 GB</span>
+<span class="pb-dim">03:14:51 build-a done 1.21 GB</span>
+<span class="pb-hl">03:15:02 build-b done 0.44 GB</span>
+<span class="pb-hl">03:31:40 build-a get  short read</span></code></pre>
+    </figure>
+  </div>
+  <aside class="pb-callout" data-base-kind="warning"><b>Risk.</b> A truncated entry fails every build that reads it until it expires, up to 30 days later. A person found all three by hand.</aside>
+  <fieldset data-ask="race">
+    <legend>How do uploads avoid the race?</legend>
+    <p>A temporary name and a rename cost one more call per upload, and the last complete upload wins. A lock per key stops the second upload. But a runner that crashes keeps its lock until the lock times out.</p>
+    <label><input type="radio" name="race" value="rename" checked> Upload to a temporary name, then rename
+      <span data-hint>A rename on the cache disk is atomic.</span></label>
+    <label><input type="radio" name="race" value="lock"> A lock per key
+      <span data-then>Then a crashed runner blocks its key for 10 minutes.</span></label>
+    <label><input type="radio" name="race" value="wait"> No change until someone reproduces it
+      <span data-then>Then a failed build finds the next truncated entry, as it found the last three.</span></label>
+  </fieldset>
+</section>
+
+<section id="alerts" data-base-status="proposed">
+  <h2>Alerts</h2>
+  <p>Nothing alerts before the disk is full, and nothing alerts when the hit rate falls. Both problems on this page were found by a person reading a build log.</p>
+  <div class="pb-row">
+    <div class="pb-table pb-span-5">
+      <table>
+        <caption>Alerts on the cache today</caption>
+        <thead><tr><th>Alert</th><th>Fires when</th></tr></thead>
+        <tbody>
+          <tr><td>Build failed</td><td>any build fails</td></tr>
+          <tr><td>Runner offline</td><td>no heartbeat for 10 min</td></tr>
+          <tr><td>Disk used</td><td>never</td></tr>
+          <tr><td>Hit rate</td><td>never</td></tr>
+          <tr><td>Evictor ran</td><td>never</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <fieldset data-ask="alerts" class="pb-span-7">
+      <legend>Which alerts go in?</legend>
+      <p>Each alert pages the person on call. A disk alert at 90% gives about six weeks of warning at today's growth. A hit-rate alert also fires in a quiet holiday week.</p>
+      <label><input type="checkbox" name="alerts" value="disk-90" checked> Disk at 90%
+        <span data-hint>450 GB, about six weeks before full.</span></label>
+      <label><input type="checkbox" name="alerts" value="hit-rate-50" checked> Hit rate under 50% for a day
+        <span data-hint>Would have fired on 15 October.</span></label>
+      <label><input type="checkbox" name="alerts" value="evictor-missed"> The evictor missed a night
+        <span data-then>Then the evictor sends a heartbeat, one line in its timer.</span></label>
+    </fieldset>
+  </div>
+</section>
+
+<section id="not-changing" data-base-status="unchanged">
+  <h2>Not changing</h2>
+  <ul>
+    <li>Two runners, build-a and build-b, and their build images.</li>
+    <li>The cache's path on each runner, <code>/var/cache/ci</code>, and the CI config that names it.</li>
+    <li>Build artifacts. They live in their own store and never in the cache.</li>
+    <li>The 500 GB disk, as decided under <a href="#disk">Disk growth</a>.</li>
+  </ul>
+</section>
+
+<div>
+  <h2>Your answers</h2>
+  <p>Each decision with its current pick. Change a pick beside its finding, then copy the response below.</p>
+  <nav data-ask-summary aria-label="Decisions on this page"></nav>
+</div>
+<section data-respond></section>
+</main>
+</body>
+</html>

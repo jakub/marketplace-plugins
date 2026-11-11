@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan pages follow the reader's dark setting</title>
+<!-- plans:kit -->
+<style>
+  /* Each capture is a whole page. The frames show its first screen, and zoom opens the whole page. */
+  .first-screen { aspect-ratio: 390 / 844; object-fit: cover; object-position: top; }
+  .wide-screen { aspect-ratio: 1425 / 900; object-fit: cover; object-position: top; }
+  .marked { padding-left: 0; list-style: none; }
+  .marked > li { margin: 0 0 .6rem; }
+  .marked .pb-chip { margin-right: .35rem; }
+  /* A phone capture in a compare side stays phone-sized on a wide screen. */
+  .pb-side > img { max-width: min(100%, 20rem); }
+  tr.changed > td:first-child { border-left: 3px solid var(--plans-accent); padding-left: .6rem; }
+</style>
+</head>
+<body data-base-shell>
+<header class="pb-mast">
+  <h1>Plan pages follow the reader's dark setting</h1>
+  <p class="pb-lede">A reader whose system is set to dark now gets the dark page, on a phone and on a wide screen. Nothing moves: each page is as tall in dark as in light.</p>
+  <dl class="title-block">
+    <div><dt>Branch</dt><dd><code>feat/dark-scheme</code></dd></div>
+    <div><dt>Head</dt><dd><code>9c41e07</code></dd></div>
+    <div><dt>Date</dt><dd class="num">2026-11-11</dd></div>
+    <div><dt>Data</dt><dd>Synthetic</dd></div>
+  </dl>
+</header>
+<div class="pb-brief">
+  <ul class="pb-tiles">
+    <li><b class="num">0 px</b> <span>height change in either scheme</span></li>
+    <li><b class="num">15.7:1</b> <span>body text contrast in dark</span></li>
+    <li><b class="num">4</b> <span>known gaps</span></li>
+  </ul>
+  <nav data-base-contents aria-label="Sections"></nav>
+</div>
+<main>
+
+<section id="changes" data-base-status="changed">
+  <h2>What changed</h2>
+  <ol class="pb-steps">
+    <li><b>The page declares both schemes.</b> <code>color-scheme: light dark</code> replaces <code>light</code>, so the browser's own controls and scrollbars follow the reader too.</li>
+    <li><b>Colours come from tokens.</b> Eleven hex values in the page styles became tokens, and the kit sets each token for both schemes.</li>
+    <li><b>Screenshots keep their colours.</b> An image inside the page looks the same in both schemes. Known gaps has the one place where that reads badly.</li>
+  </ol>
+</section>
+
+<section id="desktop" data-base-status="supported">
+  <h2>Desktop</h2>
+  <p>At 1440×900 the page keeps its outer column for notes in both schemes, and the column rule stays visible on the dark ground. Switch the scheme to compare, and open a capture to see the whole page.</p>
+  <div class="pb-row">
+    <div data-base-switch class="pb-span-12">
+      <p data-base-key="scheme"><span>Scheme</span>
+        <button type="button" value="light" disabled>Light</button>
+        <button type="button" value="dark" aria-pressed="true" disabled>Dark</button>
+      </p>
+      <div data-base-when="scheme=light">
+        <figure class="pb-figure" data-base-frame="browser" data-base-zoom>
+          <span class="pb-address">plans.example.test/prune</span>
+          <img class="wide-screen" src="wide-light.png" data-base-dpr="1" alt="The plan page at 1440 px in the light scheme">
+          <figcaption>1440×900, light, at <code>9c41e07</code>. The whole page is 5,105 px tall.</figcaption>
+        </figure>
+      </div>
+      <div data-base-when="scheme=dark">
+        <figure class="pb-figure" data-base-frame="browser" data-base-zoom>
+          <span class="pb-address">plans.example.test/prune</span>
+          <img class="wide-screen" src="wide-dark.png" data-base-dpr="1" alt="The same plan page at 1440 px in the dark scheme">
+          <figcaption>1440×900, dark, at <code>9c41e07</code>. Also 5,105 px tall, so the dark scheme moves nothing.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="phone" data-base-status="supported">
+  <h2>Phone</h2>
+  <p>At 390×844 the first screen holds the title, the lede, the title block and the three questions in both schemes. The captures are at pixel ratio 2. Zoom opens each at its actual size, 390 px wide, so the text reads as it does on a phone.</p>
+  <div class="pb-row">
+    <figure class="pb-figure pb-span-6" data-base-frame="phone" data-base-zoom>
+      <img class="first-screen" src="phone-light.png" width="390" data-base-dpr="2" alt="The plan page on a phone in the light scheme">
+      <figcaption>390×844, light, at <code>9c41e07</code>.</figcaption>
+    </figure>
+    <figure class="pb-figure pb-span-6" data-base-frame="phone" data-base-zoom>
+      <img class="first-screen" src="phone-dark.png" width="390" data-base-dpr="2" alt="The plan page on a phone in the dark scheme">
+      <figcaption>390×844, dark, at <code>9c41e07</code>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="compare" data-base-status="changed">
+  <h2>Before and after</h2>
+  <div class="pb-row">
+    <div class="pb-span-4">
+      <p>The change a reader sees, on a phone with the system set to dark. Before, the page ignored the setting and stayed white. After, it follows it.</p>
+      <p>Nothing else on the screen moves. Every line breaks at the same word in both captures.</p>
+    </div>
+    <figure class="pb-compare pb-span-8">
+      <div class="pb-side" data-base-side="before">
+        <h3>Before</h3>
+        <img class="first-screen" src="phone-light.png" width="390" alt="The plan page in light colours, on a phone set to dark">
+      </div>
+      <div class="pb-side" data-base-side="after">
+        <h3>After</h3>
+        <img class="first-screen" src="phone-dark.png" width="390" alt="The plan page in dark colours, on a phone set to dark">
+      </div>
+      <figcaption>390×844 at pixel ratio 2, system set to dark, before and after <code>9c41e07</code>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="measurements" data-base-status="supported">
+  <h2>Measurements</h2>
+  <div class="pb-row">
+    <div class="pb-span-5">
+      <p>Heights come from the four captures. Contrast is the WCAG ratio of each text colour on its ground, from the token values.</p>
+      <p>Body text loses a little contrast in dark and stays far above the 4.5:1 floor. Secondary and accent text gain.</p>
+    </div>
+    <div class="pb-table pb-span-7">
+      <table>
+        <caption>Before and after, per measure</caption>
+        <thead><tr><th>Measure</th><th class="num">Before</th><th class="num">After</th></tr></thead>
+        <tbody>
+          <tr><td>Height, 390 light</td><td class="num">6,163 px</td><td class="num">6,163 px</td></tr>
+          <tr><td>Height, 390 dark</td><td class="num">6,163 px</td><td class="num">6,163 px</td></tr>
+          <tr><td>Height, 1440 dark</td><td class="num">5,105 px</td><td class="num">5,105 px</td></tr>
+          <tr class="changed"><td>Ground, dark <span class="pb-chip" data-base-status="changed">changed</span></td><td class="num"><code>#fff</code></td><td class="num"><code>#0f1113</code></td></tr>
+          <tr><td>Body text, dark</td><td class="num">18.5:1</td><td class="num">15.7:1</td></tr>
+          <tr><td>Secondary text, dark</td><td class="num">9.7:1</td><td class="num">11.0:1</td></tr>
+          <tr><td>Accent text, dark</td><td class="num">5.8:1</td><td class="num">8.1:1</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="code" data-base-status="changed">
+  <h2>Code</h2>
+  <div class="pb-row">
+    <div class="pb-span-5">
+      <p>The page styles had their own colours. Each one now reads a token, and the tokens carry both schemes, so the page needs no colour query of its own.</p>
+      <p>The diff is three files and 41 lines. This excerpt is the part that decides the colours, and <code>color-scheme</code> is the line that lets the browser follow the reader.</p>
+    </div>
+    <figure class="pb-code pb-span-7">
+      <figcaption><code>pages/page.css</code> lines 1-10 at <code>9c41e07</code></figcaption>
+      <pre><code><span class="pb-dim">:root {</span>
+<span class="pb-del">  color-scheme: light;</span>
+<span class="pb-add">  color-scheme: light dark;</span>
+<span class="pb-dim">}</span>
+<span class="pb-dim">.title-block {</span>
+<span class="pb-del">  background: #fff;</span>
+<span class="pb-add">  background: var(--plans-panel);</span>
+<span class="pb-del">  border-color: #ccc;</span>
+<span class="pb-add">  border-color: var(--plans-rule);</span>
+<span class="pb-dim">}</span></code></pre>
+    </figure>
+  </div>
+</section>
+
+<section id="gaps" data-base-status="unknown">
+  <h2>Known gaps</h2>
+  <ul class="marked">
+    <li><span class="pb-chip" data-base-status="partial">partial</span> Screenshots inside a page stay light, so a light capture on a dark page glares. The page can't recolour an image, and the author can add a dark capture beside it.</li>
+    <li><span class="pb-chip" data-base-status="unknown">unknown</span> How the page prints. Browsers print in light by default, but nobody has printed this page.</li>
+    <li><span class="pb-chip" data-base-status="unknown">unknown</span> Forced colours, such as Windows high contrast. Nobody has looked at the page in that mode.</li>
+    <li><span class="pb-chip" data-base-status="unknown">unknown</span> Browsers other than Chromium. Every capture on this page is from Chromium.</li>
+  </ul>
+</section>
+</main>
+</body>
+</html>

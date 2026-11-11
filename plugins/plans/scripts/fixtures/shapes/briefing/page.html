@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where the office bandwidth goes</title>
+<!-- plans:kit -->
+<style>
+  .marked { padding-left: 0; list-style: none; }
+  .marked > li { margin: 0 0 .6rem; }
+  .marked .pb-chip { margin-right: .35rem; }
+  .by-month :is(th, td) { white-space: nowrap; }
+</style>
+</head>
+<body data-base-shell>
+<header class="pb-mast">
+  <h1>Where the office bandwidth goes</h1>
+  <p class="pb-lede">The office moved 14.2 TB from July to September. Backups sent 46% of it, all at night. The busiest daytime hour used 58% of the line, so the line can stay as it is.</p>
+  <dl class="title-block">
+    <div><dt>Kind</dt><dd>Briefing</dd></div>
+    <div><dt>Period</dt><dd class="num">Jul to Sep 2026</dd></div>
+    <div><dt>Line</dt><dd class="num">500 Mbit/s</dd></div>
+    <div><dt>Data</dt><dd>Synthetic</dd></div>
+  </dl>
+</header>
+<div class="pb-brief">
+  <ul class="pb-tiles">
+    <li><b class="num">14.2 TB</b> <span>moved in the quarter</span></li>
+    <li><b class="num">46%</b> <span>of it backups</span></li>
+    <li><b class="num">58%</b> <span>of the line at the busiest hour</span></li>
+    <li><b class="num">94%</b> <span>of the upload, backups at night</span></li>
+    <li><b class="num">9 days</b> <span>with no router data</span></li>
+    <li><b class="num">4</b> <span>counter resets on switch 2</span></li>
+  </ul>
+  <nav data-base-contents aria-label="Sections"></nav>
+</div>
+<main>
+
+<section id="todo" data-base-status="proposed">
+  <h2>What to do</h2>
+  <ol class="pb-steps">
+    <li><b>Keep the 500 Mbit/s line.</b> The busiest daytime hour used 290 Mbit/s down, 58% of the line.<sup class="pb-fn"><a href="#n1">1</a></sup> A faster line buys room that nobody uses yet.</li>
+    <li><b>Keep backups at night.</b> They fill 94% of the upload between 01:00 and 05:00, and nothing else runs then. In the day they would take most of the upload that video calls need.</li>
+    <li><b>Cap the update cache at 200 GB.</b> Updates pulled 1,900 GB, and 640 GB of that was packages fetched a second time after the cache dropped them.<sup class="pb-fn"><a href="#n2">2</a></sup></li>
+    <li><b>Replace switch 2 before you trust its per-port numbers.</b> It reset its counters four times this quarter. The totals on this page come from the router, so they don't depend on it.</li>
+  </ol>
+</section>
+
+<section id="by-use" data-base-status="supported">
+  <h2>By use</h2>
+  <div class="pb-row">
+    <div class="pb-span-4">
+      <p>Backups move the most data, and almost all of it goes up, at night. Video calls set the daytime peak. A third of the updates' 1,900 GB is waste.</p>
+      <p>Pick a month and a measure. The three volume charts share one scale, and so do the three peak charts, so a longer bar means more traffic in any month.</p>
+      <aside class="pb-callout" data-base-kind="note"><b>Note.</b> Down is traffic into the office. Up is traffic out of it.</aside>
+    </div>
+    <div data-base-switch class="pb-span-8">
+      <p data-base-key="month"><span>Month</span>
+        <button type="button" value="jul" disabled>Jul</button>
+        <button type="button" value="aug" disabled>Aug</button>
+        <button type="button" value="sep" aria-pressed="true" disabled>Sep</button>
+      </p>
+      <p data-base-key="measure"><span>Measure</span>
+        <button type="button" value="volume" aria-pressed="true" disabled>Volume</button>
+        <button type="button" value="peak" disabled>Peak hour</button>
+      </p>
+      <div data-base-when="month=jul measure=volume">
+        <figure>
+          <table data-base-chart="bars" data-base-unit="GB">
+            <thead><tr><th>Use</th><th>Down</th><th>Up</th></tr></thead>
+            <tbody>
+              <tr><th>Backups</th><td><data value="60">60</data></td><td><data value="2050">2,050</data></td></tr>
+              <tr><th>Video calls</th><td><data value="450">450</data></td><td><data value="310">310</data></td></tr>
+              <tr><th>Updates</th><td><data value="600">600</data></td><td><data value="10">10</data></td></tr>
+              <tr><th>Web</th><td><data value="700">700</data></td><td><data value="60">60</data></td></tr>
+              <tr><th>Other</th><td><data value="300">300</data></td><td><data value="50">50</data></td></tr>
+            </tbody>
+          </table>
+          <figcaption>July, GB per use. 4,590 GB in all.</figcaption>
+        </figure>
+      </div>
+      <div data-base-when="month=jul measure=peak">
+        <figure>
+          <table data-base-chart="bars" data-base-unit="Mbit/s">
+            <thead><tr><th>Use</th><th>Down</th><th>Up</th></tr></thead>
+            <tbody>
+              <tr><th>Backups</th><td><data value="8">8</data></td><td><data value="455">455</data></td></tr>
+              <tr><th>Video calls</th><td><data value="120">120</data></td><td><data value="80">80</data></td></tr>
+              <tr><th>Updates</th><td><data value="210">210</data></td><td><data value="2">2</data></td></tr>
+              <tr><th>Web</th><td><data value="70">70</data></td><td><data value="9">9</data></td></tr>
+              <tr><th>Other</th><td><data value="40">40</data></td><td><data value="12">12</data></td></tr>
+            </tbody>
+          </table>
+          <figcaption>July, Mbit/s, each use at its own busiest hour. The uses peak at different hours, so the bars don't add up.</figcaption>
+        </figure>
+      </div>
+      <div data-base-when="month=aug measure=volume">
+        <figure>
+          <table data-base-chart="bars" data-base-unit="GB">
+            <thead><tr><th>Use</th><th>Down</th><th>Up</th></tr></thead>
+            <tbody>
+              <tr><th>Backups</th><td><data value="70">70</data></td><td><data value="2120">2,120</data></td></tr>
+              <tr><th>Video calls</th><td><data value="410">410</data></td><td><data value="280">280</data></td></tr>
+              <tr><th>Updates</th><td><data value="530">530</data></td><td><data value="10">10</data></td></tr>
+              <tr><th>Web</th><td><data value="645">645</data></td><td><data value="55">55</data></td></tr>
+              <tr><th>Other</th><td><data value="280">280</data></td><td><data value="50">50</data></td></tr>
+            </tbody>
+          </table>
+          <figcaption>August, GB per use. 4,450 GB in all, 1,290 GB of it estimated for the router's gap.</figcaption>
+        </figure>
+      </div>
+      <div data-base-when="month=aug measure=peak">
+        <figure>
+          <table data-base-chart="bars" data-base-unit="Mbit/s">
+            <thead><tr><th>Use</th><th>Down</th><th>Up</th></tr></thead>
+            <tbody>
+              <tr><th>Backups</th><td><data value="9">9</data></td><td><data value="462">462</data></td></tr>
+              <tr><th>Video calls</th><td><data value="105">105</data></td><td><data value="70">70</data></td></tr>
+              <tr><th>Updates</th><td><data value="180">180</data></td><td><data value="2">2</data></td></tr>
+              <tr><th>Web</th><td><data value="65">65</data></td><td><data value="8">8</data></td></tr>
+              <tr><th>Other</th><td><data value="38">38</data></td><td><data value="11">11</data></td></tr>
+            </tbody>
+          </table>
+          <figcaption>August, Mbit/s, each use at its own busiest hour, from the 22 days the router recorded.</figcaption>
+        </figure>
+      </div>
+      <div data-base-when="month=sep measure=volume">
+        <figure>
+          <table data-base-chart="bars" data-base-unit="GB">
+            <thead><tr><th>Use</th><th>Down</th><th>Up</th></tr></thead>
+            <tbody>
+              <tr><th>Backups</th><td><data value="80">80</data></td><td><data value="2150">2,150</data></td></tr>
+              <tr><th>Video calls</th><td><data value="570">570</data></td><td><data value="390">390</data></td></tr>
+              <tr><th>Updates</th><td><data value="740">740</data></td><td><data value="10">10</data></td></tr>
+              <tr><th>Web</th><td><data value="755">755</data></td><td><data value="65">65</data></td></tr>
+              <tr><th>Other</th><td><data value="340">340</data></td><td><data value="60">60</data></td></tr>
+            </tbody>
+          </table>
+          <figcaption>September, GB per use. 5,160 GB in all, the busiest month.</figcaption>
+        </figure>
+      </div>
+      <div data-base-when="month=sep measure=peak">
+        <figure>
+          <table data-base-chart="bars" data-base-unit="Mbit/s">
+            <thead><tr><th>Use</th><th>Down</th><th>Up</th></tr></thead>
+            <tbody>
+              <tr><th>Backups</th><td><data value="9">9</data></td><td><data value="470">470</data></td></tr>
+              <tr><th>Video calls</th><td><data value="150">150</data></td><td><data value="95">95</data></td></tr>
+              <tr><th>Updates</th><td><data value="240">240</data></td><td><data value="3">3</data></td></tr>
+              <tr><th>Web</th><td><data value="80">80</data></td><td><data value="10">10</data></td></tr>
+              <tr><th>Other</th><td><data value="45">45</data></td><td><data value="14">14</data></td></tr>
+            </tbody>
+          </table>
+          <figcaption>September, Mbit/s, each use at its own busiest hour. Backups at 470 up is 94% of the line.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="coverage" data-base-status="partial">
+  <h2>Coverage</h2>
+  <div class="pb-row">
+    <div class="pb-span-5">
+      <p>Three sources cover the quarter, and none of them covers all of it. The router's hourly export stopped for nine days in August, until someone restarted it by hand.</p>
+      <p>The firewall log covers that gap, but it counts connections, not bytes. August's 1,290 GB for those days is an estimate from it.<sup class="pb-fn"><a href="#n3">3</a></sup> Its two exports overlap for 17 days, and the second one replaces the first there.</p>
+      <p>Switch 2 polled all quarter and reset its counters four times, each time at night.</p>
+    </div>
+    <figure class="pb-span-7">
+      <ol data-base-chart="timeline" data-base-from="2026-07-01" data-base-to="2026-10-01">
+        <li data-base-lane="Router"><time datetime="2026-07-01">1 Jul</time> until <time datetime="2026-08-13">13 Aug</time>, hourly export</li>
+        <li data-base-lane="Router"><time datetime="2026-08-22">22 Aug</time> until <time datetime="2026-10-01">1 Oct</time>, hourly export, restarted by hand</li>
+        <li data-base-lane="Switch 2"><time datetime="2026-07-19T04:12:00Z">19 Jul, 04:12</time>, counter reset</li>
+        <li data-base-lane="Switch 2"><time datetime="2026-08-03T02:40:00Z">3 Aug, 02:40</time>, counter reset</li>
+        <li data-base-lane="Switch 2"><time datetime="2026-08-30T03:05:00Z">30 Aug, 03:05</time>, counter reset</li>
+        <li data-base-lane="Switch 2"><time datetime="2026-09-14T01:58:00Z">14 Sep, 01:58</time>, counter reset</li>
+        <li data-base-lane="Firewall"><time datetime="2026-07-01">1 Jul</time> until <time datetime="2026-09-01">1 Sep</time>, first export</li>
+        <li data-base-lane="Firewall"><time datetime="2026-08-15">15 Aug</time> until <time datetime="2026-10-01">1 Oct</time>, second export, after a rule change</li>
+      </ol>
+      <figcaption>What each source recorded, 1 July until 1 October. Times are UTC. The firewall's exports overlap, so the second takes its own row.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="by-month" data-base-status="supported">
+  <h2>By month</h2>
+  <p>September moved the most, and its busiest hour, Tuesday 15 September at 10:00, set the quarter's peak. August is the only month with an estimate in it.</p>
+  <div class="pb-row">
+  <div class="pb-table by-month pb-span-12">
+    <table>
+      <caption>Traffic per month</caption>
+      <thead>
+        <tr><th>Month</th><th class="num">Down, GB</th><th class="num">Up, GB</th><th class="num">Total, GB</th><th>Busiest hour, UTC</th><th class="num">Peak down, Mbit/s</th><th>Router days</th><th class="num">Estimated, GB</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>July</td><td class="num">2,110</td><td class="num">2,480</td><td class="num">4,590</td><td>Tue 14 Jul, 10:00</td><td class="num">241</td><td>31 of 31</td><td class="num">0</td></tr>
+        <tr><td>August</td><td class="num">1,935</td><td class="num">2,515</td><td class="num">4,450</td><td>Wed 26 Aug, 11:00</td><td class="num">215</td><td><span class="pb-chip" data-base-status="partial">22 of 31</span></td><td class="num">1,290</td></tr>
+        <tr><td>September</td><td class="num">2,485</td><td class="num">2,675</td><td class="num">5,160</td><td>Tue 15 Sep, 10:00</td><td class="num">290</td><td>30 of 30</td><td class="num">0</td></tr>
+      </tbody>
+      <tfoot>
+        <tr><th>Quarter</th><td class="num">6,530</td><td class="num">7,670</td><td class="num">14,200</td><td>Tue 15 Sep, 10:00</td><td class="num">290</td><td>83 of 92</td><td class="num">1,290</td></tr>
+      </tfoot>
+    </table>
+  </div>
+  </div>
+  <p>Every figure comes from the router export, except August's 1,290 GB, which the firewall log fills in.</p>
+</section>
+
+<section id="unknowns" data-base-status="unknown">
+  <h2>Unknowns</h2>
+  <ul class="marked">
+    <li><span class="pb-chip" data-base-status="unknown">unknown</span> How much of “Other” is the guest Wi-Fi. The firewall sorts traffic by port, and guests use the same ports as staff.</li>
+    <li><span class="pb-chip" data-base-status="unknown">unknown</span> Whether switch 2 loses counts at a reset or only starts them again. The router totals don't change either way.</li>
+    <li><span class="pb-chip" data-base-status="unknown">unknown</span> What the nine missing router days held, byte for byte. The 1,290 GB is an estimate.</li>
+    <li><span class="pb-chip" data-base-status="partial">partial</span> Whether September's video-call peak is a trend or the first busy week after the break. One month can't tell, and October's numbers will.</li>
+  </ul>
+</section>
+
+<section id="sources" data-base-status="supported">
+  <h2>Sources</h2>
+  <p>Four data sources feed this page, and three notes say how the derived numbers were made.</p>
+  <h3>Data</h3>
+  <ol>
+    <li>Router export, <code>traffic-2026q3.csv</code>: bytes per device per hour, 83 of 92 days.</li>
+    <li>Switch 2 counters, polled every five minutes per port, with four resets.</li>
+    <li>Firewall log, two exports, one line per connection. It sorts traffic by use and fills the router's gap.</li>
+    <li>Update cache log, <code>cache-access.log</code>: hits, misses and second fetches.</li>
+  </ol>
+  <h3>Notes</h3>
+  <ol class="pb-notes">
+    <li id="n1">A peak is the busiest whole hour, averaged over that hour. A one-second burst can be higher.</li>
+    <li id="n2">Counted from the update cache's own log: a second fetch is a package the cache had already fetched and then dropped.</li>
+    <li id="n3">The firewall's connection counts for 13 to 21 August, times the bytes per connection of the two weeks either side.</li>
+  </ol>
+</section>
+</main>
+</body>
+</html>
