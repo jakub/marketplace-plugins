@@ -207,7 +207,7 @@ const timeline = (ol, bad) => {
     if (w > 0) for (const band of bands) {
       const used = [], rows = band.rows.children
       const want = band.marks.map(x => {
-        const l = f(x.a) * w - (x.span ? 0 : pw / 2), r = x.span ? Math.max(f(x.b) * w, l + 1) : l + pw
+        const l = f(x.a) * w - (x.span ? 0 : pw / 2), r = x.span ? Math.max(f(x.b) * w, l + 2) : l + pw
         let k = 0
         while (used[k]?.some(([p, q]) => Math.min(q, r) - Math.max(p, l) > 0.5)) k++
         used[k] = [...used[k] ?? [], [l, r]]

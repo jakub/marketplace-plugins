@@ -2225,13 +2225,16 @@ ${wrapped ? '<div data-base-when="v=b"><details><summary>The second pane holds a
   // a one-hour span on a four-week axis, built with the kit and then with a copy of the kit whose
   // parts.css has the old span rule put back, under which the short span's box is 1 px and paints
   // nothing. A third page holds a one-hour span at the track's first instant and one at its last,
-  // where the floor reaches past the lane row's end. After every oracle call each span's painted
-  // width, its border box less its inline padding, is read from the live page on the same session,
-  // never from a row's text.
+  // where the floor reaches past the lane row's end. A fourth holds two half-hour spans that start
+  // an hour apart in one lane, 0.53 px apart at 390 px and 0.75 px at 1100 and 1440, which the kit's
+  // packer must put in two rows because their 2 px boxes overlap. After every oracle call each
+  // span's painted width, its border box less its inline padding, and its lane and row are read
+  // from the live page on the same session, never from a row's text.
   const spanNames = {
     probe: 'browser: a one-hour span on a four-week axis passes, and its mark paints at least 1 px in every view',
     old: 'browser: the same page with the old span rule put back is chart-geometry on the short span',
     ends: "browser: one-hour spans at the track's first and last instants pass, each painting at least 1 px inside its track",
+    pack: 'browser: two half-hour spans an hour apart in one lane pass, in two rows of their lane, each painting at least 1 px',
   }
   if (why) for (const name of Object.values(spanNames)) skip(name, why)
   else {
@@ -2241,7 +2244,9 @@ ${wrapped ? '<div data-base-when="v=b"><details><summary>The second pane holds a
   const at = innerWidth + ' ' + (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
   return { at, spans: [...document.querySelectorAll('.plans-mark[data-plans-kind=span]')].map((mk) => {
     const cs = getComputedStyle(mk), r = mk.getBoundingClientRect(), row = mk.closest('.plans-lane-row').getBoundingClientRect(), track = mk.closest('div.plans-track').getBoundingClientRect()
-    return { item: +mk.dataset.plansItem + 1, painted: r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), past: r.right - row.right, inside: r.left >= track.left && r.right <= track.right }
+    const rowEl = mk.closest('.plans-lane-row'), rowsEl = rowEl.parentElement
+    return { item: +mk.dataset.plansItem + 1, painted: r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), past: r.right - row.right, inside: r.left >= track.left && r.right <= track.right,
+      lane: [...document.querySelectorAll('.plans-lane-rows')].indexOf(rowsEl), row: [...rowsEl.children].indexOf(rowEl) }
   }) }
 })()`
     const readSpans = async (buffer) => {
@@ -2291,6 +2296,12 @@ ${items.join('\n')}
       '<li data-base-lane="Last"><time datetime="2026-11-27T23:00:00Z">27 Nov 23:00</time> to <time datetime="2026-11-28T00:00:00Z">28 Nov 00:00</time> Last hour</li>',
     ]
     const endsCaption = 'The first and the last hour of a four-week window.'
+    // The packer and the oracle can disagree when an overlap lands within a snap of 0.5 px; this page's overlaps (1.47 px at 390, 1.25 px at 1100 and 1440) stay clear of it, and the tie is a known gap.
+    const packItems = [probeItems[0],
+      '<li data-base-lane="Outage"><time datetime="2026-11-14T10:00:00Z">14 Nov 10:00</time> to <time datetime="2026-11-14T10:30:00Z">10:30</time> First outage</li>',
+      '<li data-base-lane="Outage"><time datetime="2026-11-14T11:00:00Z">14 Nov 11:00</time> to <time datetime="2026-11-14T11:30:00Z">11:30</time> Second outage</li>',
+    ]
+    const packCaption = 'Two half-hour outages an hour apart in a four-week window.'
     // The kit copy: parts.css with its span rule swapped for the old one. A kit that already holds
     // the old rule, or no span rule, gives no copy, and the unit fails.
     const OLD_SPAN = '.plans-mark[data-plans-kind=span]{min-width:1px;padding-right:1px;background-clip:content-box}'
@@ -2315,6 +2326,7 @@ ${items.join('\n')}
     const probe = await readSpans(spanPage(buildMod.readKit(), probeItems, probeCaption))
     const old = oldKit && await readSpans(spanPage(oldKit, probeItems, probeCaption))
     const ends = await readSpans(spanPage(buildMod.readKit(), endsItems, endsCaption))
+    const pack = await readSpans(spanPage(buildMod.readKit(), packItems, packCaption))
     const after = { ...leaks(priv), timers: timers() }
     const tidy = clean(before) && clean(after) && after.timers === before.timers
     const leakNote = tidy ? '' : ` ${JSON.stringify({ before, after })}`
@@ -2339,6 +2351,14 @@ ${items.join('\n')}
       .map((s) => `${r.at}: item ${s.item} ${s.past} px past its row's end, ${s.inside ? 'inside' : 'outside'} its track`)))]
     check(spanNames.ends, ends.out.result === 'pass' && timelineRow(ends.out, endsCaption) && endsBad.length === 0 && overhang.length === 0 && tidy,
       `${summary(ends)}. ${[...endsBad, ...overhang].slice(0, 6).join(', ')}${leakNote}`)
+    // The two outages share one lane and sit in its two rows, one each, in every reading.
+    const packBad = unpainted(pack.read, [1, 2, 3])
+    const packRows = [...new Set(pack.read.filter(Boolean).flatMap((r) => {
+      const [a, b] = [2, 3].map((j) => r.spans.find((s) => s.item === j))
+      return a && b && a.lane === b.lane && a.lane >= 0 && [a.row, b.row].sort().join() === '0,1' ? [] : [`${r.at}: items 2 and 3 in ${a ? `lane ${a.lane} row ${a.row}` : 'no mark'} and ${b ? `lane ${b.lane} row ${b.row}` : 'no mark'}`]
+    }))]
+    check(spanNames.pack, pack.out.result === 'pass' && timelineRow(pack.out, packCaption) && packBad.length === 0 && packRows.length === 0 && tidy,
+      `${summary(pack)}. ${[...packBad, ...packRows].slice(0, 6).join(', ')}${leakNote}`)
   }
 
   // The base leaves the response alone (ruling 2). One question block runs on a shell page and on
