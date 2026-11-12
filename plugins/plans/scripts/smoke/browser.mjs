@@ -1358,6 +1358,27 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 </main>`)
   const shareDetail = /^Phase time, written long\.: row 1 col 1 track [\d.]+ px, and Phase time, written short\. in its share group has [\d.]+ px$/
   const rowDetail = /^Phase time, written long\.: row 2 col 1 track [\d.]+ px, and row 1 col 1 has [\d.]+ px$/
+  // One bars chart with no switch and no compare, so no panes state, in either mode. Its values are
+  // 50, 50 and 100, and with narrow true page CSS widens the second row's value column, so the two
+  // 50s draw at two lengths unless the oracle holds the chart's tracks to one width.
+  const trackPage = (inline, narrow) => buildMod.assemble(`<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>run unit</title>\n<!-- plans:kit -->\n${narrow ? '<style>html body table[data-base-chart] tbody tr:nth-child(2) { grid-template-columns: minmax(0, 1fr) 12rem }</style>\n' : ''}</head>\n<body>\n<main>
+<h1>Track unit</h1>
+<figure>
+  <table data-base-chart="bars" data-base-unit="ms">
+    <thead><tr><th>Phase</th><th>Time</th></tr></thead>
+    <tbody>
+      <tr><th>Parse</th><td><data value="50">50</data></td></tr>
+      <tr><th>Plan</th><td><data value="50">50</data></td></tr>
+      <tr><th>Render</th><td><data value="100">100</data></td></tr>
+    </tbody>
+  </table>
+  <figcaption>Phase time, one chart.</figcaption>
+</figure>
+</main>\n</body>\n</html>\n`, { inline, kit: buildMod.readKit(), readSibling: () => '' }).buffer
+  const trackDetail = /^Phase time, one chart\.: row 2 col 1 track [\d.]+ px, and row 1 col 1 has [\d.]+ px$/
+  const narrowTrack = (views) => (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
+    && !out.matrix.some((c) => c.state === runMod.PANES)
+    && views.every((v) => runMod.STATES.every((st) => out.matrix.some((c) => c.view === v.name && c.state === st && c.faults.some((f) => trackDetail.test(f.detail)))))
   // A bars chart and a timeline whose page script runs after the kit has drawn: the kit's
   // DOMContentLoaded listener is added in the head, before the page's own. The oracle reads the
   // rows and items from the built bytes, so one the script removes fails chart-geometry alone.
@@ -1605,6 +1626,16 @@ ${script}
       sharePage('', ' style="grid-template-columns: minmax(0, 1fr) 12rem"'),
       (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
         && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.PANES && c.faults.some((f) => rowDetail.test(f.detail))))],
+    // The oracle holds every track of a chart to one width in every state and view, on a page
+    // with no panes state too.
+    ['browser: a Document bars chart with no switch whose second row has a narrower track is chart-geometry in every view', undefined,
+      trackPage(false, true), narrowTrack(runMod.DOC_VIEWS)],
+    ['browser: an Inline bars chart with no switch whose second row has a narrower track is chart-geometry in every view', undefined,
+      trackPage(true, true), narrowTrack(runMod.INLINE_VIEWS), { inline: true }],
+    ['browser: the same Document bars chart without that page CSS passes', undefined, trackPage(false, false),
+      (out) => out.result === 'pass' && passRow(out, 'chart: Phase time, one chart. (grouped)')],
+    ['browser: the same Inline bars chart without that page CSS passes', undefined, trackPage(true, false),
+      (out) => out.result === 'pass' && passRow(out, 'chart: Phase time, one chart. (grouped)'), { inline: true }],
     ['browser: a stacked and a side-by-side chart with one unit in one switch keep their own scales', undefined,
       layoutPage(stackedChart('Stage time, stacked.', [['Nightly', 40, 60], ['Hourly', 10, 20]]), sideChart('Stage time, side by side.', [['Nightly', 30], ['Hourly', 12]])),
       (out) => out.result === 'pass' && passRow(out, 'chart: Stage time, stacked. (stacked)') && passRow(out, 'chart: Stage time, side by side. (grouped)')
@@ -1675,7 +1706,7 @@ ${script}
       { shots: true, fail: () => (m, p) => (m === 'Page.captureScreenshot' && p.clip?.y === 16384 ? 'timeout' : null) }],
   ]
   let u = 0
-  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null, chunk = null, media = [], stall = null, mod = runMod } = {}] of cases) {
+  for (const [name, deadlineMs, buffer, ok, { shots = null, fail = null, pageThrow = null, chunk = null, media = [], stall = null, mod = runMod, inline = false } = {}] of cases) {
     if (why) { skip(name, why); continue }
     if (!buffer) { check(name, false, 'the unit page did not assemble with the current kit'); continue }
     if (!mod) { check(name, false, 'parts.mjs has no expose(drive, target) to stub'); continue }
@@ -1686,7 +1717,7 @@ ${script}
       if (typeof shots === 'function') shots(shotsDir)
     }
     const before = { ...leaks(priv), timers: timers() }
-    const go = () => mod.runChecks({ buffer, dir: base, media, chromium, tmp: priv, deadlineMs, shots: shotsDir })
+    const go = () => mod.runChecks({ buffer, inline, dir: base, media, chromium, tmp: priv, deadlineMs, shots: shotsDir })
     const out = fail ? await withFailing(cdp, fail(), go) : pageThrow ? await withPageThrow(cdp, pageThrow(), go) : chunk ? await withChunk(cdp, { ...chunk, hit: chunk.hit() }, go)
       : stall ? await withStall(cdp, { ...stall, settleMs: runMod.SETTLE_MS }, go) : await go()
     const after = { ...leaks(priv), timers: timers() }

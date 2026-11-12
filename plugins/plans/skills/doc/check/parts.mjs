@@ -27,8 +27,11 @@
 //     being switch, compare, bars, timeline or markup. The model is this file's own reading of the
 //     markup, built from parts.md and the rulings, and never from what the kit wrote.
 //   panes(drive)             the `panes` state, below. Returns { faults, steps }.
-//   chartFaults(source)      in-page, after every probe in every state of a page whose bytes hold
-//                            a chart: the oracle, below. Returns faults and `chart: …` rows.
+//   chartFaults(source, readings)  in-page, after every probe in every state of a page whose
+//                            bytes hold a chart: the oracle, below. Returns faults and `chart: …`
+//                            rows. With readings true, the panes walk's call, it returns each
+//                            measured bars chart's { i, box, tracks: [{ where, w }], even }
+//                            instead, in CSS px, even being the oracle's own track rule.
 //   expose(drive, target)    makes a target reachable whatever hides it, below. target is a base
 //                            click spec without its kind, { selector, index }. Returns { ok,
 //                            changes, hidden }.
@@ -82,12 +85,10 @@
 // switch out of later pane assertions and the final step, and goes on to the next part. A part
 // expose() can't reach fails its first row, `revealing its box: <hidden>` for a switch and
 // `revealing it: <hidden>` for both rows of a compare, or `the final step: revealing its box: …`.
-//   One value draws at one length only if every track it could sit in has one width, so each step,
-// after its probes, also reads the box width of every valid bars chart with a box and the width of
-// each of its drawn tracks. At the end of the walk, each reading's tracks lie within 1 CSS px of
-// each other, or the chart is chart-geometry `<chart>: row <r> col <k> track <a> px, and row <r>
-// col <k> has <b> px`, naming the later of the two. A shared scale only holds if the same is true
-// across the panes, so two charts of one share group, each even within itself, whose boxes had the
+//   A shared scale only holds if one value draws at one length across the panes. On a page with a
+// share group of two or more charts, each step, after its probes, takes the oracle's track
+// readings. At the end of the walk, two charts of one share group, each even within itself in
+// every reading (the oracle's rule, which reports the uneven ones itself), whose boxes had the
 // same width within 0.5 CSS px, must have had tracks within 1 CSS px of each other, or the later
 // one in document order is chart-geometry `<chart>: row <r> col <k> track <a> px, and <other
 // chart> in its share group has <b> px`.
@@ -104,7 +105,11 @@
 // f(sum through), a point centred on f(t) and a span from f(start) to f(end), with f(t) = 0.5 over
 // a zero-width domain, all mirrored in right-to-left. A drawn edge more than 1 CSS px from its
 // expected edge is chart-geometry `<chart>: row <r> col <c> drawn <a>-<b> px, expected <x>-<y> px`
-// (or `item <n>`), in px from the reference box's start. A chart with a negative value needs a
+// (or `item <n>`), in px from the reference box's start. Since each bar is measured against its
+// own track, one value draws at one length only if every drawn track of a bars chart has one
+// width: its widest and narrowest tracks, by computed width, more than 1 CSS px apart are
+// chart-geometry `<chart>: row <r> col <k> track <a> px, and row <r> col <k> has <b> px`, naming
+// the later of the two, in every state and view. A chart with a negative value needs a
 // zero line at f(0) in each track. Timeline bands follow the lanes in order of first use, each
 // labelled with its lane's name, every lane row spans the first one's box, and each mark's row is
 // replayed: first fit per band over the drawn boxes, by start then source order, overlap meaning
@@ -300,12 +305,13 @@ export function model(source) {
   return { switches, panes, compares, charts, errors }
 }
 
-// The oracle. Its header is above, with the file's.
-export function chartFaults(source) {
+// The oracle. Its header is above, with the file's. With readings true it returns the track
+// readings the panes walk compares across a share group instead of faults and rows.
+export function chartFaults(source, readings = false) {
   const pc = globalThis.plansCheck
   const m = pc.parts || (pc.parts = pc.model(source))
   const out = m.errors.map((detail) => ({ kind: 'part-error', detail }))
-  const rows = []
+  const rows = [], read = []
   const has = (el) => !!el && el.getClientRects().length > 0
   const els = document.querySelectorAll('[data-base-chart]')
   const px = (v) => v.toFixed(1)
@@ -321,7 +327,7 @@ export function chartFaults(source) {
   const hit = (p, q) => Math.min(p.right, q.right) - Math.max(p.left, q.left) > 0.5 && Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top) > 0.5
   for (const c of m.charts) {
     const el = els[c.i]
-    if (!c.ok || !has(el)) continue
+    if (!c.ok || !has(el) || (readings && c.kind !== 'bars')) continue
     const label = c.label
     const mine = [], count = { 'chart-geometry': 0, 'chart-overlap': 0 }
     const add = (kind, what) => { if (count[kind]++ < 4) mine.push({ kind, detail: `${label}: ${what}` }) }
@@ -339,6 +345,24 @@ export function chartFaults(source) {
       traits = [c.stack ? 'stacked' : 'grouped', ...(values.some((v) => v < 0) ? ['negative'] : []), ...(values.every((v) => v === 0) ? ['all-zero'] : []), ...(c.shared > 1 ? ['shared'] : [])]
       const f = (x) => (x - c.lo) / (c.hi - c.lo), base = Math.min(Math.max(0, c.lo), c.hi)
       const trs = [...el.tBodies].flatMap((b) => [...b.rows])
+      // One value draws at one length only if every drawn track of the chart has one width: the
+      // widest and the narrowest more than 1 CSS px apart is the chart's one fault, naming the
+      // later of the two. Widths are read from computed style, in CSS px.
+      const tracks = []
+      trs.forEach((tr, r) => [...tr.cells].slice(1).forEach((td, k) => {
+        for (const t of td.querySelectorAll('.plans-track')) if (has(t)) tracks.push({ where: `row ${r + 1} col ${k + 1}`, w: parseFloat(getComputedStyle(t).width) })
+      }))
+      let lo = 0, hi = 0
+      tracks.forEach((t, k) => { if (t.w < tracks[lo].w) lo = k; if (t.w > tracks[hi].w) hi = k })
+      const even = !tracks.length || tracks[hi].w - tracks[lo].w <= 1
+      if (readings) {
+        if (tracks.length) read.push({ i: c.i, box: parseFloat(getComputedStyle(el).width), tracks, even })
+        continue
+      }
+      if (!even) {
+        const [a, b] = [tracks[Math.min(lo, hi)], tracks[Math.max(lo, hi)]]
+        geo(`${b.where} track ${px(b.w)} px, and ${a.where} has ${px(a.w)} px`)
+      }
       let matched = 0
       c.rows.forEach((row, r) => {
         let sum = 0
@@ -451,7 +475,7 @@ export function chartFaults(source) {
     const n = `${measured} ${c.kind === 'bars' ? 'bars' : 'marks'}`
     rows.push({ name: `chart: ${label} (${traits.join(', ')})`, result: mine.length ? 'fail' : 'pass', detail: mine.length ? mine[0].detail : `${n} within 1 px of their values, no overlap` })
   }
-  return [...out, ...rows]
+  return readings ? read : [...out, ...rows]
 }
 
 // The model, and each key button's index among the live `[data-base-key] button`, by switch, key
@@ -587,56 +611,24 @@ function hiders(sel, i) {
   return { shown: has(el), chain }
 }
 
-// Each valid bars chart with a box and a drawn track: its index, its box's width, and each drawn
-// track with a box in its value cells, as { where: 'row <r> col <k>', w }, every width in CSS px
-// read from computed style.
-function tracks(source) {
-  const pc = globalThis.plansCheck
-  const m = pc.parts || (pc.parts = pc.model(source))
-  const has = (el) => !!el && el.getClientRects().length > 0
-  const els = document.querySelectorAll('[data-base-chart]')
-  const out = []
-  for (const c of m.charts) {
-    const el = els[c.i]
-    if (!c.ok || c.kind !== 'bars' || !has(el)) continue
-    const list = []
-    for (const [r, tr] of [...el.tBodies].flatMap((b) => [...b.rows]).entries()) {
-      for (const [k, td] of [...tr.cells].slice(1).entries()) {
-        for (const t of td.querySelectorAll('.plans-track')) if (has(t)) list.push({ where: `row ${r + 1} col ${k + 1}`, w: parseFloat(getComputedStyle(t).width) })
-      }
-    }
-    if (list.length) out.push({ i: c.i, box: parseFloat(getComputedStyle(el).width), tracks: list })
-  }
-  return out
-}
-
 /* ---------------------------------------------------------------- Node */
 
 const KEY = '[data-base-key] button'
 const SIDE = '.plans-compare-switch button'
 
-// The readings tracks() made at each step, as a Map of chart index to [{ box, tracks }]. Within one
-// reading, a chart's widest and narrowest tracks more than 1 px apart are its one fault, naming the
-// later of the two. A chart even in every reading is then held to each earlier even chart of its
-// share group, in document order, at the same box width within 0.5 px, and its first track more
-// than 1 px off a track of the other is its one fault.
-function trackFaults(m, widths) {
-  const faults = [], even = new Set()
+// The readings chartFaults(source, true) made at each step, as a Map of chart index to [{ box,
+// tracks, even }]. Whether a chart's tracks are even within it is the oracle's rule, which also
+// reports the uneven ones, so here a chart even in every reading is held to each earlier even
+// chart of its share group, in document order, at the same box width within 0.5 px, and its first
+// track more than 1 px off a track of the other is its one fault.
+function shareFaults(m, widths) {
+  const faults = []
   const w = (t) => t.w.toFixed(1)
-  for (const c of m.charts) {
-    let off = null
-    for (const { tracks: list } of widths.get(c.i) ?? []) {
-      let lo = 0, hi = 0
-      list.forEach((t, k) => { if (t.w < list[lo].w) lo = k; if (t.w > list[hi].w) hi = k })
-      if (list[hi].w - list[lo].w > 1) { off = [list[Math.min(lo, hi)], list[Math.max(lo, hi)]]; break }
-    }
-    if (off) faults.push({ kind: 'chart-geometry', detail: `${c.label}: ${off[1].where} track ${w(off[1])} px, and ${off[0].where} has ${w(off[0])} px` })
-    else if (widths.has(c.i)) even.add(c.i)
-  }
+  const even = (c) => widths.has(c.i) && widths.get(c.i).every((r) => r.even)
   for (const c of m.charts) {
     let off = null
     for (const o of m.charts) {
-      if (off || o.i >= c.i || !even.has(c.i) || !even.has(o.i) || o.group !== c.group) continue
+      if (off || o.i >= c.i || !even(c) || !even(o) || o.group !== c.group) continue
       for (const a of widths.get(c.i)) {
         for (const b of widths.get(o.i)) {
           if (Math.abs(a.box - b.box) > 0.5) continue
@@ -721,7 +713,7 @@ export async function panes(drive) {
   const track = (changes, back) => { for (const ch of changes) if (ch.pane && cur.has(ch.pane.s) && (!back || ch.back)) cur.get(ch.pane.s)[ch.pane.j] = back ? ch.pane.from : ch.pane.to }
   const broken = new Set()
   const seen = new Set()
-  const measured = m.charts.some((c) => c.ok && c.kind === 'bars'), widths = new Map()
+  const shared = m.charts.some((c) => c.ok && c.kind === 'bars' && c.shared > 1), widths = new Map()
   let prev = await drive.call(look)
   const rowName = (s, vals) => `panes: switch ${s.n} ${s.keys.map((k, j) => `${k.name}=${vals[j]}`).join(' ')}`
   const press = async (s, j, value) => {
@@ -765,7 +757,7 @@ export async function panes(drive) {
       await drive.settle()
     }
     await run()
-    if (measured) for (const t of await drive.call(tracks, drive.source)) widths.set(t.i, [...(widths.get(t.i) ?? []), t])
+    if (shared) for (const t of await drive.call(chartFaults, drive.source, true)) widths.set(t.i, [...(widths.get(t.i) ?? []), t])
     prev = now
     return fresh.length ? `new in this step: ${fresh.slice(0, 3).map((f) => `${f.kind} (${clip(f.detail, 100)})`).join('; ')}` : ''
   }
@@ -889,6 +881,6 @@ export async function panes(drive) {
       steps.push({ name, result: wrong.length ? 'fail' : 'pass', detail: wrong.length ? `the final step: ${wrong.join('; ')}` : found })
     }
   }
-  faults.push(...trackFaults(m, widths))
+  faults.push(...shareFaults(m, widths))
   return { faults, steps }
 }
