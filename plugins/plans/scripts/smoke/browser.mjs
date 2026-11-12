@@ -1522,6 +1522,19 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 </figure>
 </main>\n</body>\n</html>\n`, { inline, kit: buildMod.readKit(), readSibling: () => '' }).buffer
   const trackDetail = /^Phase time, one chart\.: row 2 col 1 track [\d.]+ px, and row 1 col 1 has [\d.]+ px$/
+  // One side-by-side bars chart with stated bounds and three values. Each track draws a zero line
+  // only when the scale holds 0, and with bare true a page script takes the drawn ones away.
+  const zeroPage = (min, max, values, bare = false) => basePage('', `<main>
+<h1>Zero unit</h1>
+<figure>
+  <table data-base-chart="bars" data-base-min="${min}" data-base-max="${max}">
+    <thead><tr><th>Region</th><th>Margin</th></tr></thead>
+    <tbody>${values.map((v, i) => `<tr><th>Region ${i + 1}</th><td><data value="${v}">${v}</data></td></tr>`).join('')}</tbody>
+  </table>
+  <figcaption>Margin from ${min} to ${max}.</figcaption>
+</figure>
+${bare ? "<script>document.addEventListener('DOMContentLoaded', () => { for (const z of document.querySelectorAll('.plans-zero')) z.remove() })</script>" : ''}
+</main>`)
   const narrowTrack = (views) => (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
     && !out.matrix.some((c) => c.state === runMod.PANES)
     && views.every((v) => runMod.STATES.every((st) => out.matrix.some((c) => c.view === v.name && c.state === st && c.faults.some((f) => trackDetail.test(f.detail)))))
@@ -1794,6 +1807,15 @@ ${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed">
       (out) => out.result === 'pass' && passRow(out, 'chart: Phase time, one chart. (grouped)')],
     ['browser: the same Inline bars chart without that page CSS passes', undefined, trackPage(true, false),
       (out) => out.result === 'pass' && passRow(out, 'chart: Phase time, one chart. (grouped)'), { inline: true }],
+    // A track draws a zero line exactly when the scale holds 0: none on a scale below 0, and one
+    // on a scale that ends at 0 or crosses it.
+    ['browser: a bars chart whose scale lies below 0 draws no zero line and passes in every view', undefined, zeroPage(-100, -10, [-80, -50, -20]),
+      (out) => out.result === 'pass' && out.checks.some((c) => c.name === 'chart: Margin from -100 to -10. (grouped, negative)' && c.result === 'pass'
+        && runMod.DOC_VIEWS.every((v) => c.detail.split(': ')[0].split(', ').includes(v.name)) && /: 3 bars within 1 px of their values/.test(c.detail))],
+    ['browser: a bars chart from -100 to 0 without its zero lines is chart-geometry', undefined, zeroPage(-100, 0, [-80, -50, -20], true),
+      geometryAlone(/^Margin from -100 to 0\.: row 1 col 1 has 0 zero lines, expected 1$/)],
+    ['browser: a bars chart from -100 to 50 without its zero lines is chart-geometry', undefined, zeroPage(-100, 50, [-80, -50, 20], true),
+      geometryAlone(/^Margin from -100 to 50\.: row 1 col 1 has 0 zero lines, expected 1$/)],
     ['browser: a stacked and a side-by-side chart with one unit in one switch keep their own scales', undefined,
       layoutPage(stackedChart('Stage time, stacked.', [['Nightly', 40, 60], ['Hourly', 10, 20]]), sideChart('Stage time, side by side.', [['Nightly', 30], ['Hourly', 12]])),
       (out) => out.result === 'pass' && passRow(out, 'chart: Stage time, stacked. (stacked)') && passRow(out, 'chart: Stage time, side by side. (grouped)')

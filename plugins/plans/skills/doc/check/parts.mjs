@@ -144,9 +144,9 @@
 // own track, one value draws at one length only if every drawn track of a bars chart has one
 // width: its widest and narrowest tracks, by computed width, more than 1 CSS px apart are
 // chart-geometry `<chart>: row <r> col <k> track <a> px, and row <r> col <k> has <b> px`, naming
-// the later of the two, in every state and view. A chart with a negative value needs a
-// zero line at f(0) in each track. Timeline bands follow the lanes in order of first use, each
-// labelled with its lane's name, every lane row spans the first one's box, and each mark's row is
+// the later of the two, in every state and view. Each track of a chart whose scale holds 0 needs
+// one zero line, at f(0), and each track of one whose scale doesn't needs none. Timeline bands
+// follow the lanes in order of first use, each labelled with its lane's name, every lane row spans the first one's box, and each mark's row is
 // replayed: first fit per band over the drawn boxes, by start then source order, overlap meaning
 // more than 0.5 px, with no row left empty. Two marks of one chart, or two text boxes of one chart
 // (its text nodes and a timeline's lane labels), that intersect by more than 0.5 CSS px on both
@@ -383,6 +383,8 @@ export function chartFaults(source, readings = false) {
       const values = c.rows.flatMap((r) => r.values)
       traits = [c.stack ? 'stacked' : 'grouped', ...(values.some((v) => v < 0) ? ['negative'] : []), ...(values.every((v) => v === 0) ? ['all-zero'] : []), ...(c.shared > 1 ? ['shared'] : [])]
       const f = (x) => (x - c.lo) / (c.hi - c.lo), base = Math.min(Math.max(0, c.lo), c.hi)
+      // Each track's zero lines: one where the scale holds 0, as parts.md says, and none elsewhere.
+      const zeros = c.lo <= 0 && c.hi >= 0 ? 1 : 0
       const trs = [...el.tBodies].flatMap((b) => [...b.rows])
       // One value draws at one length only if every drawn track of the chart has one width: the
       // widest and the narrowest more than 1 CSS px apart is the chart's one fault, naming the
@@ -419,12 +421,11 @@ export function chartFaults(source, readings = false) {
           edges(where, box, [rect.left, rect.right], span(box, f(a), f(b)))
           measured++
           marks.push({ name: `the bar at ${where}`, rect })
-          if (c.lo < 0) {
-            const zero = [...track.querySelectorAll('.plans-zero')].filter(has)
-            const z = zero.length === 1 && zero[0].getBoundingClientRect()
-            const want = span(box, f(0), f(0))[0]
-            if (!z) geo(`${where} has ${zero.length} zero lines, expected 1`)
-            else if (Math.abs((z.left + z.right) / 2 - want) > box.s + 1e-6) geo(`${where} zero line drawn at ${px(((z.left + z.right) / 2 - box.l) / box.s)} px, expected ${px((want - box.l) / box.s)} px`)
+          const zero = [...track.querySelectorAll('.plans-zero')].filter(has)
+          if (zero.length !== zeros) geo(`${where} has ${zero.length} zero lines, expected ${zeros}`)
+          else if (zeros) {
+            const z = zero[0].getBoundingClientRect(), want = span(box, f(0), f(0))[0]
+            if (Math.abs((z.left + z.right) / 2 - want) > box.s + 1e-6) geo(`${where} zero line drawn at ${px(((z.left + z.right) / 2 - box.l) / box.s)} px, expected ${px((want - box.l) / box.s)} px`)
           }
         })
       })
