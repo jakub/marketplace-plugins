@@ -57,8 +57,8 @@
 // for the pane's terms that aren't pressed, the compare switch's button for the side. Each control
 // has a box by then, since the containers outside it already show and none inside them holds it:
 // a details' summary is its own child; a compare's switch buttons are made by script in the
-// figure, outside both sides; and a key button sits in its switch's box, outside every pane,
-// details and compare in that switch, since parts.md makes a key anywhere else a part-error. A
+// figure, outside both sides; and no pane, details or compare sits between a key button and its
+// switch's box, since the model refuses a switch with one there, whose keys go unclicked. A
 // control without a box is not clicked: that container is the one that stayed hidden. After each
 // container it settles and reads the chain again, and the container must now show. ok false names
 // that container in hidden, as `<container> is hidden, and …` or `<container> stayed hidden after
@@ -206,9 +206,18 @@ export function model(source) {
       const on = bs.filter((b) => b.getAttribute('aria-pressed') === 'true')
       if (!NAME.test(name)) no(`key "${name}" needs a name that matches [a-z][a-z0-9-]*`)
       else if (s.keys.some((k) => k.name === name)) no(`key "${name}" is named twice`)
-      if (g.closest('[data-base-when]')) no(`key "${name}" sits in a pane`)
-      const hold = g.closest('details, figure.pb-compare')
-      if (hold && hold !== box && box.contains(hold)) no(`key "${name}" sits inside a ${hold.localName === 'details' ? 'details' : 'compare'} in its switch`)
+      // One walk from each of the key's buttons, the button itself included: a pane anywhere on it,
+      // or a details or a compare below the box, is the key's one error. Those are the containers
+      // hiders() knows, so none sits between a key button and the box of a switch that passes.
+      let hold = null
+      for (const b of bs) {
+        for (let a = b, inside = true; a && !hold; a = a.parentElement) {
+          if (a === box) inside = false
+          if (a.matches('[data-base-when]') || (inside && a.matches('details, figure.pb-compare'))) hold = a
+        }
+      }
+      if (hold && hold.matches('[data-base-when]')) no(`key "${name}" sits in a pane`)
+      else if (hold) no(`key "${name}" sits inside a ${hold.localName === 'details' ? 'details' : 'compare'} in its switch`)
       if (values.length < 2) no(`key "${name}" has ${values.length} buttons, not 2 or more`)
       if (values.some((v) => !NAME.test(v))) no(`key "${name}" has a button value that does not match [a-z][a-z0-9-]*`)
       if (new Set(values).size < values.length) no(`key "${name}" repeats a value`)
