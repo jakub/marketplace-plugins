@@ -82,11 +82,15 @@
 // switch out of later pane assertions and the final step, and goes on to the next part. A part
 // expose() can't reach fails its first row, `revealing its box: <hidden>` for a switch and
 // `revealing it: <hidden>` for both rows of a compare, or `the final step: revealing its box: …`.
-//   A shared scale only holds if one value draws at one length in every pane, so each step, after
-// its probes, also reads the box and track widths of every valid chart with a box in a share group
-// of two or more. At the end of the walk, two charts of one group whose boxes had the same width, within
-// 0.5 CSS px, must have had tracks within 1 CSS px of each other, or the later one in document
-// order is chart-geometry `<chart>: track <a> px, and <other chart> in its share group has <b> px`.
+//   One value draws at one length only if every track it could sit in has one width, so each step,
+// after its probes, also reads the box width of every valid bars chart with a box and the width of
+// each of its drawn tracks. At the end of the walk, each reading's tracks lie within 1 CSS px of
+// each other, or the chart is chart-geometry `<chart>: row <r> col <k> track <a> px, and row <r>
+// col <k> has <b> px`, naming the later of the two. A shared scale only holds if the same is true
+// across the panes, so two charts of one share group, each even within itself, whose boxes had the
+// same width within 0.5 CSS px, must have had tracks within 1 CSS px of each other, or the later
+// one in document order is chart-geometry `<chart>: row <r> col <k> track <a> px, and <other
+// chart> in its share group has <b> px`.
 //
 // The oracle. For each valid chart with a box, from the model's rows and items, never the live
 // ones: bars are matched by row and column, one drawn .plans-bar with a box per value cell,
@@ -583,8 +587,9 @@ function hiders(sel, i) {
   return { shown: has(el), chain }
 }
 
-// Each valid chart in a share group of two or more that has a box: its index, and its box's and
-// its first drawn track's widths in CSS px, read from computed style.
+// Each valid bars chart with a box and a drawn track: its index, its box's width, and each drawn
+// track with a box in its value cells, as { where: 'row <r> col <k>', w }, every width in CSS px
+// read from computed style.
 function tracks(source) {
   const pc = globalThis.plansCheck
   const m = pc.parts || (pc.parts = pc.model(source))
@@ -593,8 +598,14 @@ function tracks(source) {
   const out = []
   for (const c of m.charts) {
     const el = els[c.i]
-    const track = c.ok && c.shared > 1 && has(el) ? [...el.querySelectorAll('.plans-track')].find(has) : null
-    if (track) out.push({ i: c.i, box: parseFloat(getComputedStyle(el).width), track: parseFloat(getComputedStyle(track).width) })
+    if (!c.ok || c.kind !== 'bars' || !has(el)) continue
+    const list = []
+    for (const [r, tr] of [...el.tBodies].flatMap((b) => [...b.rows]).entries()) {
+      for (const [k, td] of [...tr.cells].slice(1).entries()) {
+        for (const t of td.querySelectorAll('.plans-track')) if (has(t)) list.push({ where: `row ${r + 1} col ${k + 1}`, w: parseFloat(getComputedStyle(t).width) })
+      }
+    }
+    if (list.length) out.push({ i: c.i, box: parseFloat(getComputedStyle(el).width), tracks: list })
   }
   return out
 }
@@ -604,21 +615,41 @@ function tracks(source) {
 const KEY = '[data-base-key] button'
 const SIDE = '.plans-compare-switch button'
 
-// The widths tracks() read at each step, as a Map of chart index to [{ box, track }]. A chart is
-// held to each earlier chart of its share group, in document order, at the same box width within
-// 0.5 px, and its first track more than 1 px off is its one fault.
+// The readings tracks() made at each step, as a Map of chart index to [{ box, tracks }]. Within one
+// reading, a chart's widest and narrowest tracks more than 1 px apart are its one fault, naming the
+// later of the two. A chart even in every reading is then held to each earlier even chart of its
+// share group, in document order, at the same box width within 0.5 px, and its first track more
+// than 1 px off a track of the other is its one fault.
 function trackFaults(m, widths) {
-  const faults = []
+  const faults = [], even = new Set()
+  const w = (t) => t.w.toFixed(1)
+  for (const c of m.charts) {
+    let off = null
+    for (const { tracks: list } of widths.get(c.i) ?? []) {
+      let lo = 0, hi = 0
+      list.forEach((t, k) => { if (t.w < list[lo].w) lo = k; if (t.w > list[hi].w) hi = k })
+      if (list[hi].w - list[lo].w > 1) { off = [list[Math.min(lo, hi)], list[Math.max(lo, hi)]]; break }
+    }
+    if (off) faults.push({ kind: 'chart-geometry', detail: `${c.label}: ${off[1].where} track ${w(off[1])} px, and ${off[0].where} has ${w(off[0])} px` })
+    else if (widths.has(c.i)) even.add(c.i)
+  }
   for (const c of m.charts) {
     let off = null
     for (const o of m.charts) {
-      if (off || o.i >= c.i || o.group === null || o.group !== c.group) continue
-      for (const a of widths.get(c.i) ?? []) {
-        const b = (widths.get(o.i) ?? []).find((b) => Math.abs(a.box - b.box) <= 0.5 && Math.abs(a.track - b.track) > 1)
-        if (b) { off = { o, a, b }; break }
+      if (off || o.i >= c.i || !even.has(c.i) || !even.has(o.i) || o.group !== c.group) continue
+      for (const a of widths.get(c.i)) {
+        for (const b of widths.get(o.i)) {
+          if (Math.abs(a.box - b.box) > 0.5) continue
+          for (const t of a.tracks) {
+            const u = b.tracks.find((u) => Math.abs(t.w - u.w) > 1)
+            if (u) { off = { o, t, u }; break }
+          }
+          if (off) break
+        }
+        if (off) break
       }
     }
-    if (off) faults.push({ kind: 'chart-geometry', detail: `${c.label}: track ${off.a.track.toFixed(1)} px, and ${off.o.label} in its share group has ${off.b.track.toFixed(1)} px` })
+    if (off) faults.push({ kind: 'chart-geometry', detail: `${c.label}: ${off.t.where} track ${w(off.t)} px, and ${off.o.label} in its share group has ${w(off.u)} px` })
   }
   return faults
 }
@@ -690,7 +721,7 @@ export async function panes(drive) {
   const track = (changes, back) => { for (const ch of changes) if (ch.pane && cur.has(ch.pane.s) && (!back || ch.back)) cur.get(ch.pane.s)[ch.pane.j] = back ? ch.pane.from : ch.pane.to }
   const broken = new Set()
   const seen = new Set()
-  const shared = m.charts.some((c) => c.ok && c.shared > 1), widths = new Map()
+  const measured = m.charts.some((c) => c.ok && c.kind === 'bars'), widths = new Map()
   let prev = await drive.call(look)
   const rowName = (s, vals) => `panes: switch ${s.n} ${s.keys.map((k, j) => `${k.name}=${vals[j]}`).join(' ')}`
   const press = async (s, j, value) => {
@@ -734,7 +765,7 @@ export async function panes(drive) {
       await drive.settle()
     }
     await run()
-    if (shared) for (const t of await drive.call(tracks, drive.source)) widths.set(t.i, [...(widths.get(t.i) ?? []), t])
+    if (measured) for (const t of await drive.call(tracks, drive.source)) widths.set(t.i, [...(widths.get(t.i) ?? []), t])
     prev = now
     return fresh.length ? `new in this step: ${fresh.slice(0, 3).map((f) => `${f.kind} (${clip(f.detail, 100)})`).join('; ')}` : ''
   }

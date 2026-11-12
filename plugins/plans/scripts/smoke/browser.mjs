@@ -1298,8 +1298,9 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
 </section>
 </main>`)
   // Two panes of one switch, each a bars chart with one unit, bounds and values, whose value texts
-  // differ in length. tbody, when given, is an attribute on the long pane's <tbody>.
-  const sharePage = (tbody = '') => basePage('', `<main>
+  // differ in length. tbody and row2, when given, are attributes on the long pane's <tbody> and
+  // second row.
+  const sharePage = (tbody = '', row2 = '') => basePage('', `<main>
 <h1>Share unit</h1>
 <div data-base-switch>
   <div data-base-key="form"><span>Form</span> <button type="button" value="short" aria-pressed="true" disabled>Short</button> <button type="button" value="long" aria-pressed="false" disabled>Long</button></div>
@@ -1321,7 +1322,7 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
         <thead><tr><th>Phase</th><th>Time</th></tr></thead>
         <tbody${tbody}>
           <tr><th>Parse</th><td><data value="50">50 milliseconds</data></td></tr>
-          <tr><th>Render</th><td><data value="95">95 milliseconds</data></td></tr>
+          <tr${row2}><th>Render</th><td><data value="95">95 milliseconds</data></td></tr>
         </tbody>
       </table>
       <figcaption>Phase time, written long.</figcaption>
@@ -1355,7 +1356,8 @@ async function runUnits({ check, skip, why, chromium, runMod, cdp, buildMod, FIX
   <div data-base-when="form=b">${b}</div>
 </div>
 </main>`)
-  const shareDetail = /^Phase time, written long\.: track [\d.]+ px, and Phase time, written short\. in its share group has [\d.]+ px$/
+  const shareDetail = /^Phase time, written long\.: row 1 col 1 track [\d.]+ px, and Phase time, written short\. in its share group has [\d.]+ px$/
+  const rowDetail = /^Phase time, written long\.: row 2 col 1 track [\d.]+ px, and row 1 col 1 has [\d.]+ px$/
   // A bars chart and a timeline whose page script runs after the kit has drawn: the kit's
   // DOMContentLoaded listener is added in the head, before the page's own. The oracle reads the
   // rows and items from the built bytes, so one the script removes fails chart-geometry alone.
@@ -1590,14 +1592,19 @@ ${script}
       (out) => out.result === 'pass' && passRow(out, 'chrome: zoom 1') && passRow(out, 'chrome: zoom 2')
         && !passRow(out, 'chrome: zoom 1', 'fail') && !passRow(out, 'chrome: zoom 2', 'fail')
         && runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.CHROME) === 1), { media: zoomMedia }],
-    // The panes walk holds charts of one share group to tracks of one width, so the long texts must
-    // not shorten their pane's track, and page CSS that does fails.
+    // The panes walk holds every track of a chart, and of the charts of one share group, to one
+    // width, so the long texts must not shorten their pane's tracks, and page CSS that does fails,
+    // whether it shortens a whole pane's or one later row's.
     ['browser: charts of one share group draw one value at one length across panes', undefined, sharePage(),
       (out) => out.result === 'pass' && shareRows(out) && runMod.DOC_VIEWS.every((v) => cellsOf(out, v.name, runMod.PANES) === 1)],
     ['browser: page CSS that widens one pane\'s value column is chart-geometry', undefined,
       sharePage(' style="grid-template-columns: minmax(0, 1fr) 12rem"'),
       (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
         && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.PANES && c.faults.some((f) => shareDetail.test(f.detail))))],
+    ['browser: page CSS that widens a later row\'s value column in one chart of a share group is chart-geometry', undefined,
+      sharePage('', ' style="grid-template-columns: minmax(0, 1fr) 12rem"'),
+      (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry')
+        && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.PANES && c.faults.some((f) => rowDetail.test(f.detail))))],
     ['browser: a stacked and a side-by-side chart with one unit in one switch keep their own scales', undefined,
       layoutPage(stackedChart('Stage time, stacked.', [['Nightly', 40, 60], ['Hourly', 10, 20]]), sideChart('Stage time, side by side.', [['Nightly', 30], ['Hourly', 12]])),
       (out) => out.result === 'pass' && passRow(out, 'chart: Stage time, stacked. (stacked)') && passRow(out, 'chart: Stage time, side by side. (grouped)')
