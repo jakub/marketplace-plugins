@@ -1226,13 +1226,18 @@ const INNER_KEYS = [[], ['D'], ['S']]
 const INNER_PANES = [[], ['D'], ['S'], ['D', 'S'], ['S', 'D']]
 // Every cell: the keys in one arrangement and the panes in another, not both in the bare box.
 // Where the keys' container is also the panes' outermost one, the two either share it or each
-// get their own, since sharing changes what an exposure of one does to the other.
+// get their own, since sharing changes what an exposure of one does to the other. parts.md keeps
+// a switch's keys out of every details and compare inside that switch, so each cell with its keys
+// in D or S is refused, and so are two named cells: the round 5 reviewer's page and keys in an
+// unnamed details.
 const innerCells = () => INNER_KEYS.flatMap((keys) => INNER_PANES.flatMap((panes) => {
   if (!keys.length && !panes.length) return []
   const own = { keys, panes, shared: false }
   return keys.length && panes[0] === keys[0] ? [own, { keys, panes, shared: true }] : [own]
 }))
 const innerName = (c) => `keys in ${c.keys.join('>') || 'the box'}, panes in ${c.panes.join('>') || 'the box'}${c.shared ? ', sharing it' : ''}`
+// What a refused cell's keys sit in, as its part-error names it, or null for a cell that passes.
+const innerRefused = (c) => (c.named ? ({ reviewer5: 'details', unnamed: 'details' })[c.named] ?? null : ({ D: 'details', S: 'compare' })[c.keys[0]] ?? null)
 // One container around x. k numbers it on its page, so each details group has a name of its own.
 const INNER_WRAP = {
   D: (x, k) => `<details name="i${k}"><summary>Inner group ${k}, member 1</summary><p>Member 1 of inner group ${k}.</p></details>
@@ -1258,12 +1263,14 @@ const innerChart = (caption, values) => `<figure>
 </figure>`
 // Each cell's markup, from next(), which numbers the containers and the switch on the page.
 // mark is a string unique on the page that sits at the cell's start, and rows the check rows the
-// cell needs, filled in once the page is joined. Five named cells join the generated ones: the
-// reviewer's page as written, a zoomable image in a pane inside S, a bars chart in a pane inside
-// S that shares a scale with a chart in a pane outside it, and two put-back cells. In those, a
-// named group's open member sits in a switch's hidden pane and its other member, outside the
-// switch, holds a second switch or a zoomable image, so exposing the target closes a member that
-// no click can reach. narrow, given, is a style attribute for the chart in S's <tbody>.
+// cell needs, filled in once the page is joined. Seven named cells join the generated ones: the
+// round 4 reviewer's page as written, a zoomable image in a pane inside S, a bars chart in a pane
+// inside S that shares a scale with a chart in a pane outside it, two put-back cells, and two
+// refused ones. In the put-back cells, a named group's open member sits in a switch's hidden pane
+// and its other member, outside the switch, holds a second switch or a zoomable image, so
+// exposing the target closes a member that no click can reach. The round 5 reviewer's page has
+// its keys in D and a zoomable image in pane b, and the last cell its keys in an unnamed details.
+// narrow, given, is a style attribute for the chart in S's <tbody>.
 const innerMarkup = (cell, next, narrow = '') => {
   const k = next()
   const wrap = (list, x) => list.reduceRight((inner, c) => INNER_WRAP[c](inner, next()), x)
@@ -1290,6 +1297,13 @@ ${innerPane(k, 'b')}
     const outS = innerChart(`Inner chart ${k}, beside it.`, [['Parse', 50], ['Render', 95]])
     return { mark, html: `${mark}\n${innerKeys(k)}\n${wrap(['S'], innerPane(k, 'a', inS))}\n${innerPane(k, 'b', outS)}\n</div>` }
   }
+  if (cell.named === 'reviewer5') {
+    const zoom = `<figure class="pb-figure" data-base-zoom><img src="nest.png" alt="Inner zoom ${k}" width="80" height="40"><figcaption>Inner zoom ${k}.</figcaption></figure>`
+    return { mark, html: `${mark}\n${wrap(['D'], innerKeys(k))}\n${innerPane(k, 'a')}\n${innerPane(k, 'b', zoom)}\n</div>` }
+  }
+  if (cell.named === 'unnamed') {
+    return { mark, html: `${mark}\n<details><summary>Unnamed details ${k}</summary>\n${innerKeys(k)}\n</details>\n${innerPane(k, 'a')}\n${innerPane(k, 'b')}\n</div>` }
+  }
   if (cell.named === 'putbackSwitch' || cell.named === 'putbackZoom') {
     const j = next()
     const target = cell.named === 'putbackSwitch'
@@ -1312,7 +1326,9 @@ ${target}
 }
 // A shell page of the given cells, and each cell's rows:
 // each switch's two combinations and its arrow, both rows of every compare it holds, each zoom and
-// its two chart rows. A row passes for the cell only if it passes in every view.
+// its two chart rows. A row passes for the cell only if it passes in every view. Each cell also
+// carries n, its first switch's number on the page, and refused, the part-error a refused cell
+// must have, or null.
 function innerPage(cells, narrow = '') {
   let k = 0
   const next = () => ++k
@@ -1329,7 +1345,8 @@ function innerPage(cells, narrow = '') {
     for (let j = 1; j <= count(html, 'class="pb-compare"'); j++) rows.push(`panes: compare ${cn + j} before`, `panes: compare ${cn + j} after`)
     for (let j = 1; j <= count(html, 'data-base-zoom'); j++) rows.push(`chrome: zoom ${count(before, 'data-base-zoom') + j}`)
     if (c.named === 'chart') rows.push(...[...html.matchAll(/<figcaption>(Inner chart [^<]+)<\/figcaption>/g)].map((x) => `chart: ${x[1]} (grouped, shared)`))
-    return { name: c.named ? INNER_NAMED[c.named] : innerName(c), rows }
+    const what = innerRefused(c)
+    return { name: c.named ? INNER_NAMED[c.named] : innerName(c), rows, n, refused: what && `switch: switch ${n} key "v" sits inside a ${what} in its switch` }
   })
   return { body: `<header class="pb-mast"><h1>Inner matrix</h1><p class="pb-lede">Hiding containers inside a switch, between its box and its keys or its panes.</p></header>\n<main>\n${body}\n</main>`, cells: out }
 }
@@ -1339,6 +1356,8 @@ const INNER_NAMED = {
   chart: 'a bars chart in a pane inside S, sharing a scale with one in a pane outside it',
   putbackSwitch: "a switch in a named group's closed member, whose open member sits in another switch's hidden pane",
   putbackZoom: "a zoomable image in a named group's closed member, whose open member sits in a switch's hidden pane",
+  reviewer5: "the round 5 reviewer's page: keys in D, a zoomable image in pane b",
+  unnamed: 'keys in an unnamed details inside the switch',
 }
 const innerAll = () => [...innerCells(), ...Object.keys(INNER_NAMED).map((named) => ({ named }))]
 // --- end inner matrix
@@ -1899,26 +1918,42 @@ ${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed">
       `${kept.map((c) => `${c.target} in ${c.arr} (switch ${c.n}) not refused`).join(', ')} ${other.slice(0, 4).join(' | ')}`)
   }
 
-  // The inner matrix, on one shell page of every cell: each must pass with its rows passing in
-  // every view and nothing undriven, so a container inside a part, between a switch's box and its
-  // keys or its panes, never fails or skips a step, and every exposure is put back for the next
-  // cell. A second page narrows the chart in S's tracks, and the share group outside S must fail.
+  // The inner matrix, on two shell pages. Every cell parts.md allows must pass with its rows
+  // passing in every view and nothing undriven, so a container inside a part, between a switch's
+  // box and its keys or its panes, never fails or skips a step, and every exposure is put back for
+  // the next cell. Every cell it refuses, a switch's keys in a details or a compare inside that
+  // switch, must be refused with its own part-error in the panes cell of every view and no other
+  // kind of fault, but for the one zoom row below. A third page narrows the chart in S's tracks,
+  // and the share group outside S must fail.
   const innerRun = 'browser: the inner matrix drives each switch through containers between its box and its keys or panes'
+  const innerRefusal = 'browser: the inner matrix refuses a switch whose keys sit in a details or a compare inside it'
   const innerShare = 'browser: the inner matrix holds a chart in a compare side in a pane to its share group outside it'
-  if (why) { skip(innerRun, why); skip(innerShare, why) }
+  if (why) { skip(innerRun, why); skip(innerRefusal, why); skip(innerShare, why) }
   else {
     writeFileSync(join(base, 'nest.png'), zoomPng([200, 60, 40]))
     const viewNames = runMod.DOC_VIEWS.map((v) => v.name)
     const runPage = (body) => runMod.runChecks({ buffer: basePage(' data-base-shell', body), dir: base, media: ['nest.png'], chromium, tmp: priv })
-    const { body, cells } = innerPage(innerAll())
+    const passing = innerPage(innerAll().filter((c) => !innerRefused(c))), refusing = innerPage(innerAll().filter(innerRefused))
+    const cells = [...passing.cells, ...refusing.cells]
     const before = { ...leaks(priv), timers: timers() }
-    const out = await runPage(body)
+    const out = await runPage(passing.body)
+    const refused = await runPage(refusing.body)
     const after = { ...leaks(priv), timers: timers() }
     const everyView = (name) => out.checks.some((c) => c.name === name && c.result === 'pass' && viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v)))
-    const red = cells.filter((c) => !c.rows.every(everyView))
+    const red = passing.cells.filter((c) => !c.rows.every(everyView))
     const redWhy = (c) => c.rows.filter((r) => !everyView(r)).map((r) => { const x = out.checks.find((y) => y.name === r); return `${r}: ${x ? `${x.result} ${x.detail}` : 'no row'}` }).join('; ')
-    check(innerRun, out.result === 'pass' && out.undriven.length === 0 && cells.length === 23 && red.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
-      `${cells.length - red.length} of ${cells.length} cells pass, ${out.result} ${JSON.stringify(out.reason)}, undriven ${JSON.stringify(out.undriven)}. ${red.slice(0, 6).map((c) => `${c.name}: ${redWhy(c)}`).join(' | ')} ${JSON.stringify({ before, after })}`)
+    check(innerRun, out.result === 'pass' && out.undriven.length === 0 && cells.length === 25 && passing.cells.length === 9 && red.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
+      `${passing.cells.length - red.length} of ${passing.cells.length} cells pass and ${refusing.cells.length} are refused, ${out.result} ${JSON.stringify(out.reason)}, undriven ${JSON.stringify(out.undriven)}. ${red.slice(0, 6).map((c) => `${c.name}: ${redWhy(c)}`).join(' | ')} ${JSON.stringify({ before, after })}`)
+    const refusedIn = (c) => viewNames.every((v) => refused.matrix.some((m) => m.view === v && m.state === runMod.PANES && m.faults.some((f) => f.kind === 'part-error' && f.detail === c.refused)))
+    const kept = refusing.cells.filter((c) => !refusedIn(c))
+    // The kit still wires a switch refused for its keys, so the round 5 reviewer's zoomable image,
+    // in that switch's hidden pane, can't be revealed: expose() never presses a broken switch's
+    // keys. Its row may fail for that reason, and no other fault but the part-errors may appear.
+    const r5 = refusing.cells.find((c) => c.name === INNER_NAMED.reviewer5)
+    const unreached = `chrome ${r5.rows.find((r) => r.startsWith('chrome: zoom ')).slice('chrome: '.length)}: revealing it: the pane "v=b" of switch ${r5.n} is hidden, and its switch has a markup error`
+    const other = [...new Set(refused.matrix.flatMap((m) => m.faults).filter((f) => f.kind !== 'part-error' && !(f.kind === 'part-drive' && f.detail === unreached)).map((f) => `${f.kind}: ${f.detail}`))]
+    check(innerRefusal, refused.result === 'fail' && refusing.cells.length === 16 && kept.length === 0 && other.length === 0,
+      `${refusing.cells.length - kept.length} of ${refusing.cells.length} cells refused. ${kept.slice(0, 6).map((c) => `${c.name} (switch ${c.n}) not refused`).join(', ')} ${other.slice(0, 4).join(' | ')}`)
     const narrowed = await runPage(innerPage([{ named: 'chart' }], ' style="grid-template-columns: minmax(0, 1fr) 12rem"').body)
     const share = /^Inner chart 1, beside it\.: row 1 col 1 track [\d.]+ px, and Inner chart 1, in the compare\. in its share group has [\d.]+ px$/
     const kinds = [...new Set(narrowed.matrix.flatMap((c) => c.faults.map((f) => f.kind)))]

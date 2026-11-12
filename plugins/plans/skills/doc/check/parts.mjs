@@ -55,22 +55,25 @@
 // hides its content it clicks the controls that show it, with real input through drive.click: the
 // details' summary (or the details itself, when the browser draws the summary), the key buttons
 // for the pane's terms that aren't pressed, the compare switch's button for the side. Each control
-// has a box by then, since the containers outside it already show, and one without a box is not
-// clicked: that container is the one that stayed hidden. After each container it settles and
-// reads the chain again, and the container must now show. ok false names that container in
-// hidden, as `<container> is hidden, and …` or `<container> stayed hidden after a click on its …`,
-// with changes holding what was clicked so far; a caller makes it a failed row, so part-drive. A
-// click that misses is the same, never a thrown step failure. Without keep the target itself must
-// then show. changes lists each click as { kind, label, back, pane, open }: back is the base spec
-// that undoes it, or null (a details, or a pane whose key had no single pressed button), pane is
-// { s, j, from, to } for a key button, the switch's model index, the key's index and the values,
-// else null, and open is { d, was } for a details, the indexes of the details it opened and of
-// its group's member that was open (-1 for none), else null. restore() puts each change back,
-// innermost first, settles, and returns the changes it undid with '' or what failed. It clicks
-// each back, beside the control expose() clicked, since a key or a side needs the kit's handlers.
-// A details goes back through the open property instead: the member it reopens can sit under a
-// container that hides it, such as another switch's pane, and a put-back proves nothing about the
-// reader, only returns state the check changed.
+// has a box by then, since the containers outside it already show and none inside them holds it:
+// a details' summary is its own child; a compare's switch buttons are made by script in the
+// figure, outside both sides; and a key button sits in its switch's box, outside every pane,
+// details and compare in that switch, since parts.md makes a key anywhere else a part-error. A
+// control without a box is not clicked: that container is the one that stayed hidden. After each
+// container it settles and reads the chain again, and the container must now show. ok false names
+// that container in hidden, as `<container> is hidden, and …` or `<container> stayed hidden after
+// a click on its …`, with changes holding what was clicked so far; a caller makes it a failed row,
+// so part-drive. A click that misses is the same, never a thrown step failure. Without keep the
+// target itself must then show. changes lists each click as { kind, label, back, pane, open }:
+// back is the base spec that undoes it, or null (a details, or a pane whose key had no single
+// pressed button), pane is { s, j, from, to } for a key button, the switch's model index, the
+// key's index and the values, else null, and open is { d, was } for a details, the indexes of the
+// details it opened and of its group's member that was open (-1 for none), else null. restore()
+// puts each change back, innermost first, settles, and returns the changes it undid with '' or
+// what failed. It clicks each back, beside the control expose() clicked, since a key or a side
+// needs the kit's handlers. A details goes back through the open property instead: the member it
+// reopens can sit under a container that hides it, such as another switch's pane, and a put-back
+// proves nothing about the reader, only returns state the check changed.
 //   keep is { s } for a switch's walk and { c } for a compare's. Its own containers, the switch's
 // panes or the compare's sides, are never exposed: expose() stops at the first one that hides,
 // since the walk's condition decides it. An element is expected to have a box when each own
@@ -204,6 +207,8 @@ export function model(source) {
       if (!NAME.test(name)) no(`key "${name}" needs a name that matches [a-z][a-z0-9-]*`)
       else if (s.keys.some((k) => k.name === name)) no(`key "${name}" is named twice`)
       if (g.closest('[data-base-when]')) no(`key "${name}" sits in a pane`)
+      const hold = g.closest('details, figure.pb-compare')
+      if (hold && hold !== box && box.contains(hold)) no(`key "${name}" sits inside a ${hold.localName === 'details' ? 'details' : 'compare'} in its switch`)
       if (values.length < 2) no(`key "${name}" has ${values.length} buttons, not 2 or more`)
       if (values.some((v) => !NAME.test(v))) no(`key "${name}" has a button value that does not match [a-z][a-z0-9-]*`)
       if (new Set(values).size < values.length) no(`key "${name}" repeats a value`)
