@@ -1595,13 +1595,20 @@ ${script}
   const outsideSwitch = (detail) => (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'part-error')
     && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.PANES && c.faults.some((f) => f.detail === detail)))
   // A shell page whose listed sections are tall enough for the dock to show and for a row's jump
-  // to move the page, with extra markup in the brief. A listed section's id that another element
-  // also holds sends its row to the first holder, so the bytes' read refuses it.
-  const tallSections = (sections, extra = '') => basePage(' data-base-shell', `<header class="pb-mast"><h1>Contents unit</h1><p class="pb-lede">Listed sections and their ids.</p></header>
+  // to move the page, with extra markup in the brief and, by a section's id, an element with the
+  // given id just above that section. A listed section's id that another element also holds sends
+  // its row to the first holder, so the bytes' read refuses it. So does an id outside
+  // [A-Za-z][A-Za-z0-9_-]*: the row's link percent-encodes a space or a non-ASCII character, and
+  // the jump finds an element that holds the encoded id first.
+  const tallSections = (sections, extra = '', above = {}) => basePage(' data-base-shell', `<header class="pb-mast"><h1>Contents unit</h1><p class="pb-lede">Listed sections and their ids.</p></header>
 <div class="pb-brief">${extra}<nav data-base-contents aria-label="Sections"></nav></div>
 <main>
-${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed"><h2>${title}</h2>\n<p style="height: 1400px">Filler that keeps the section tall.</p>\n</section>`).join('\n')}
+${sections.map(([id, title]) => `${above[id] ? `<p id="${above[id]}">Just above the section.</p>\n` : ''}<section id="${id}" data-base-status="changed"><h2>${title}</h2>\n<p style="height: 1400px">Filler that keeps the section tall.</p>\n</section>`).join('\n')}
 </main>`)
+  const unmatchedId = (id) => (out) => out.result === 'fail'
+    && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.CHROME
+      && c.faults.some((f) => f.kind === 'part-error' && f.detail === `contents: section "${id}" needs an id that matches [A-Za-z][A-Za-z0-9_-]*`)))
+    && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'part-error')
   const repeatedId = (id) => (out) => out.result === 'fail'
     && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.CHROME
       && c.faults.some((f) => f.kind === 'part-error' && f.detail === `contents: section "${id}" needs an id no other element in the page holds`)))
@@ -1868,6 +1875,12 @@ ${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed">
     ['browser: a listed section id repeated only inside a template passes', undefined,
       tallSections([['intro', 'Intro'], ['notes', 'Notes']], '<template><div id="notes"><p>Inert.</p></div></template>'),
       (out) => out.result === 'pass' && out.checks.some((c) => c.name === 'chrome: sheet' && c.result === 'pass' && /closed the sheet/.test(c.detail))],
+    ['browser: a listed section id with a space, below an element holding its encoded form, is part-error', undefined,
+      tallSections([['intro', 'Intro'], ['a b', 'Results']], '', { 'a b': 'a%20b' }), unmatchedId('a b')],
+    ['browser: a listed section id with a non-ASCII letter, below an element holding its encoded form, is part-error', undefined,
+      tallSections([['intro', 'Intro'], ['é', 'Results']], '', { 'é': '%C3%A9' }), unmatchedId('é')],
+    ['browser: listed section ids of letters, digits, _ and - pass', undefined, tallSections([['intro', 'Intro'], ['Run-2_b', 'Results']]),
+      (out) => out.result === 'pass' && out.checks.some((c) => c.name === 'chrome: sheet' && c.result === 'pass' && /closed the sheet and brought #Run-2_b into view/.test(c.detail))],
     ['browser: a key group outside any switch is part-error', undefined,
       basePage('', `<main>
 <h1>Orphan unit</h1>

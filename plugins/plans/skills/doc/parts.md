@@ -277,7 +277,7 @@ Keep the masthead and the brief short. On a phone, the first screen should hold 
 Write `nav[data-base-contents]` empty. Script fills it with one row for each `main > section[id]` whose first element child is an `h2`. A row holds the heading text, less a leading `.num`, and a chip with the section's status word. A section that holds questions also shows a live count: `N open`, or `answered`.
 
 - Give every listed section a `data-base-status` from the vocabulary. A listed section without one, or with a value outside the set, is a `part-error`, and its row shows no chip.
-- A listed section's id is unique in the page, because its row jumps to the first element that holds the id, so a repeat is a `part-error`.
+- A listed section's id is unique in the page, because its row jumps to the first element that holds the id, so a repeat is a `part-error`, and so is an id that doesn't match `^[A-Za-z][A-Za-z0-9_-]*$`, which the row's link can percent-encode into another element's id.
 - A nav that you filled yourself is a `part-error`, and so is a nav with no section to list.
 - A question counts as answered when the kit has marked it changed or kept. `kit.md` says when that happens.
 

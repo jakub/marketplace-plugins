@@ -29,7 +29,10 @@
 //     rows, titled by the h2's text less a leading .num, whitespace collapsed, else the id. A
 //     listed section's id that any other element in the bytes also holds sends its row's link to
 //     the first of them, so it is a part-error `contents: section "<id>" needs an id no other
-//     element in the page holds`, once per id, in the chrome state
+//     element in the page holds`, once per id, in the chrome state. So is one outside
+//     [A-Za-z][A-Za-z0-9_-]*, as `contents: section "<id>" needs an id that matches
+//     [A-Za-z][A-Za-z0-9_-]*`: the link percent-encodes a space, a quote or a non-ASCII
+//     character, and the jump finds an element that holds the encoded id first
 //   - a count on each row whose section holds a fieldset[data-ask], in the contents list and in
 //     the sheet, and the page's total on the dock
 // Controls are found by the script-made names in parts.md and the plan's contracts, and every
@@ -140,10 +143,12 @@ function fallbacks() {
 /* ---------------------------------------------------------------- in-page */
 
 // What the built bytes call for, read with DOMParser: { mast, nav, rows: [{ id, at, title, asks }],
-// asks: [id], zooms: [{ src, dpr, width }], repeats: [id] }. at is a row's section's index among
-// `main > section[id]`, asks in a row are indexes into asks, and repeats lists each listed section's id that another element also holds. DOMParser parses
-// with scripting off, so a <noscript>'s content is elements here and text in the scripted page:
-// every read skips it, and a <template>'s, as parts.mjs's model does.
+// asks: [id], zooms: [{ src, dpr, width }], repeats: [id], unmatched: [id] }. at is a row's
+// section's index among `main > section[id]`, asks in a row are indexes into asks, repeats lists
+// each listed section's id that another element also holds, and unmatched each one outside
+// [A-Za-z][A-Za-z0-9_-]*. DOMParser parses with scripting off, so a <noscript>'s content is
+// elements here and text in the scripted page: every read skips it, and a <template>'s, as
+// parts.mjs's model does.
 function plan(source) {
   const doc = new DOMParser().parseFromString(source, 'text/html')
   const all = (root, sel) => [...root.querySelectorAll(sel)].filter((el) => !el.closest('noscript, template'))
@@ -171,7 +176,8 @@ function plan(source) {
   const ids = new Map()
   for (const el of all(doc, '[id]')) ids.set(el.id, (ids.get(el.id) ?? 0) + 1)
   const repeats = [...new Set(rows.filter((r) => ids.get(r.id) > 1).map((r) => r.id))]
-  return { mast: all(doc, 'header.pb-mast').length > 0, nav: all(doc, '[data-base-contents]').length > 0, rows, asks: asks.map((f) => f.getAttribute('data-ask')), zooms, repeats }
+  const unmatched = [...new Set(rows.filter((r) => !/^[A-Za-z][A-Za-z0-9_-]*$/.test(r.id)).map((r) => r.id))]
+  return { mast: all(doc, 'header.pb-mast').length > 0, nav: all(doc, '[data-base-contents]').length > 0, rows, asks: asks.map((f) => f.getAttribute('data-ask')), zooms, repeats, unmatched }
 }
 
 function themeNow(names) {
@@ -470,7 +476,8 @@ async function sheetStep(drive, ex, p, watch) {
 export async function chrome(drive) {
   const steps = []
   const p = await drive.call(plan, drive.source)
-  const faults = p.repeats.map((id) => ({ kind: 'part-error', detail: `contents: section "${id}" needs an id no other element in the page holds` }))
+  const faults = [...p.repeats.map((id) => ({ kind: 'part-error', detail: `contents: section "${id}" needs an id no other element in the page holds` })),
+    ...p.unmatched.map((id) => ({ kind: 'part-error', detail: `contents: section "${id}" needs an id that matches [A-Za-z][A-Za-z0-9_-]*` }))]
   const run = (target, fn) => step(drive, steps, target, fn)
 
   if (p.mast) {
