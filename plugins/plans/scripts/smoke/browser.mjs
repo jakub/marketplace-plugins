@@ -1216,6 +1216,112 @@ function nestMatrix() {
   return { pages, cells: NEST_TARGETS.flatMap((t) => arrs.map((a) => cells.find((c) => c.target === t && c.arr === a.join('>')) ?? { target: t, arr: a.join('>'), missing: true })) }
 }
 
+// --- begin inner matrix
+// The inner matrix. Round 3's nesting matrix wrapped whole parts, so it never put a container
+// inside one. Here the hiding containers sit inside a switch, between its box and its key buttons,
+// or between its box and its panes: D, the second member of a two-member named <details> group,
+// which the panes and chrome states load closed, and S, the before side of a compare, hidden
+// under 640 px. Each arrangement is written outermost first, as D>S.
+const INNER_KEYS = [[], ['D'], ['S']]
+const INNER_PANES = [[], ['D'], ['S'], ['D', 'S'], ['S', 'D']]
+// Every cell: the keys in one arrangement and the panes in another, not both in the bare box.
+// Where the keys' container is also the panes' outermost one, the two either share it or each
+// get their own, since sharing changes what an exposure of one does to the other.
+const innerCells = () => INNER_KEYS.flatMap((keys) => INNER_PANES.flatMap((panes) => {
+  if (!keys.length && !panes.length) return []
+  const own = { keys, panes, shared: false }
+  return keys.length && panes[0] === keys[0] ? [own, { keys, panes, shared: true }] : [own]
+}))
+const innerName = (c) => `keys in ${c.keys.join('>') || 'the box'}, panes in ${c.panes.join('>') || 'the box'}${c.shared ? ', sharing it' : ''}`
+// One container around x. k numbers it on its page, so each details group has a name of its own.
+const INNER_WRAP = {
+  D: (x, k) => `<details name="i${k}"><summary>Inner group ${k}, member 1</summary><p>Member 1 of inner group ${k}.</p></details>
+<details name="i${k}"><summary>Inner group ${k}, member 2</summary>
+${x}
+</details>`,
+  S: (x, k) => `<figure class="pb-compare">
+<div class="pb-side" data-base-side="before"><h3>Inner before ${k}</h3>
+${x}
+</div>
+<div class="pb-side" data-base-side="after"><h3>Inner after ${k}</h3><p>The after side of inner compare ${k}.</p></div>
+<figcaption>Inner compare ${k}.</figcaption>
+</figure>`,
+}
+const innerKeys = (k) => `<p data-base-key="v"><button type="button" value="a" aria-pressed="true" disabled>Switch ${k} a</button> <button type="button" value="b" disabled>Switch ${k} b</button></p>`
+const innerPane = (k, v, x = '') => `<div data-base-when="v=${v}"><p>Switch ${k}, pane ${v}.</p>${x}</div>`
+const innerChart = (caption, values) => `<figure>
+<table data-base-chart="bars" data-base-unit="ms" data-base-min="0" data-base-max="100">
+<thead><tr><th>Phase</th><th>Time</th></tr></thead>
+<tbody>${values.map(([th, v]) => `<tr><th>${th}</th><td><data value="${v}">${v}</data></td></tr>`).join('')}</tbody>
+</table>
+<figcaption>${caption}</figcaption>
+</figure>`
+// Each cell's markup, from next(), which numbers the containers and the switch on the page.
+// mark is a string unique on the page that sits at the cell's start, and rows the check rows the
+// cell needs, filled in once the page is joined. Three named cells join the generated ones: the
+// reviewer's page as written, a zoomable image in a pane inside S, and a bars chart in a pane
+// inside S that shares a scale with a chart in a pane outside it. narrow, given, is a style
+// attribute for the chart in S's <tbody>.
+const innerMarkup = (cell, next, narrow = '') => {
+  const k = next()
+  const wrap = (list, x) => list.reduceRight((inner, c) => INNER_WRAP[c](inner, next()), x)
+  const mark = `<!-- inner cell ${k} -->\n<div data-base-switch>`
+  if (cell.named === 'reviewer') {
+    return { mark, html: `${mark}
+${innerKeys(k)}
+<figure class="pb-compare">
+<div class="pb-side" data-base-side="before"><h3>Before ${k}</h3>
+${innerPane(k, 'a')}
+${innerPane(k, 'b')}
+</div>
+<div class="pb-side" data-base-side="after"><h3>After ${k}</h3><p>The after side of the reviewer's compare.</p></div>
+<figcaption>The reviewer's compare, its switch's panes in its before side.</figcaption>
+</figure>
+</div>` }
+  }
+  if (cell.named === 'zoom') {
+    const zoom = `<figure class="pb-figure" data-base-zoom><img src="nest.png" alt="Inner zoom ${k}" width="80" height="40"><figcaption>Inner zoom ${k}.</figcaption></figure>`
+    return { mark, html: `${mark}\n${innerKeys(k)}\n${innerPane(k, 'a')}\n${wrap(['S'], innerPane(k, 'b', zoom))}\n</div>` }
+  }
+  if (cell.named === 'chart') {
+    const inS = innerChart(`Inner chart ${k}, in the compare.`, [['Parse', 50], ['Render', 95]]).replace('<tbody>', `<tbody${narrow}>`)
+    const outS = innerChart(`Inner chart ${k}, beside it.`, [['Parse', 50], ['Render', 95]])
+    return { mark, html: `${mark}\n${innerKeys(k)}\n${wrap(['S'], innerPane(k, 'a', inS))}\n${innerPane(k, 'b', outS)}\n</div>` }
+  }
+  const panes = `${innerPane(k, 'a')}\n${innerPane(k, 'b')}`
+  const inner = cell.shared ? wrap(cell.keys, `${innerKeys(k)}\n${wrap(cell.panes.slice(cell.keys.length), panes)}`) : `${wrap(cell.keys, innerKeys(k))}\n${wrap(cell.panes, panes)}`
+  return { mark, html: `${mark}\n${inner}\n</div>` }
+}
+// A shell page of the given cells, and each cell's rows:
+// its switch's two combinations and its arrow, both rows of every compare it holds, its zoom and
+// its two chart rows. A row passes for the cell only if it passes in every view.
+function innerPage(cells, narrow = '') {
+  let k = 0
+  const next = () => ++k
+  const built = cells.map((c) => ({ c, ...innerMarkup(c, next, c.named === 'chart' ? narrow : '') }))
+  const body = built.map((b) => b.html).join('\n')
+  const count = (s, needle) => s.split(needle).length - 1
+  const out = built.map(({ c, mark, html }) => {
+    const at = body.indexOf(mark)
+    if (at < 0 || body.indexOf(mark, at + 1) >= 0) throw new Error(`inner matrix: the mark of ${c.named ?? innerName(c)} is not unique`)
+    const before = body.slice(0, at)
+    const n = count(before, 'data-base-switch') + 1, cn = count(before, 'class="pb-compare"')
+    const rows = [`panes: switch ${n} v=a`, `panes: switch ${n} v=b`, `panes: switch ${n} v arrow`]
+    for (let j = 1; j <= count(html, 'class="pb-compare"'); j++) rows.push(`panes: compare ${cn + j} before`, `panes: compare ${cn + j} after`)
+    if (c.named === 'zoom') rows.push(`chrome: zoom ${count(before, 'data-base-zoom') + 1}`)
+    if (c.named === 'chart') rows.push(...[...html.matchAll(/<figcaption>(Inner chart [^<]+)<\/figcaption>/g)].map((x) => `chart: ${x[1]} (grouped, shared)`))
+    return { name: c.named ? INNER_NAMED[c.named] : innerName(c), rows }
+  })
+  return { body: `<header class="pb-mast"><h1>Inner matrix</h1><p class="pb-lede">Hiding containers inside a switch, between its box and its keys or its panes.</p></header>\n<main>\n${body}\n</main>`, cells: out }
+}
+const INNER_NAMED = {
+  reviewer: "the reviewer's page: keys in the box, both panes in a compare's before side",
+  zoom: 'a zoomable image in a pane inside S, inside the switch',
+  chart: 'a bars chart in a pane inside S, sharing a scale with one in a pane outside it',
+}
+const innerAll = () => [...innerCells(), ...Object.keys(INNER_NAMED).map((named) => ({ named }))]
+// --- end inner matrix
+
 // runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
 // chosen point, a driver command or a screenshot write that fails after a fault was measured, a
 // page event that arrives after a view's last probe, a crash or detach in the same chunk as a
@@ -1770,6 +1876,34 @@ ${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed">
     const other = [...new Set(refused.matrix.flatMap((m) => m.faults).filter((f) => f.kind !== 'part-error').map((f) => `${f.kind}: ${f.detail}`))]
     check(refusedName, refused.result === 'fail' && cells.some((c) => c.refused) && kept.length === 0 && other.length === 0,
       `${kept.map((c) => `${c.target} in ${c.arr} (switch ${c.n}) not refused`).join(', ')} ${other.slice(0, 4).join(' | ')}`)
+  }
+
+  // The inner matrix, on one shell page of every cell: each must pass with its rows passing in
+  // every view and nothing undriven, so a container inside a part, between a switch's box and its
+  // keys or its panes, never fails or skips a step, and every exposure is put back for the next
+  // cell. A second page narrows the chart in S's tracks, and the share group outside S must fail.
+  const innerRun = 'browser: the inner matrix drives each switch through containers between its box and its keys or panes'
+  const innerShare = 'browser: the inner matrix holds a chart in a compare side in a pane to its share group outside it'
+  if (why) { skip(innerRun, why); skip(innerShare, why) }
+  else {
+    writeFileSync(join(base, 'nest.png'), zoomPng([200, 60, 40]))
+    const viewNames = runMod.DOC_VIEWS.map((v) => v.name)
+    const runPage = (body) => runMod.runChecks({ buffer: basePage(' data-base-shell', body), dir: base, media: ['nest.png'], chromium, tmp: priv })
+    const { body, cells } = innerPage(innerAll())
+    const before = { ...leaks(priv), timers: timers() }
+    const out = await runPage(body)
+    const after = { ...leaks(priv), timers: timers() }
+    const everyView = (name) => out.checks.some((c) => c.name === name && c.result === 'pass' && viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v)))
+    const red = cells.filter((c) => !c.rows.every(everyView))
+    const redWhy = (c) => c.rows.filter((r) => !everyView(r)).map((r) => { const x = out.checks.find((y) => y.name === r); return `${r}: ${x ? `${x.result} ${x.detail}` : 'no row'}` }).join('; ')
+    check(innerRun, out.result === 'pass' && out.undriven.length === 0 && cells.length === innerCells().length + 3 && red.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
+      `${cells.length - red.length} of ${cells.length} cells pass, ${out.result} ${JSON.stringify(out.reason)}, undriven ${JSON.stringify(out.undriven)}. ${red.slice(0, 6).map((c) => `${c.name}: ${redWhy(c)}`).join(' | ')} ${JSON.stringify({ before, after })}`)
+    const narrowed = await runPage(innerPage([{ named: 'chart' }], ' style="grid-template-columns: minmax(0, 1fr) 12rem"').body)
+    const share = /^Inner chart 1, beside it\.: row 1 col 1 track [\d.]+ px, and Inner chart 1, in the compare\. in its share group has [\d.]+ px$/
+    const kinds = [...new Set(narrowed.matrix.flatMap((c) => c.faults.map((f) => f.kind)))]
+    check(innerShare, narrowed.result === 'fail' && kinds.join() === 'chart-geometry'
+      && viewNames.every((v) => narrowed.matrix.some((c) => c.view === v && c.state === runMod.PANES && c.faults.some((f) => share.test(f.detail)))),
+      `${narrowed.result}: ${[...new Set(narrowed.matrix.flatMap((c) => c.faults.map((f) => `${c.view}/${c.state} ${f.kind}: ${f.detail}`)))].slice(0, 8).join(' | ')}`)
   }
 
   // The base leaves the response alone (ruling 2). One question block runs on a shell page and on

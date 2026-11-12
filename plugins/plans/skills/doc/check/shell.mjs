@@ -1,7 +1,8 @@
 // The browser check's half for the page shell: the `chrome` state and the question counts. run.mjs
 // calls it, and its header defines `drive` and the rules every function here keeps. Node built-ins
-// only, and no import of run.mjs, which imports this file. parts.mjs's expose() makes a hidden
-// zoom reachable, and its restore() puts the page back.
+// only, and no import of run.mjs, which imports this file. Each row takes parts.mjs's exposures():
+// every control a row clicks and every element it measures is exposed first, whatever hides it,
+// and the row's end puts the page back.
 //
 //   chrome(drive)          the `chrome` state on a Document whose bytes hold body[data-base-shell]:
 //                          the theme switch, every zoom, the dock and the sections sheet. Returns
@@ -32,12 +33,16 @@
 //   - a count on each row whose section holds a fieldset[data-ask], in the contents list and in
 //     the sheet, and the page's total on the dock
 // Controls are found by the script-made names in parts.md and the plan's contracts, and every
-// action is drive.click or drive.key: real input under run.mjs's hit-test rule. A row and its
+// action is a tap, exposures()'s exposure and then drive.click, or drive.key: real input under
+// run.mjs's hit-test rule. A row and its
 // section are matched by position among the page's listed sections, never by looking the id up,
 // since a repeated id makes a lookup find the first holder whatever the row says.
 //
 // chrome, in this order. Each step's first failure ends that step: it closes any open dialog and
-// the walk goes on to the next part.
+// the walk goes on to the next part. Then the row's exposures are put back, after any open dialog
+// is closed, and a failure there fails a row that had passed, as `after the <row>, <what failed>`.
+// <html>, which the theme reads, and the open dialogs, which the kit appends to <body>, sit in no
+// container, so their readings expose nothing.
 //   theme      the --plans-fb-* names tokens.css's dark block overrides (14), with their values in
 //              its first :root block and in that dark block, read from
 //              plugins/plans/skills/show/tokens.css on disk, never from the page. A click on the
@@ -48,26 +53,25 @@
 //              dark, each checked again under its own row. A click that can't land ends the theme.
 //   zoom n     the button's img must carry the src the bytes give zoom n. A zoom that a closed
 //              <details>, a hidden switch pane or a compare's hidden side holds, nested in any
-//              order, is made reachable through expose() first, and one it can't reach fails with
-//              `revealing it: <the container that stayed hidden>`. Whatever the row's result,
-//              restore() then puts back what expose() changed, after any open dialog is closed,
-//              and a failure there fails a row that had passed. A click opens it: exactly one
-//              open dialog, modal, showing that image, decoded. A click on Actual
-//              size: the image's drawn width is its natural width over the ratio within 1 CSS px,
-//              the ratio being data-base-dpr on the authored img, else natural width over its
-//              width attribute, else 1. Close, then a second open and Escape: no dialog stays open
-//              and focus is back on zoom n's button each time.
-//   dock       scrolls the contents list (else the masthead, else the first row's section, as the
-//              shell watches) just out of view, then the dock must show inside the viewport and
-//              read `k/N title` for a listed section that is in view. A page too short to scroll
-//              that far passes when the dock stays hidden. No reader can open its sheet there,
-//              so the sheet row checks the sheet unopened: it exists, is closed and lists every
-//              row in order.
-//   sheet      with the dock showing, a click on Sections opens one modal dialog that is the sheet
-//              and lists every row in order. A click on the last row (the first, when the dock
-//              names the last) closes it and brings that row's own section, the listed section at
-//              the row's position, into view above the dock.
-//              Then Close, and a second open and Escape: no dialog stays open and focus is back on
+//              order, is made reachable before each click on it, and one that can't be fails with
+//              `revealing it: <the container that stayed hidden>`. A click opens it: exactly one
+//              open dialog, modal, showing that image, decoded. A click on Actual size: the
+//              image's drawn width is its natural width over the ratio within 1 CSS px, the ratio
+//              being data-base-dpr on the authored img, else natural width over its width
+//              attribute, else 1. Close, then a second open and Escape: no dialog stays open and
+//              focus is back on zoom n's button each time.
+//   dock       exposes the contents list (else the masthead, else the first row's section, as the
+//              shell watches) and every listed section, which the dock and the sheet measure. Then
+//              it scrolls the watched element just out of view, and the dock must show inside the
+//              viewport and read `k/N title` for a listed section that is in view. A page too
+//              short to scroll that far passes when the dock stays hidden. No reader can open its
+//              sheet there, so the sheet row checks the sheet unopened: it exists, is closed and
+//              lists every row in order.
+//   sheet      the dock row's exposures, then with the dock showing, a click on Sections opens one
+//              modal dialog that is the sheet and lists every row in order. A click on the last
+//              row (the first, when the dock names the last) closes it and brings that row's own
+//              section, the listed section at the row's position, into view above the dock. Then
+//              Close, and a second open and Escape: no dialog stays open and focus is back on
 //              Sections each time.
 //
 // Forced dark and run.mjs. chrome() returns with <html data-plans-theme="dark">, the theme's last
@@ -85,7 +89,7 @@
 
 import { readFileSync } from 'node:fs'
 
-import { expose, restore } from './parts.mjs'
+import { exposures } from './parts.mjs'
 
 const TOKENS = new URL('../../show/tokens.css', import.meta.url)
 const THEME = 'button.plans-theme'
@@ -96,6 +100,9 @@ const SECTIONS = '.plans-dock button.plans-dock-sections'
 const SHEET = 'dialog.plans-sheet'
 const SHEET_ROW = 'dialog.plans-sheet a[href]'
 const SHEET_CLOSE = 'dialog.plans-sheet button.plans-sheet-close'
+const NAV = '[data-base-contents]'
+const MAST = 'header.pb-mast'
+const LISTED = 'main > section[id]'
 // The cap on each wait for the page to answer an action: a dialog, a decode, a size, focus. Each
 // lands within a few frames, so the cap is only ever spent by a step that fails, and a page with
 // eight broken zooms then spends 8 s per view of the 180 s deadline.
@@ -132,9 +139,9 @@ function fallbacks() {
 
 /* ---------------------------------------------------------------- in-page */
 
-// What the built bytes call for, read with DOMParser: { mast, nav, rows: [{ id, title, asks }],
-// asks: [id], zooms: [{ src, dpr, width }], repeats: [id] }. asks in a row are indexes into asks,
-// and repeats lists each listed section's id that another element also holds. DOMParser parses
+// What the built bytes call for, read with DOMParser: { mast, nav, rows: [{ id, at, title, asks }],
+// asks: [id], zooms: [{ src, dpr, width }], repeats: [id] }. at is a row's section's index among
+// `main > section[id]`, asks in a row are indexes into asks, and repeats lists each listed section's id that another element also holds. DOMParser parses
 // with scripting off, so a <noscript>'s content is elements here and text in the scripted page:
 // every read skips it, and a <template>'s, as parts.mjs's model does.
 function plan(source) {
@@ -147,10 +154,10 @@ function plan(source) {
     return t.replace(/\s+/g, ' ').trim()
   }
   const rows = []
-  for (const s of all(doc, 'main > section[id]')) {
+  for (const [at, s] of all(doc, 'main > section[id]').entries()) {
     const h = s.firstElementChild
     if (!s.id || !h || h.localName !== 'h2') continue
-    rows.push({ id: s.id, title: titleOf(h) || s.id, asks: all(s, 'fieldset[data-ask]').map((f) => asks.indexOf(f)) })
+    rows.push({ id: s.id, at, title: titleOf(h) || s.id, asks: all(s, 'fieldset[data-ask]').map((f) => asks.indexOf(f)) })
   }
   const zooms = []
   for (const img of all(doc, 'figure.pb-figure[data-base-zoom] img')) {
@@ -346,22 +353,30 @@ async function countsNow(want, cap) {
 const fail = (detail) => ({ result: 'fail', detail })
 const pass = (detail) => ({ result: 'pass', detail })
 
-// One row named `chrome: <target>`. fn returns { result, detail }; a step failure that drive
-// throws fails the row, and any other error is the checker's own and goes up. A row that doesn't
-// pass closes every open dialog, so the next part starts clean.
+// One row named `chrome: <target>`. fn gets the row's exposures and returns { result, detail }; a
+// step failure that drive throws fails the row, and any other error is the checker's own and goes
+// up. A row that doesn't pass closes every open dialog, so the next part starts clean. Then the
+// row's exposures are put back, and a failure there fails a row that had passed, as `after the
+// <first word of target>, <what failed>`.
 async function step(drive, steps, target, fn) {
+  const ex = exposures(drive)
   let r
-  try { r = await fn() } catch (e) {
+  try { r = await fn(ex) } catch (e) {
     if (!drive.missed(e)) throw e
     r = fail(e.message)
   }
-  steps.push({ name: `chrome: ${target}`, result: r.result, detail: r.detail })
   if (r.result !== 'pass') await drive.closeDialogs()
+  if (ex.size) {
+    const failed = await ex.unwind()
+    if (failed && r.result === 'pass') r = fail(`after the ${target.split(' ')[0]}, ${failed}`)
+  }
+  steps.push({ name: `chrome: ${target}`, result: r.result, detail: r.detail })
   return r
 }
 
-async function themeClick(drive, t, mode) {
-  await drive.click({ kind: 'base', selector: THEME, index: 0 })
+async function themeClick(drive, ex, t, mode) {
+  const miss = await ex.tap({ selector: THEME, index: 0 }, 'it')
+  if (miss) return fail(miss)
   const now = await drive.call(themeNow, t.names)
   const scheme = mode === 'auto' ? drive.view.scheme : mode
   const bad = t.names.filter((n) => now.values[n] !== t[scheme].get(n)).map((n) => `${n} is ${JSON.stringify(now.values[n])}, tokens.css's ${scheme} value is ${t[scheme].get(n)}`)
@@ -374,41 +389,29 @@ async function themeClick(drive, t, mode) {
     : `the ${t.names.length} fallbacks are tokens.css's ${mode} values, and color-scheme is ${mode}`)
 }
 
-// Zoom n: made reachable, driven, then put back.
-async function zoomStep(drive, z, i) {
+// Zoom n: its img's src, then its dialog: open, Actual size, Close, a second open and Escape. Each
+// click is on a control exposed first, so a zoom button a container hides is revealed before it.
+async function zoomStep(drive, ex, z, i) {
   const n = i + 1
   const spot = await drive.call(zoomSpot, ZOOM, i)
   if (spot.missing) return fail(`the page has no ${ZOOM} at index ${i}, and the bytes hold zoomable image ${z.src}`)
   if (spot.src !== z.src) return fail(`the button holds the img ${JSON.stringify(spot.src)}, and zoomable image ${n} in the bytes is ${JSON.stringify(z.src)}`)
-  const ex = await expose(drive, { selector: ZOOM, index: i })
-  let r
-  try { r = ex.ok ? await zoomDrive(drive, z, i) : fail(`revealing it: ${ex.hidden}`) } catch (e) {
-    if (!drive.missed(e)) throw e
-    r = fail(e.message)
-  }
-  if (!ex.changes.length) return r
-  if (r.result !== 'pass') await drive.closeDialogs()
-  const back = await restore(drive, ex.changes)
-  return back.failed && r.result === 'pass' ? fail(`after the zoom, ${back.failed}`) : r
-}
-
-// Zoom i's dialog: open, Actual size, Close, a second open and Escape.
-async function zoomDrive(drive, z, i) {
-  await drive.click({ kind: 'base', selector: ZOOM, index: i })
+  let miss = await ex.tap({ selector: ZOOM, index: i }, 'it')
+  if (miss) return fail(miss)
   const o = await drive.call(zoomOpened, ZOOM, i, WAIT_MS)
   if (o.open !== 1 || !o.modal || !o.img || !o.decoded) {
     return fail(`after a click, ${o.open !== 1 ? `${o.open} dialogs are open, not 1` : !o.modal ? 'the open dialog is not modal' : !o.img ? `the open dialog shows no image with the opener's src` : 'its image did not decode'}`)
   }
-  await drive.click({ kind: 'base', selector: ZOOM_SIZE, index: 0 })
+  if ((miss = await ex.tap({ selector: ZOOM_SIZE, index: 0 }, 'Actual size'))) return fail(miss)
   const s = await drive.call(zoomSized, ZOOM, i, z.dpr, z.width, WAIT_MS)
   if (!s.img) return fail('after Actual size, the open dialog shows no image with the opener\'s src')
   const round = (x) => Math.round(x * 100) / 100
   if (Math.abs(s.width - s.want) > 1) return fail(`actual size draws the image ${round(s.width)} px wide, not ${round(s.want)} (natural ${s.nw} over ratio ${round(s.ratio)}, from ${s.how})`)
 
-  await drive.click({ kind: 'base', selector: ZOOM_CLOSE, index: 0 })
+  if ((miss = await ex.tap({ selector: ZOOM_CLOSE, index: 0 }, 'Close'))) return fail(miss)
   const c = await drive.call(closedTo, ZOOM, i, WAIT_MS)
   if (!c.ok) return fail(`after Close, ${c.open ? `${c.open} dialog${c.open === 1 ? ' is' : 's are'} still open` : `focus is on ${c.active}, not the zoom button`}`)
-  await drive.click({ kind: 'base', selector: ZOOM, index: i })
+  if ((miss = await ex.tap({ selector: ZOOM, index: i }, 'it'))) return fail(miss)
   const again = await drive.call(zoomOpened, ZOOM, i, WAIT_MS)
   if (again.open !== 1 || !again.modal) return fail(`a second click opens ${again.open} dialogs${again.open === 1 ? ', not modal' : ''}`)
   await drive.key('Escape')
@@ -417,9 +420,21 @@ async function zoomDrive(drive, z, i) {
   return pass(`actual size ${round(s.width)} px (natural ${s.nw} over ${round(s.ratio)}, from ${s.how}); Close and Escape return focus`)
 }
 
+// Exposes what the dock and the sheet measure: the element the dock watches, then every listed
+// section. Returns '' or what stayed hidden.
+async function reveal(ex, p, watch) {
+  const [w] = watch === 'nav' ? await ex.read(NAV, [0]) : watch === 'mast' ? await ex.read(MAST, [0]) : await ex.read(LISTED, [p.rows[0].at])
+  if (w.fail) return `revealing the ${watch === 'nav' ? 'contents list' : watch === 'mast' ? 'masthead' : `section #${p.rows[0].id}`}: ${w.fail}`
+  const listed = await ex.read(LISTED, p.rows.map((r) => r.at))
+  const k = listed.findIndex((r) => r.fail)
+  return k === -1 ? '' : `revealing section #${p.rows[k].id}: ${listed[k].fail}`
+}
+
 // The sheet, from the dock: open, follow a row, then Close and Escape.
-async function sheetStep(drive, p, watch) {
+async function sheetStep(drive, ex, p, watch) {
   const rows = p.rows
+  let miss = await reveal(ex, p, watch)
+  if (miss) return fail(miss)
   const d = await drive.call(dockShow, rows, watch, WAIT_MS)
   const want = rows.map((r) => '#' + r.id)
   if (d.short) {
@@ -430,23 +445,22 @@ async function sheetStep(drive, p, watch) {
     return pass(`not opened: the page can't scroll to y ${d.y} (it ends at ${d.max}), so the dock never shows and no reader can open it; it holds the ${rows.length} rows in order`)
   }
   if (!d.ok) return fail(`the dock never showed to open it: ${d.why}`)
-  await drive.click({ kind: 'base', selector: SECTIONS, index: 0 })
+  if ((miss = await ex.tap({ selector: SECTIONS, index: 0 }, 'Sections'))) return fail(miss)
   const s = await drive.call(sheetOpen, SHEET, WAIT_MS)
   if (s.open !== 1 || !s.modal || !s.sheet) return fail(`after a click on Sections, ${s.open !== 1 ? `${s.open} dialogs are open, not 1` : !s.modal ? 'the open dialog is not modal' : `the open dialog is not ${SHEET}`}`)
   if (s.hrefs.join(' ') !== want.join(' ')) return fail(`the sheet's rows link ${s.hrefs.join(' ') || 'nothing'}, and the bytes list ${want.join(' ')}`)
   const t = d.k === rows.length - 1 ? 0 : rows.length - 1
-  await drive.click({ kind: 'base', selector: SHEET_ROW, index: t })
+  if ((miss = await ex.tap({ selector: SHEET_ROW, index: t }, `row ${t + 1}`))) return fail(miss)
   const j = await drive.call(jumped, t, rows[t].id, WAIT_MS)
   if (!j.ok) return fail(`after a click on row ${t + 1} (#${rows[t].id}), ${j.why}`)
 
   for (const how of ['Close', 'Escape']) {
     const again = await drive.call(dockShow, rows, watch, WAIT_MS)
     if (!again.ok) return fail(`before ${how}, the dock never showed again: ${again.why ?? `the page ends at ${again.max}`}`)
-    await drive.click({ kind: 'base', selector: SECTIONS, index: 0 })
+    if ((miss = await ex.tap({ selector: SECTIONS, index: 0 }, 'Sections'))) return fail(miss)
     const o = await drive.call(sheetOpen, SHEET, WAIT_MS)
     if (o.open !== 1 || !o.modal || !o.sheet) return fail(`a second click on Sections, for ${how}, leaves ${o.open} dialogs open${o.open === 1 ? `, ${o.modal ? 'not the sheet' : 'not modal'}` : ''}`)
-    if (how === 'Close') await drive.click({ kind: 'base', selector: SHEET_CLOSE, index: 0 })
-    else await drive.key('Escape')
+    if (how === 'Close') { if ((miss = await ex.tap({ selector: SHEET_CLOSE, index: 0 }, 'Close'))) return fail(miss) } else await drive.key('Escape')
     const c = await drive.call(closedTo, SECTIONS, 0, WAIT_MS)
     if (!c.ok) return fail(`after ${how}, ${c.open ? `${c.open} dialog${c.open === 1 ? ' is' : 's are'} still open` : `focus is on ${c.active}, not Sections`}`)
   }
@@ -462,24 +476,26 @@ export async function chrome(drive) {
   if (p.mast) {
     const t = fallbacks()
     for (const mode of ['light', 'dark', 'auto', 'light', 'dark']) {
-      const r = await run(`theme ${mode}`, () => themeClick(drive, t, mode))
+      const r = await run(`theme ${mode}`, (ex) => themeClick(drive, ex, t, mode))
       // A click that couldn't land leaves the cycle where it was, so the rest would test nothing.
-      if (r.result === 'fail' && /^(the page has no|a click at the center)/.test(r.detail)) break
+      if (r.result === 'fail' && /^(the page has no|a click at the center|revealing it)/.test(r.detail)) break
     }
   }
 
-  for (const [i, z] of p.zooms.entries()) await run(`zoom ${i + 1}`, () => zoomStep(drive, z, i))
+  for (const [i, z] of p.zooms.entries()) await run(`zoom ${i + 1}`, (ex) => zoomStep(drive, ex, z, i))
   const made = await drive.call(count, ZOOM)
   for (let i = p.zooms.length; i < made; i++) steps.push({ name: `chrome: zoom ${i + 1}`, result: 'fail', detail: `the page made ${made} zoom buttons, and the bytes hold ${p.zooms.length} zoomable images` })
 
   if (p.rows.length) {
     const watch = p.nav ? 'nav' : p.mast ? 'mast' : 'section'
-    await run('dock', async () => {
+    await run('dock', async (ex) => {
+      const miss = await reveal(ex, p, watch)
+      if (miss) return fail(miss)
       const d = await drive.call(dockShow, p.rows, watch, WAIT_MS)
       if (d.short) return d.shown ? fail(`the page can't scroll its ${watch} out of view (y ${d.y}, it ends at ${d.max}), yet the dock shows`) : pass(`the page can't scroll its ${watch} out of view (y ${d.y}, it ends at ${d.max}), and the dock stays hidden`)
       return d.ok ? pass(`at y ${d.y} the dock reads ${JSON.stringify(d.text.slice(0, 120))}`) : fail(`at y ${d.y}, ${d.why}`)
     })
-    await run('sheet', () => sheetStep(drive, p, watch))
+    await run('sheet', (ex) => sheetStep(drive, ex, p, watch))
   }
   return { faults, steps }
 }
