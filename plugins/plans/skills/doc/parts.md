@@ -14,6 +14,7 @@ Every part shows its content before script runs. Script adds controls, tracks an
 - Script writes the page only when something changes: a section comes into view, a question changes state, the reader acts, or a chart's box changes width. It never writes on each scroll frame, because on a page with questions each write costs the kit one full validation.
 - A part with a markup error logs `plans-part: <part>: <what is wrong>` to the console once and leaves your markup as you wrote it. The check reports that line as the fault `part-error`, so the build exits 1.
 - A kit hook inside a switch pane, a compare side or a chart is a `part-error`. A question that a pane can hide is a question the reader may never see.
+- An element holds at most one base role: switch box (`data-base-switch`), key (`data-base-key`), pane (`data-base-when`), chart (`data-base-chart`), compare (`figure.pb-compare`), compare side (`.pb-side`), table box (`.pb-table`), zoom (`data-base-zoom`), contents (`data-base-contents`), shell (`data-base-shell`) and disclosure (a `<details>` or a `<summary>`). Two roles on one element give two parts one box, so a timeline written as a pane hides its list and leaves its drawn track on screen. The check reports it as `part-error` with the detail `roles: <tag> holds <role> and <role>: give each its own element`. Give one role an element of its own around the other, for example `<div data-base-when="v=b">` around a timeline or a `<details>`. Layout classes such as `pb-row`, `pb-span-N` and `pb-figure`, `data-base-status`, `data-base-lane` and a chart's own options aren't roles, and combine freely.
 
 Parts size themselves from their own box, with container queries, not from the viewport. A part in a narrow grid cell at 1100 px behaves as it does on a phone.
 
@@ -129,7 +130,7 @@ A box of panes that the reader picks between with one or two groups of buttons.
 ```
 
 - Write every button with `disabled`, and mark exactly one button per key with `aria-pressed="true"`. Script enables the buttons only after it has checked the box and bound them, so a reader never presses a dead button.
-- `data-base-when` is one or more `key=value` terms, separated by single spaces. A pane shows when every term holds. A pane may leave a key out, as the `codex` pane above does.
+- `data-base-when` is one or more `key=value` terms, separated by single spaces, on an element that holds no other base role. A pane shows when every term holds. A pane may leave a key out, as the `codex` pane above does.
 - Keys are unique in a box. Values are unique in a key, and each key has at least two. Both match `^[a-z][a-z0-9-]*$`.
 - Two panes may match one combination, and a combination may match no pane.
 - Never set `hidden` on a pane. Before script runs, every pane shows, so the page still holds everything.

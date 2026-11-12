@@ -26,8 +26,11 @@
 //     the page's groups, null for a chart in none, from and to the timeline's domain, times UTC
 //     ms. label names the chart in the oracle's rows and faults, as its header says. ok is
 //     false for a part with a markup error, whose detail is in errors as `<part>: <what>`, the part
-//     being switch, compare, bars, timeline or markup. The model is this file's own reading of the
-//     markup, built from parts.md and the rulings, and never from what the kit wrote.
+//     being switch, compare, bars, timeline, markup or roles. An element that holds two or more
+//     base roles is the one error `roles: <tag> holds <role> and <role>: give each its own
+//     element`, the roles named as parts.md names them, in its order, and the parts it holds keep
+//     their own reading. The model is this file's own reading of the markup, built from parts.md
+//     and the rulings, and never from what the kit wrote.
 //   panes(drive)             the `panes` state, below. Returns { faults, steps }.
 //   chartFaults(source, readings)  in-page, after every probe in every state of a page whose
 //                            bytes hold a chart: the oracle, below. Returns faults and `chart: …`
@@ -188,6 +191,18 @@ export function model(source) {
     if (el.closest('meta[name="plans-build"], [data-plans-kit], div.plans-diff')) continue
     for (const c of el.classList) if (MADE_CLASS.includes(c)) err(`markup: <${el.localName}> carries ${c}`)
     for (const a of el.attributes) if (MADE_ATTR.includes(a.name)) err(`markup: <${el.localName}> carries ${a.name}`)
+  }
+
+  // An element holds at most one base role (parts.md), each a hook that script or this check acts
+  // on. Two on one element give two parts one box, such as a timeline pane whose drawn track, a
+  // sibling of its list, stays on screen while the pane hides. run.mjs's baseNeeds reads the same
+  // roles from the bytes, so an element with two of them is enough for the panes state.
+  const ROLES = [['switch box', '[data-base-switch]'], ['key', '[data-base-key]'], ['pane', '[data-base-when]'], ['chart', '[data-base-chart]'],
+    ['compare', 'figure.pb-compare'], ['compare side', '.pb-side'], ['table box', '.pb-table'], ['zoom', '[data-base-zoom]'],
+    ['contents', '[data-base-contents]'], ['shell', '[data-base-shell]'], ['disclosure', 'details, summary']]
+  for (const el of all(ROLES.map((r) => r[1]).join(', '))) {
+    const held = ROLES.filter((r) => el.matches(r[1])).map((r) => r[0])
+    if (held.length > 1) err(`roles: <${el.localName}> holds ${held.slice(0, -1).join(', ')} and ${held.at(-1)}: give each its own element`)
   }
 
   const boxes = all('[data-base-switch]'), paneEls = all('[data-base-when]')

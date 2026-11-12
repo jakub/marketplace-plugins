@@ -69,11 +69,12 @@
 // response the script can drive. A kit page whose kit already logged an error gets the cell
 // without the script, since its response is off.
 //   `panes` runs, in both modes, on a page whose built bytes hold a tag with data-base-switch,
-// data-base-key or data-base-when, or a <figure> with the class pb-compare, so a key or a pane
-// outside any switch gets the model that reports it. `chrome` runs on a Document whose bytes hold
-// a <body> with data-base-shell. Both are read from the bytes with scan.mjs, never from the DOM the
-// page's script made, so a base whose script doesn't run can't skip its own check, and the
-// required matrix cells follow the same read. A tag inside an HTML <template> is inert and counts
+// data-base-key or data-base-when, a <figure> with the class pb-compare, or a tag that holds two
+// base roles, so a key or a pane outside any switch, or a tag with two roles, gets the model that
+// reports it. `chrome` runs on a Document whose bytes hold a <body> with data-base-shell. Both are
+// read from the bytes with scan.mjs, never from the DOM the page's script made, so a base whose
+// script doesn't run can't skip its own check, and the required matrix cells follow the same
+// read. A tag inside an HTML <template> is inert and counts
 // for nothing. Each of the two runs in a page load of its own: navigate, settle, open every
 // <details> as details-open leaves them, settle, then one module function, parts.mjs's panes(drive)
 // or shell.mjs's chrome(drive), then every open <dialog> closed, scroll position 0, settle, the
@@ -998,10 +999,17 @@ function inputs({ send, evaluate }) {
 // The kinds of base part the probe counts in the live page, by the selector it counts with.
 const WRITTEN = ['[data-base-chart]', '[data-base-switch]', 'figure.pb-compare', 'body[data-base-shell]', '[data-base-contents]']
 
+// The base roles of a start tag, given its class tokens: parts.mjs's model reads the same eleven
+// from the same bytes, and refuses a tag that holds two (parts.md: an element holds at most one).
+const ROLES = [(t) => attr(t, 'data-base-switch'), (t) => attr(t, 'data-base-key'), (t) => attr(t, 'data-base-when'), (t) => attr(t, 'data-base-chart'),
+  (t, c) => t.name === 'figure' && c.includes('pb-compare'), (t, c) => c.includes('pb-side'), (t, c) => c.includes('pb-table'), (t) => attr(t, 'data-base-zoom'),
+  (t) => attr(t, 'data-base-contents'), (t) => attr(t, 'data-base-shell'), (t) => t.name === 'details' || t.name === 'summary']
+
 // The base states a page requires, read from its built bytes with scan.mjs, never from what its
 // script made, so a base whose script doesn't run can't skip its own check. A tag inside an HTML
 // <template> is inert and counts for nothing. panes: a tag with data-base-switch, data-base-key or
-// data-base-when, or a <figure> with the class token pb-compare. chrome: a Document whose <body> start tag carries
+// data-base-when, a <figure> with the class token pb-compare, or a tag that holds two base roles,
+// whose model then reports it. chrome: a Document whose <body> start tag carries
 // data-base-shell (the parser joins a second <body> tag's attributes to the first). charts: a tag
 // with data-base-chart, which turns chartFaults on. written: how many of each WRITTEN kind the
 // bytes hold, body[data-base-shell] being 1 when any <body> start tag carries it.
@@ -1010,9 +1018,11 @@ function baseNeeds(source, inline) {
   for (const t of scan(source).tokens) {
     if (t.type !== 'start' || t.template) continue
     const n = need.written
+    const cls = (attr(t, 'class')?.value ?? '').split(/[\t\n\f\r ]+/)
     if (attr(t, 'data-base-switch')) { need.panes = true; n['[data-base-switch]']++ }
     if (attr(t, 'data-base-key') || attr(t, 'data-base-when')) need.panes = true
-    if (t.name === 'figure' && (attr(t, 'class')?.value ?? '').split(/[\t\n\f\r ]+/).includes('pb-compare')) { need.panes = true; n['figure.pb-compare']++ }
+    if (t.name === 'figure' && cls.includes('pb-compare')) { need.panes = true; n['figure.pb-compare']++ }
+    if (ROLES.filter((held) => held(t, cls)).length > 1) need.panes = true
     if (attr(t, 'data-base-chart')) { need.charts = true; n['[data-base-chart]']++ }
     if (attr(t, 'data-base-contents')) n['[data-base-contents]']++
     if (t.name === 'body' && attr(t, 'data-base-shell')) {

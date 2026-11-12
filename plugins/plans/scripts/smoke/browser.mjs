@@ -1398,6 +1398,36 @@ const INNER_NAMED = {
 const innerAll = () => [...innerCells(), ...Object.keys(INNER_NAMED).map((named) => ({ named }))]
 // --- end inner matrix
 
+// The base roles, in parts.md's order, each with what puts it on an element: an attribute, a class
+// token, or the tags that alone hold it. An element holds at most one.
+const ROLES = [
+  { name: 'switch box', attr: 'data-base-switch' }, { name: 'key', attr: 'data-base-key="k"' }, { name: 'pane', attr: 'data-base-when="k=a"' },
+  { name: 'chart', attr: 'data-base-chart="timeline"' }, { name: 'compare', cls: 'pb-compare', tags: ['figure'] }, { name: 'compare side', cls: 'pb-side' },
+  { name: 'table box', cls: 'pb-table' }, { name: 'zoom', attr: 'data-base-zoom' }, { name: 'contents', attr: 'data-base-contents' },
+  { name: 'shell', attr: 'data-base-shell' }, { name: 'disclosure', tags: ['details', 'summary'] },
+]
+// Every unordered pair of roles. A pair that some tag can hold is one element of that tag, with
+// the part-error it must raise; a pair that no tag can hold is skipped, with why. A disclosure
+// pair alternates between a <details> and a <summary> inside a plain <details>, so both tags hold
+// one. Returns { pairs: [{ n, roles, tag, html, error }], skipped: [{ roles, why }] }.
+function rolePairs() {
+  const pairs = [], skipped = []
+  let alt = 0
+  ROLES.forEach((a, i) => ROLES.slice(i + 1).forEach((b) => {
+    const tags = a.tags && b.tags ? a.tags.filter((t) => b.tags.includes(t)) : a.tags ?? b.tags ?? ['div']
+    const only = (r) => `only ${r.tags.map((t) => `a <${t}>`).join(' or ')} holds a ${r.name}`
+    if (!tags.length) return skipped.push({ roles: [a.name, b.name], why: `${only(a)}, and ${only(b)}` })
+    const tag = tags[alt++ % tags.length], n = pairs.length + 1
+    const cls = [a.cls, b.cls].filter(Boolean)
+    const attrs = [cls.length ? `class="${cls.join(' ')}"` : '', a.attr, b.attr].filter(Boolean).join(' ')
+    const text = `Pair ${n}: ${a.name} and ${b.name}.`
+    const html = tag === 'details' ? `<details ${attrs}><summary>${text}</summary></details>`
+      : tag === 'summary' ? `<details><summary ${attrs}>${text}</summary></details>` : `<${tag} ${attrs}>${text}</${tag}>`
+    pairs.push({ n, roles: [a.name, b.name], tag, html, error: `roles: <${tag}> holds ${a.name} and ${b.name}: give each its own element` })
+  }))
+  return { pairs, skipped }
+}
+
 // runChecks in this process, for what a fixture build can't reach: a run deadline that lands at a
 // chosen point, a driver command or a screenshot write that fails after a fault was measured, a
 // page event that arrives after a view's last probe, a crash or detach in the same chunk as a
@@ -2074,6 +2104,120 @@ async function restoreAsBuilt(drive, changes) {
     const missed = out ? rows.filter((r) => !out.checks.some((c) => c.name === r && c.result === 'pass' && viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v)))) : rows
     check(putbackName, !!out && out.result === 'pass' && out.undriven.length === 0 && rows.length === 10 && missed.length === 0,
       out ? `${out.result} ${JSON.stringify(out.reason)}, undriven ${JSON.stringify(out.undriven)}, ${rows.length} rows, not passing in every view: ${missed.join(', ')}` : 'parts.mjs has no restore(drive, changes) to wrap')
+  }
+
+  // One element, one base role (parts.md). The model refuses an element that holds two roles with
+  // a part-error naming them, in the panes cell of every view: on a page of every pair a tag can
+  // hold, on a page whose only base markup is one such element, which the bytes' read sends to the
+  // panes state for it, and on the round 7 reviewer's two pages, a <details> and two timelines each
+  // written as a pane. The same pages with each part in its own element pass. On the timelines'
+  // page, the check's own chart oracle hid what that reviewer found, a drawn track left on screen
+  // beside a hidden list, so each oracle call is followed on the same session by a reading of the
+  // live page: which value the key has pressed and which timeline's track has a box.
+  const rolesNames = {
+    pairs: 'browser: an element that holds two base roles is part-error, for every pair a tag can hold',
+    alone: 'browser: a page whose only base markup is one element with two roles gets the panes state, which refuses it',
+    details: 'browser: a <details> written as a pane is part-error',
+    timeline: 'browser: a timeline written as a pane is part-error',
+    wrappedDetails: 'browser: a <details> inside a pane passes',
+    wrappedTimeline: "browser: two timelines each inside a pane pass, and the hidden pane's track has no box",
+  }
+  if (why) for (const name of Object.values(rolesNames)) skip(name, why)
+  else {
+    const viewNames = runMod.DOC_VIEWS.map((v) => v.name)
+    const run = (buffer) => runMod.runChecks({ buffer, dir: base, chromium, tmp: priv })
+    const inPanes = (out, kind, detail) => viewNames.every((v) => out.matrix.some((c) => c.view === v && c.state === runMod.PANES && c.faults.some((f) => f.kind === kind && f.detail === detail)))
+    const everyView = (out, name) => out.checks.some((c) => c.name === name && c.result === 'pass' && viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v)))
+    const faultsOf = (out) => [...new Set(out.matrix.flatMap((c) => c.faults.map((f) => `${c.view}/${c.state} ${f.kind}: ${f.detail}`)))]
+    const reviewer7 = (panes) => basePage('', `<main>
+<h1>Round 7 probe</h1>
+<p>A page that tests one element with two roles.</p>
+<div data-base-switch>
+<p data-base-key="v"><span>View</span> <button type="button" value="a" aria-pressed="true" disabled>First</button> <button type="button" value="b" disabled>Second</button></p>
+${panes}
+</div>
+</main>`)
+    const details = (wrapped) => `<div data-base-when="v=a"><p>The first pane, a plain div.</p></div>
+${wrapped ? '<div data-base-when="v=b"><details><summary>The second pane holds a details</summary><p>Content of the second pane.</p></details></div>'
+    : '<details data-base-when="v=b"><summary>The second pane is a details</summary><p>Content of the second pane.</p></details>'}`
+    const timeline = (word, v, wrapped) => {
+      const figure = `<figure>
+<ol data-base-chart="timeline"${wrapped ? '' : ` data-base-when="v=${v}"`}>
+<li data-base-lane="Kit"><time datetime="2026-11-03">3 Nov</time> to <time datetime="2026-11-10">10 Nov</time> ${word} bases</li>
+<li data-base-lane="Kit"><time datetime="2026-11-17">17 Nov</time> ${word} premise</li>
+<li data-base-lane="Pages"><time datetime="2026-11-18">18 Nov</time> to <time datetime="2026-11-28">28 Nov</time> ${word} pages</li>
+</ol>
+<figcaption>Timeline ${word}, ${wrapped ? 'in' : 'written as'} a pane.</figcaption>
+</figure>`
+      return wrapped ? `<div data-base-when="v=${v}">\n${figure}\n</div>` : figure
+    }
+    const timelines = (wrapped) => `${timeline('First', 'a', wrapped)}\n${timeline('Second', 'b', wrapped)}`
+    // In the check's isolated world, after each chart oracle call: the view as the check names it,
+    // the value its key has pressed, and whether each timeline's drawn track, the sibling script
+    // puts just before its list, has a box.
+    const TRACKS = `(() => {
+  const has = (el) => !!el && el.getClientRects().length > 0
+  const on = document.querySelector('[data-base-key] button[aria-pressed="true"]')
+  const tracks = [...document.querySelectorAll('ol[data-base-chart]')].map((ol) => !!ol.previousElementSibling && ol.previousElementSibling.matches('div.plans-track') && has(ol.previousElementSibling))
+  return { at: innerWidth + ' ' + (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'), v: on ? on.value : null, tracks }
+})()`
+    const before = { ...leaks(priv), timers: timers() }
+    const { pairs, skipped } = rolePairs()
+    const pairPage = await run(basePage('', `<main>\n<h1>Roles unit</h1>\n<p>Each element below holds two base roles.</p>\n${pairs.map((p) => p.html).join('\n')}\n</main>`))
+    const alone = await run(basePage('', '<main>\n<h1>Roles unit</h1>\n<details class="pb-side"><summary>A compare side written as a details</summary><p>Its text.</p></details>\n</main>'))
+    const doubledDetails = await run(reviewer7(details(false)))
+    const doubledTimelines = await run(reviewer7(timelines(false)))
+    const wrappedDetails = await run(reviewer7(details(true)))
+    const readings = []
+    const real = cdp.Pipe.prototype.send
+    cdp.Pipe.prototype.send = function (method, params, sessionId, ...rest) {
+      const p = real.call(this, method, params, sessionId, ...rest)
+      if (method === 'Runtime.evaluate' && params?.expression?.startsWith('(function chartFaults(') && params.expression.endsWith('(globalThis.plansCheck.source)')) {
+        readings.push(real.call(this, 'Runtime.evaluate', { expression: TRACKS, contextId: params.contextId, returnByValue: true }, sessionId).then((r) => r?.result?.value ?? null, () => null))
+      }
+      return p
+    }
+    let wrappedTimelines
+    try { wrappedTimelines = await run(reviewer7(timelines(true))) } finally { cdp.Pipe.prototype.send = real }
+    const read = await Promise.all(readings)
+    const after = { ...leaks(priv), timers: timers() }
+    const tidy = clean(before) && clean(after) && after.timers === before.timers
+    const leakNote = tidy ? '' : ` ${JSON.stringify({ before, after })}`
+
+    // The pair page's broken markup raises part-errors of its own, and nothing else: the page is
+    // plain, so a pair holding a shell or a contents role drives no chrome, and no switch, compare
+    // or chart on it is valid, so nothing is walked or measured.
+    const missing = pairs.filter((p) => !inPanes(pairPage, 'part-error', p.error))
+    const other = [...new Set(pairPage.matrix.flatMap((c) => c.faults.filter((f) => f.kind !== 'part-error').map((f) => `${c.view}/${c.state} ${f.kind}: ${f.detail}`)))]
+    check(rolesNames.pairs, pairPage.result === 'fail' && pairPage.reason?.kind === 'part-error' && pairs.length === 54 && skipped.length === 1
+      && missing.length === 0 && other.length === 0 && tidy,
+      `${pairs.length - missing.length} of ${pairs.length} pairs refused in every view's panes cell, ${skipped.length} skipped (${skipped.map((s) => `${s.roles.join(' and ')}: ${s.why}`).join('; ')}), ${pairPage.result} ${JSON.stringify(pairPage.reason)}. `
+        + `Not refused: ${missing.slice(0, 6).map((p) => `${p.roles.join(' and ')} on <${p.tag}>`).join(', ')}. Other faults: ${other.slice(0, 6).join(' | ')}${leakNote}`)
+    const aloneError = 'roles: <details> holds compare side and disclosure: give each its own element'
+    check(rolesNames.alone, alone.result === 'fail' && viewNames.every((v) => alone.matrix.filter((c) => c.view === v && c.state === runMod.PANES).length === 1)
+      && inPanes(alone, 'part-error', aloneError) && alone.matrix.every((c) => c.faults.every((f) => f.kind === 'part-error' && f.detail === aloneError)) && tidy,
+      `${alone.result} ${JSON.stringify(alone.reason)}, states ${[...new Set(alone.matrix.map((c) => c.state))].join(', ')}: ${faultsOf(alone).slice(0, 6).join(' | ')}${leakNote}`)
+    // The <details> page's walk still runs, and its first fault is that walk's part-drive: the check
+    // records a state's step rows before the faults it returns. The roles error is in the same cell.
+    const detailsError = 'roles: <details> holds pane and disclosure: give each its own element'
+    check(rolesNames.details, doubledDetails.result === 'fail' && inPanes(doubledDetails, 'part-error', detailsError) && tidy,
+      `${doubledDetails.result} ${JSON.stringify(doubledDetails.reason)}: ${faultsOf(doubledDetails).slice(0, 6).join(' | ')}${leakNote}`)
+    const timelineError = 'roles: <ol> holds pane and chart: give each its own element'
+    check(rolesNames.timeline, doubledTimelines.result === 'fail' && doubledTimelines.reason?.detail === timelineError && inPanes(doubledTimelines, 'part-error', timelineError) && tidy,
+      `${doubledTimelines.result} ${JSON.stringify(doubledTimelines.reason)}: ${faultsOf(doubledTimelines).slice(0, 6).join(' | ')}${leakNote}`)
+    const switchRows = ['panes: switch 1 v=a', 'panes: switch 1 v=b', 'panes: switch 1 v arrow']
+    check(rolesNames.wrappedDetails, wrappedDetails.result === 'pass' && switchRows.every((r) => everyView(wrappedDetails, r)) && tidy,
+      `${wrappedDetails.result} ${JSON.stringify(wrappedDetails.reason)}, rows not passing in every view: ${switchRows.filter((r) => !everyView(wrappedDetails, r)).join(', ')}${leakNote}`)
+    // Each reading must show the pressed pane's track and hide the other's, and each view must have
+    // readings with each value pressed.
+    const want = { a: [true, false], b: [false, true] }
+    const atOf = (v) => `${v.width} ${v.scheme}`
+    const wrong = read.filter((r) => !r || !want[r.v] || r.tracks.join() !== want[r.v].join())
+    const unread = runMod.DOC_VIEWS.flatMap((v) => ['a', 'b'].filter((val) => !read.some((r) => r && r.at === atOf(v) && r.v === val)).map((val) => `${v.name} v=${val}`))
+    const chartRows = ['chart: Timeline First, in a pane. (timeline)', 'chart: Timeline Second, in a pane. (timeline)']
+    check(rolesNames.wrappedTimeline, wrappedTimelines.result === 'pass' && [...switchRows, ...chartRows].every((r) => everyView(wrappedTimelines, r))
+      && read.length > 0 && wrong.length === 0 && unread.length === 0 && tidy,
+      `${wrappedTimelines.result} ${JSON.stringify(wrappedTimelines.reason)}, ${read.length} readings, wrong: ${JSON.stringify(wrong.slice(0, 4))}, no reading with ${unread.join(', ') || 'nothing missing'}${leakNote}`)
   }
 
   // The base leaves the response alone (ruling 2). One question block runs on a shell page and on
