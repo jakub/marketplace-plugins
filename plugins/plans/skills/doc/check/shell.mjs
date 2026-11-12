@@ -25,11 +25,16 @@
 //     fieldset[data-ask], or with a data-base-dpr that isn't a number over 0, each of which the
 //     shell refuses with a part-error. A zoom button past that count fails its row too.
 //   - the dock and the sheet, when a main > section[id] opens with an h2: those sections are the
-//     rows, titled by the h2's text less a leading .num, whitespace collapsed, else the id
+//     rows, titled by the h2's text less a leading .num, whitespace collapsed, else the id. A
+//     listed section's id that any other element in the bytes also holds sends its row's link to
+//     the first of them, so it is a part-error `contents: section "<id>" needs an id no other
+//     element in the page holds`, once per id, in the chrome state
 //   - a count on each row whose section holds a fieldset[data-ask], in the contents list and in
 //     the sheet, and the page's total on the dock
 // Controls are found by the script-made names in parts.md and the plan's contracts, and every
-// action is drive.click or drive.key: real input under run.mjs's hit-test rule.
+// action is drive.click or drive.key: real input under run.mjs's hit-test rule. A row and its
+// section are matched by position among the page's listed sections, never by looking the id up,
+// since a repeated id makes a lookup find the first holder whatever the row says.
 //
 // chrome, in this order. Each step's first failure ends that step: it closes any open dialog and
 // the walk goes on to the next part.
@@ -60,7 +65,8 @@
 //              row in order.
 //   sheet      with the dock showing, a click on Sections opens one modal dialog that is the sheet
 //              and lists every row in order. A click on the last row (the first, when the dock
-//              names the last) closes it and brings that section's top into view above the dock.
+//              names the last) closes it and brings that row's own section, the listed section at
+//              the row's position, into view above the dock.
 //              Then Close, and a second open and Escape: no dialog stays open and focus is back on
 //              Sections each time.
 //
@@ -127,7 +133,8 @@ function fallbacks() {
 /* ---------------------------------------------------------------- in-page */
 
 // What the built bytes call for, read with DOMParser: { mast, nav, rows: [{ id, title, asks }],
-// asks: [id], zooms: [{ src, dpr, width }] }. asks in a row are indexes into asks. DOMParser parses
+// asks: [id], zooms: [{ src, dpr, width }], repeats: [id] }. asks in a row are indexes into asks,
+// and repeats lists each listed section's id that another element also holds. DOMParser parses
 // with scripting off, so a <noscript>'s content is elements here and text in the scripted page:
 // every read skips it, and a <template>'s, as parts.mjs's model does.
 function plan(source) {
@@ -154,7 +161,10 @@ function plan(source) {
     const w = parseInt(img.getAttribute('width'), 10)
     zooms.push({ src: img.getAttribute('src'), dpr, width: w > 0 ? w : 0 })
   }
-  return { mast: all(doc, 'header.pb-mast').length > 0, nav: all(doc, '[data-base-contents]').length > 0, rows, asks: asks.map((f) => f.getAttribute('data-ask')), zooms }
+  const ids = new Map()
+  for (const el of all(doc, '[id]')) ids.set(el.id, (ids.get(el.id) ?? 0) + 1)
+  const repeats = [...new Set(rows.filter((r) => ids.get(r.id) > 1).map((r) => r.id))]
+  return { mast: all(doc, 'header.pb-mast').length > 0, nav: all(doc, '[data-base-contents]').length > 0, rows, asks: asks.map((f) => f.getAttribute('data-ask')), zooms, repeats }
 }
 
 function themeNow(names) {
@@ -233,7 +243,8 @@ async function closedTo(selector, i, cap) {
 // inside the viewport and reads `k/N title` for a row whose section is in view. watch is 'nav',
 // 'mast' or 'section'.
 async function dockShow(rows, watch, cap) {
-  const el = watch === 'nav' ? document.querySelector('[data-base-contents]') : watch === 'mast' ? document.querySelector('header.pb-mast') : document.getElementById(rows[0].id)
+  const listed = [...document.querySelectorAll('main > section[id]')].filter((s) => s.id && s.firstElementChild && s.firstElementChild.localName === 'h2')
+  const el = watch === 'nav' ? document.querySelector('[data-base-contents]') : watch === 'mast' ? document.querySelector('header.pb-mast') : listed[0]
   if (!el) return { ok: false, why: `the page has no ${watch === 'nav' ? 'nav[data-base-contents]' : watch === 'mast' ? 'header.pb-mast' : 'section #' + rows[0].id}` }
   const root = document.scrollingElement || document.documentElement
   const y = Math.ceil(el.getBoundingClientRect().bottom + scrollY) + 2
@@ -252,10 +263,11 @@ async function dockShow(rows, watch, cap) {
       const r = d.getBoundingClientRect()
       const text = d.textContent.replace(/\s+/g, ' ').trim()
       const k = rows.findIndex((row, n) => text.includes(`${n + 1}/${rows.length} ${row.title}`))
-      const s = k === -1 ? null : document.getElementById(rows[k].id)
+      const s = k === -1 ? null : listed[k]
       const sr = s && s.getBoundingClientRect()
       if (r.height <= 0 || r.top < -0.5 || r.bottom > innerHeight + 0.5) why = `the dock is drawn at ${Math.round(r.top)}-${Math.round(r.bottom)} px, outside the ${innerHeight} px viewport`
       else if (k === -1) why = `the dock reads ${JSON.stringify(text.slice(0, 120))}, which names no section as k/${rows.length} and its title`
+      else if (!s || s.id !== rows[k].id) why = `the page's listed section ${k + 1} is not #${rows[k].id}`
       else if (!sr || sr.bottom <= 0 || sr.top >= innerHeight) why = `the dock names #${rows[k].id}, which is not in view`
       else return { ok: true, y, k, text, height: r.height }
     }
@@ -284,11 +296,11 @@ function sheetRows(sheet) {
   return { exists: !!g, open: !!g && g.open, hrefs: g ? [...g.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')) : [] }
 }
 
-// After a click on a sheet row: polls until no dialog is open and section id's top is in view
-// above the dock, or cap passes.
-async function jumped(id, cap) {
-  const s = document.getElementById(id)
-  if (!s) return { ok: false, why: `the page has no section #${id}` }
+// After a click on sheet row k: polls until no dialog is open and the k-th listed section's top,
+// which must carry id, is in view above the dock, or cap passes.
+async function jumped(k, id, cap) {
+  const s = [...document.querySelectorAll('main > section[id]')].filter((x) => x.id && x.firstElementChild && x.firstElementChild.localName === 'h2')[k]
+  if (!s || s.id !== id) return { ok: false, why: `the page's listed section ${k + 1} is not #${id}` }
   const end = Date.now() + cap
   for (;;) {
     const open = document.querySelectorAll('dialog[open]').length
@@ -296,13 +308,14 @@ async function jumped(id, cap) {
     const limit = innerHeight - (d && !d.hidden && d.checkVisibility() ? d.getBoundingClientRect().height : 0)
     const top = s.getBoundingClientRect().top
     if (!open && top >= -2 && top < limit) return { ok: true, top }
-    if (Date.now() > end) return { ok: false, why: open ? `${open} dialog${open === 1 ? '' : 's'} still open` : `section #${id} starts at ${Math.round(top)} px, outside 0-${Math.round(limit)} px above the dock` }
+    if (Date.now() > end) return { ok: false, why: open ? `${open} dialog${open === 1 ? '' : 's'} still open` : `listed section ${k + 1}, #${id}, starts at ${Math.round(top)} px, outside 0-${Math.round(limit)} px above the dock` }
     await new Promise((r) => setTimeout(r, 20))
   }
 }
 
 // Polls until every count reads as want says, or cap passes, and returns what differs. want:
-// { nav, rows: [{ id, text }], total }. nav says whether the bytes hold a contents list.
+// { nav, rows: [{ k, id, text }], total }, k being the row's position in a list. nav says whether
+// the bytes hold a contents list.
 async function countsNow(want, cap) {
   const clean = (s) => s.replace(/\s+/g, ' ').trim()
   const end = Date.now() + cap
@@ -313,10 +326,10 @@ async function countsNow(want, cap) {
       if (where === 'contents' && !want.nav) continue
       if (!l) { bad.push(`the page has no ${where === 'sheet' ? 'dialog.plans-sheet' : 'nav[data-base-contents]'}`); continue }
       for (const r of want.rows) {
-        const a = [...l.querySelectorAll('a[href]')].find((x) => x.getAttribute('href') === '#' + r.id)
+        const a = [...l.querySelectorAll('a[href]')][r.k]
         const c = a && a.querySelector('.plans-row-count')
         const got = c ? clean(c.textContent) : null
-        if (!a) bad.push(`the ${where} has no row for #${r.id}`)
+        if (!a || a.getAttribute('href') !== '#' + r.id) bad.push(`the ${where} has no row ${r.k + 1} for #${r.id}`)
         else if (got !== r.text) bad.push(`the ${where} row #${r.id} reads ${got === null ? 'no count' : JSON.stringify(got)}, not "${r.text}"`)
       }
     }
@@ -423,7 +436,7 @@ async function sheetStep(drive, p, watch) {
   if (s.hrefs.join(' ') !== want.join(' ')) return fail(`the sheet's rows link ${s.hrefs.join(' ') || 'nothing'}, and the bytes list ${want.join(' ')}`)
   const t = d.k === rows.length - 1 ? 0 : rows.length - 1
   await drive.click({ kind: 'base', selector: SHEET_ROW, index: t })
-  const j = await drive.call(jumped, rows[t].id, WAIT_MS)
+  const j = await drive.call(jumped, t, rows[t].id, WAIT_MS)
   if (!j.ok) return fail(`after a click on row ${t + 1} (#${rows[t].id}), ${j.why}`)
 
   for (const how of ['Close', 'Escape']) {
@@ -443,6 +456,7 @@ async function sheetStep(drive, p, watch) {
 export async function chrome(drive) {
   const steps = []
   const p = await drive.call(plan, drive.source)
+  const faults = p.repeats.map((id) => ({ kind: 'part-error', detail: `contents: section "${id}" needs an id no other element in the page holds` }))
   const run = (target, fn) => step(drive, steps, target, fn)
 
   if (p.mast) {
@@ -467,7 +481,7 @@ export async function chrome(drive) {
     })
     await run('sheet', () => sheetStep(drive, p, watch))
   }
-  return { faults: [], steps }
+  return { faults, steps }
 }
 
 /* ---------------------------------------------------------------- counts */
@@ -486,7 +500,7 @@ export async function counts(drive, model) {
   const text = (k) => (k ? `${k} open` : 'answered')
   const want = {
     nav: p.nav,
-    rows: p.rows.filter((r) => r.asks.length).map((r) => ({ id: r.id, text: text(r.asks.filter((k) => open[k]).length) })),
+    rows: p.rows.flatMap((r, k) => (r.asks.length ? [{ k, id: r.id, text: text(r.asks.filter((q) => open[q]).length) }] : [])),
     total: text(open.filter(Boolean).length),
   }
   const answered = open.filter((x) => !x).length

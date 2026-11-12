@@ -1435,6 +1435,18 @@ ${script}
   // panes state, whose model reports it as a part-error in every view.
   const outsideSwitch = (detail) => (out) => out.result === 'fail' && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'part-error')
     && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.PANES && c.faults.some((f) => f.detail === detail)))
+  // A shell page whose listed sections are tall enough for the dock to show and for a row's jump
+  // to move the page, with extra markup in the brief. A listed section's id that another element
+  // also holds sends its row to the first holder, so the bytes' read refuses it.
+  const tallSections = (sections, extra = '') => basePage(' data-base-shell', `<header class="pb-mast"><h1>Contents unit</h1><p class="pb-lede">Listed sections and their ids.</p></header>
+<div class="pb-brief">${extra}<nav data-base-contents aria-label="Sections"></nav></div>
+<main>
+${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed"><h2>${title}</h2>\n<p style="height: 1400px">Filler that keeps the section tall.</p>\n</section>`).join('\n')}
+</main>`)
+  const repeatedId = (id) => (out) => out.result === 'fail'
+    && runMod.DOC_VIEWS.every((v) => out.matrix.some((c) => c.view === v.name && c.state === runMod.CHROME
+      && c.faults.some((f) => f.kind === 'part-error' && f.detail === `contents: section "${id}" needs an id no other element in the page holds`)))
+    && out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'part-error' || f.kind === 'part-drive')
   const stubDir = join(base, 'stub-check')
   mkdirSync(join(stubDir, 'doc/check'), { recursive: true })
   mkdirSync(join(stubDir, 'show'))
@@ -1681,6 +1693,13 @@ ${script}
 <section data-respond></section>
 </main>`),
       (out) => out.result === 'pass' && runMod.DOC_VIEWS.every((v) => [runMod.CHROME, runMod.INTERACTION].every((st) => out.matrix.some((c) => c.view === v.name && c.state === st)))],
+    ['browser: two listed sections that share an id are part-error', undefined,
+      tallSections([['intro', 'Intro'], ['results', 'Results, first run'], ['results', 'Results, second run']]), repeatedId('results')],
+    ['browser: a listed section that shares its id with an earlier div is part-error', undefined,
+      tallSections([['intro', 'Intro'], ['notes', 'Notes']], '<div id="notes"><p>A note before the sections.</p></div>'), repeatedId('notes')],
+    ['browser: a listed section id repeated only inside a template passes', undefined,
+      tallSections([['intro', 'Intro'], ['notes', 'Notes']], '<template><div id="notes"><p>Inert.</p></div></template>'),
+      (out) => out.result === 'pass' && out.checks.some((c) => c.name === 'chrome: sheet' && c.result === 'pass' && /closed the sheet/.test(c.detail))],
     ['browser: a key group outside any switch is part-error', undefined,
       basePage('', `<main>
 <h1>Orphan unit</h1>
