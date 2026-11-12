@@ -142,11 +142,17 @@
 // comes from the model's raw values: f(x) = (x - lo) / (hi - lo), a grouped bar from f(min(b, v))
 // to f(max(b, v)) with b the zero clamped to [lo, hi], a stacked segment from f(sum before) to
 // f(sum through), a point centred on f(t) and a span from f(start) to f(end), with f(t) = 0.5 over
-// a zero-width domain, all mirrored in right-to-left. A drawn edge more than 1 CSS px from its
-// expected edge is chart-geometry `<chart>: row <r> col <c> drawn <a>-<b> px, expected <x>-<y> px`
-// (or `item <n>`), in px from the reference box's start. Since each bar is measured against its
-// own track, one value draws at one length only if every drawn track of a bars chart has one
-// width: its widest and narrowest tracks, by computed width, more than 1 CSS px apart are
+// a zero-width domain, all mirrored in right-to-left. A span narrower than 2 CSS px is expected 2 px
+// wide from its start edge instead: the floor is 1 px of paint and the 1 px end gap the kit leaves
+// after every span. At the track's end the floor reaches up to 2 px past the lane row, into the
+// row's inline margin and inside the track, and is still expected there. A drawn edge more than 1
+// CSS px from its expected edge is chart-geometry `<chart>: row <r> col <c> drawn <a>-<b> px,
+// expected <x>-<y> px` (or `item <n>`), in px from the reference box's start. Every span must
+// paint. What it paints is its content box, since the kit clips its background there: the border
+// box less its inline padding and borders, read from computed style in CSS px. Under 1 px is
+// chart-geometry `<chart>: item <n> paints <w> px, expected at least 1 px`. Since each bar is
+// measured against its own track, one value draws at one length only if every drawn track of a
+// bars chart has one width: its widest and narrowest tracks, by computed width, more than 1 CSS px apart are
 // chart-geometry `<chart>: row <r> col <k> track <a> px, and row <r> col <k> has <b> px`, naming
 // the later of the two, in every state and view. Each track of a chart whose scale holds 0 needs
 // one zero line, at f(0), and each track of one whose scale doesn't needs none. Timeline bands
@@ -385,6 +391,8 @@ export function chartFaults(source, readings = false) {
   const has = (el) => !!el && el.getClientRects().length > 0
   const els = document.querySelectorAll('[data-base-chart]')
   const px = (v) => v.toFixed(1)
+  // A timeline span's narrowest drawn box, in CSS px: its 1 px end gap and 1 px of paint.
+  const SPAN_FLOOR = 2
   // An element's padding box in viewport px, with the viewport px per CSS px.
   const inner = (el) => {
     const r = el.getBoundingClientRect(), cs = getComputedStyle(el)
@@ -500,8 +508,13 @@ export function chartFaults(source, readings = false) {
         const lane = c.lanes.indexOf(it.lane), band = mk.closest('.plans-lane')
         if (!row || bands.indexOf(band) !== lane) return geo(`${where} drawn in lane ${bands.indexOf(band) + 1}, expected lane ${lane + 1}`)
         const box = inner(row), rect = mk.getBoundingClientRect()
-        if (it.span) edges(where, box, [rect.left, rect.right], span(box, f(it.start), f(it.end)))
-        else {
+        if (it.span) {
+          const [a, b] = span(box, f(it.start), f(it.end)), w = Math.max(b - a, SPAN_FLOOR * box.s)
+          edges(where, box, [rect.left, rect.right], box.rtl ? [b - w, b] : [a, a + w])
+          const cs = getComputedStyle(mk), n = (p) => parseFloat(cs[p]) || 0
+          const paint = n('width') - (cs.boxSizing === 'border-box' ? n('paddingLeft') + n('paddingRight') + n('borderLeftWidth') + n('borderRightWidth') : 0)
+          if (paint < 1 - 1e-6) geo(`${where} paints ${px(paint)} px, expected at least 1 px`)
+        } else {
           const [x] = span(box, f(it.start), f(it.start)), half = (rect.right - rect.left) / 2
           edges(where, box, [rect.left, rect.right], [x - half, x + half])
         }

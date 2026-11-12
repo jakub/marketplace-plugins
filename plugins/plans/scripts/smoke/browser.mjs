@@ -2220,6 +2220,127 @@ ${wrapped ? '<div data-base-when="v=b"><details><summary>The second pane holds a
       `${wrappedTimelines.result} ${JSON.stringify(wrappedTimelines.reason)}, ${read.length} readings, wrong: ${JSON.stringify(wrong.slice(0, 4))}, no reading with ${unread.join(', ') || 'nothing missing'}${leakNote}`)
   }
 
+  // A timeline span shorter than a pixel. The kit draws every span at least 2 CSS px wide, so it
+  // paints at least 1 px beside its 1 px end gap, and the oracle requires that paint. The probe is
+  // a one-hour span on a four-week axis, built with the kit and then with a copy of the kit whose
+  // parts.css has the old span rule put back, under which the short span's box is 1 px and paints
+  // nothing. A third page holds a one-hour span at the track's first instant and one at its last,
+  // where the floor reaches past the lane row's end. After every oracle call each span's painted
+  // width, its border box less its inline padding, is read from the live page on the same session,
+  // never from a row's text.
+  const spanNames = {
+    probe: 'browser: a one-hour span on a four-week axis passes, and its mark paints at least 1 px in every view',
+    old: 'browser: the same page with the old span rule put back is chart-geometry on the short span',
+    ends: "browser: one-hour spans at the track's first and last instants pass, each painting at least 1 px inside its track",
+  }
+  if (why) for (const name of Object.values(spanNames)) skip(name, why)
+  else {
+    const viewNames = runMod.DOC_VIEWS.map((v) => v.name)
+    const atOf = (v) => `${v.width} ${v.scheme}`
+    const SPANS = `(() => {
+  const at = innerWidth + ' ' + (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+  return { at, spans: [...document.querySelectorAll('.plans-mark[data-plans-kind=span]')].map((mk) => {
+    const cs = getComputedStyle(mk), r = mk.getBoundingClientRect(), row = mk.closest('.plans-lane-row').getBoundingClientRect(), track = mk.closest('div.plans-track').getBoundingClientRect()
+    return { item: +mk.dataset.plansItem + 1, painted: r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), past: r.right - row.right, inside: r.left >= track.left && r.right <= track.right }
+  }) }
+})()`
+    const readSpans = async (buffer) => {
+      const readings = []
+      const real = cdp.Pipe.prototype.send
+      cdp.Pipe.prototype.send = function (method, params, sessionId, ...rest) {
+        const p = real.call(this, method, params, sessionId, ...rest)
+        if (method === 'Runtime.evaluate' && params?.expression?.startsWith('(function chartFaults(') && params.expression.endsWith('(globalThis.plansCheck.source)')) {
+          readings.push(real.call(this, 'Runtime.evaluate', { expression: SPANS, contextId: params.contextId, returnByValue: true }, sessionId).then((r) => r?.result?.value ?? null, () => null))
+        }
+        return p
+      }
+      let out
+      try { out = await runMod.runChecks({ buffer, dir: base, chromium, tmp: priv }) } finally { cdp.Pipe.prototype.send = real }
+      return { out, read: await Promise.all(readings) }
+    }
+    const spanPage = (kit, items, caption) => buildMod.assemble(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Short span probe</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>Short span probe</h1>
+<p>A one-hour span on a four-week axis.</p>
+<figure>
+<ol data-base-chart="timeline">
+${items.join('\n')}
+</ol>
+<figcaption>${caption}</figcaption>
+</figure>
+</main>
+</body>
+</html>
+`, { inline: false, kit, readSibling: () => '' }).buffer
+    const probeItems = [
+      '<li data-base-lane="Deploy"><time datetime="2026-11-01">1 Nov</time> to <time datetime="2026-11-28">28 Nov</time> Rollout window</li>',
+      '<li data-base-lane="Outage"><time datetime="2026-11-14T10:00:00Z">14 Nov 10:00</time> to <time datetime="2026-11-14T11:00:00Z">11:00</time> One hour outage</li>',
+    ]
+    const probeCaption = 'The outage is one hour inside a four-week window.'
+    const endsItems = [
+      '<li data-base-lane="Window"><time datetime="2026-11-01">1 Nov</time> to <time datetime="2026-11-28">28 Nov</time> Change window</li>',
+      '<li data-base-lane="First"><time datetime="2026-11-01T00:00:00Z">1 Nov 00:00</time> to <time datetime="2026-11-01T01:00:00Z">01:00</time> First hour</li>',
+      '<li data-base-lane="Last"><time datetime="2026-11-27T23:00:00Z">27 Nov 23:00</time> to <time datetime="2026-11-28T00:00:00Z">28 Nov 00:00</time> Last hour</li>',
+    ]
+    const endsCaption = 'The first and the last hour of a four-week window.'
+    // The kit copy: parts.css with its span rule swapped for the old one. A kit that already holds
+    // the old rule, or no span rule, gives no copy, and the unit fails.
+    const OLD_SPAN = '.plans-mark[data-plans-kind=span]{min-width:1px;padding-right:1px;background-clip:content-box}'
+    const oldDir = join(base, 'old-span-kit')
+    mkdirSync(oldDir)
+    const partsCss = readFileSync(buildMod.KIT_FILES['parts.css'], 'utf8')
+    const oldCss = partsCss.replace(/^\.plans-mark\[data-plans-kind=span\]\{[^}\n]*\}$/m, OLD_SPAN)
+    writeFileSync(join(oldDir, 'parts.css'), oldCss)
+    const oldKit = oldCss === partsCss ? null : buildMod.readKit({ ...buildMod.KIT_FILES, 'parts.css': join(oldDir, 'parts.css') })
+    const timelineRow = (out, caption, result = 'pass') => out.checks.some((c) => c.name === `chart: ${caption} (timeline)` && c.result === result
+      && (result !== 'pass' || viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v))))
+    // Every Document view has a reading, and in each reading every listed item's span paints 1 px
+    // or more. Returns what broke that.
+    const unpainted = (read, items) => [...new Set(runMod.DOC_VIEWS.flatMap((v) => {
+      const mine = read.filter((r) => r && r.at === atOf(v))
+      if (!mine.length) return [`${v.name}: no reading`]
+      return mine.flatMap((r) => items.map((j) => [j, r.spans.find((s) => s.item === j)]).filter(([, s]) => !s || !(s.painted >= 1 - 1e-6))
+        .map(([j, s]) => `${v.name}: item ${j} ${s ? `paints ${s.painted} px` : 'has no mark'}`))
+    }))]
+    const faultsOf = (out) => [...new Set(out.matrix.flatMap((c) => c.faults.map((f) => `${c.view}/${c.state} ${f.kind}: ${f.detail}`)))]
+    const before = { ...leaks(priv), timers: timers() }
+    const probe = await readSpans(spanPage(buildMod.readKit(), probeItems, probeCaption))
+    const old = oldKit && await readSpans(spanPage(oldKit, probeItems, probeCaption))
+    const ends = await readSpans(spanPage(buildMod.readKit(), endsItems, endsCaption))
+    const after = { ...leaks(priv), timers: timers() }
+    const tidy = clean(before) && clean(after) && after.timers === before.timers
+    const leakNote = tidy ? '' : ` ${JSON.stringify({ before, after })}`
+    const summary = (r) => `${r.out.result} ${JSON.stringify(r.out.reason)}, ${r.read.length} readings, item 2 painted ${JSON.stringify([...new Set(r.read.flatMap((x) => (x ? x.spans.filter((s) => s.item === 2).map((s) => `${x.at}: ${s.painted}`) : [])))])}: ${faultsOf(r.out).slice(0, 4).join(' | ')}`
+    const probeBad = unpainted(probe.read, [1, 2])
+    check(spanNames.probe, probe.out.result === 'pass' && timelineRow(probe.out, probeCaption) && probeBad.length === 0 && tidy,
+      `${summary(probe)}. ${probeBad.slice(0, 6).join(', ')}${leakNote}`)
+    // Under the old rule every fault is the short span's chart-geometry, its paint fault is in
+    // every view, and the page agrees. Its 1 px box can also sit more than 1 px short of the floor.
+    const oldDetail = `${probeCaption}: item 2 paints 0.0 px, expected at least 1 px`
+    const oldUnread = old ? runMod.DOC_VIEWS.filter((v) => !old.read.some((r) => r && r.at === atOf(v))).map((v) => v.name) : []
+    const oldPaints = old ? old.read.filter(Boolean).flatMap((r) => r.spans.filter((s) => s.item === 2).map((s) => s.painted)) : []
+    check(spanNames.old, !!old && old.out.result === 'fail' && timelineRow(old.out, probeCaption, 'fail')
+      && old.out.matrix.flatMap((c) => c.faults).every((f) => f.kind === 'chart-geometry' && f.detail.startsWith(`${probeCaption}: item 2 `))
+      && viewNames.every((v) => old.out.matrix.some((c) => c.view === v && c.faults.some((f) => f.detail === oldDetail)))
+      && oldUnread.length === 0 && oldPaints.length > 0 && oldPaints.every((w) => w < 1) && tidy,
+      old ? `${summary(old)}. No reading in ${oldUnread.join(', ') || 'no view'}${leakNote}` : "parts.css has no span rule but the old one to swap")
+    // The last hour's box reaches past its lane row's end, by no more than the 2 px floor, and
+    // stays inside the drawn track, as the first hour's does.
+    const endsBad = unpainted(ends.read, [1, 2, 3])
+    const overhang = [...new Set(ends.read.filter(Boolean).flatMap((r) => r.spans.filter((s) => s.item > 1 && !(s.inside && (s.item === 2 || (s.past > 0 && s.past <= 2 + 1e-6))))
+      .map((s) => `${r.at}: item ${s.item} ${s.past} px past its row's end, ${s.inside ? 'inside' : 'outside'} its track`)))]
+    check(spanNames.ends, ends.out.result === 'pass' && timelineRow(ends.out, endsCaption) && endsBad.length === 0 && overhang.length === 0 && tidy,
+      `${summary(ends)}. ${[...endsBad, ...overhang].slice(0, 6).join(', ')}${leakNote}`)
+  }
+
   // The base leaves the response alone (ruling 2). One question block runs on a shell page and on
   // a plain page. Each run's interaction compares its page's response with check/expect.mjs after
   // every step, for that page's own build. The unit also keeps every response the runs read back,
