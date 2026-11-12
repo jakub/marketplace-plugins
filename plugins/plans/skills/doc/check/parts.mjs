@@ -61,11 +61,16 @@
 // hidden, as `<container> is hidden, and …` or `<container> stayed hidden after a click on its …`,
 // with changes holding what was clicked so far; a caller makes it a failed row, so part-drive. A
 // click that misses is the same, never a thrown step failure. Without keep the target itself must
-// then show. changes lists each click as { kind, label, back, pane }: back is the base spec that
-// undoes it, or null (a pane whose key had no single pressed button), and pane is { s, j, from,
-// to } for a key button, the switch's model index, the key's index and the values, else null.
-// restore() clicks each back, innermost first, settles, and returns the changes it undid with ''
-// or what failed.
+// then show. changes lists each click as { kind, label, back, pane, open }: back is the base spec
+// that undoes it, or null (a details, or a pane whose key had no single pressed button), pane is
+// { s, j, from, to } for a key button, the switch's model index, the key's index and the values,
+// else null, and open is { d, was } for a details, the indexes of the details it opened and of
+// its group's member that was open (-1 for none), else null. restore() puts each change back,
+// innermost first, settles, and returns the changes it undid with '' or what failed. It clicks
+// each back, beside the control expose() clicked, since a key or a side needs the kit's handlers.
+// A details goes back through the open property instead: the member it reopens can sit under a
+// container that hides it, such as another switch's pane, and a put-back proves nothing about the
+// reader, only returns state the check changed.
 //   keep is { s } for a switch's walk and { c } for a compare's. Its own containers, the switch's
 // panes or the compare's sides, are never exposed: expose() stops at the first one that hides,
 // since the walk's condition decides it. An element is expected to have a box when each own
@@ -571,8 +576,8 @@ function compareLook(i) {
 // .pb-side. Each comes with whether it shows its content now, the controls that show it, each a
 // base click spec with whether it has a box, and back, the spec that puts it as it was, or null.
 // A details' control is its summary, or the details itself when it has none, whose box is then the
-// browser's own summary; back is the summary of the member of its group that was open, else its
-// own summary, which closes it. A pane's controls are the key buttons its terms name that aren't
+// browser's own summary; it has no back, and carries d, its index among the page's details, and
+// was, the index of the member of its group that was open, or -1. A pane's controls are the key buttons its terms name that aren't
 // pressed, each with the one pressed now as back, and the pane carries s, its switch's model
 // index, and p, its own. A side's control is its button in the compare's switch, back the button
 // of the side the compare showed, and the side carries c, its compare's index, and side, before or
@@ -601,7 +606,7 @@ function hiders(sel, which) {
         const was = group.find((d) => d.open && d !== a)
         chain.unshift({ kind: 'details', label: name ? `member ${group.indexOf(a) + 1} of the details group "${name}"` : `details ${details.indexOf(a) + 1}`, shown: a.open,
           controls: [{ what: s ? 'summary' : 'details', spec: s ? spec(SUMMARY, summaries, s) : spec('details', details, a), box: has(s || a) }],
-          back: (was ? spec(SUMMARY, summaries, summaryOf(was)) : s ? spec(SUMMARY, summaries, s) : null) })
+          back: null, d: details.indexOf(a), was: details.indexOf(was) })
       } else if (a.matches('[data-base-when]')) {
         const p = m.panes[panes.indexOf(a)], s = p && p.box !== null ? m.switches[p.box] : null
         const groups = s && boxes[s.i] ? all('[data-base-key]', boxes[s.i]) : []
@@ -696,7 +701,7 @@ export async function expose(drive, target) {
         if (!drive.missed(e)) throw e
         return no(`${c.label}: ${e.message}`)
       }
-      changes.push({ kind: c.kind, label: c.label, back: x.pane ? x.back : c.back, pane: x.pane ?? null })
+      changes.push({ kind: c.kind, label: c.label, back: x.pane ? x.back : c.back, pane: x.pane ?? null, open: c.kind === 'details' ? { d: c.d, was: c.was } : null })
     }
     await drive.settle()
     at = await drive.call(hiders, target.selector, target.index)
@@ -706,12 +711,24 @@ export async function expose(drive, target) {
   return { ok: true, changes }
 }
 
+// In-page: closes details d and opens details was, unless was is -1. Returns '' or what is missing.
+function reopen(d, was) {
+  const all = [...document.querySelectorAll('details')]
+  if (!all[d] || (was >= 0 && !all[was])) return `the page has no details at index ${all[d] ? was : d}`
+  all[d].open = false
+  if (was >= 0) all[was].open = true
+  return ''
+}
+
 // Puts back what expose() changed, innermost first. Returns { undone, failed }: the changes it put
 // back, and '' or what failed.
 export async function restore(drive, changes) {
   const undone = []
   for (const ch of [...changes].reverse()) {
-    if (ch.back) {
+    if (ch.open) {
+      const missing = await drive.call(reopen, ch.open.d, ch.open.was)
+      if (missing) return { undone, failed: `putting back ${ch.label}: ${missing}` }
+    } else if (ch.back) {
       try { await drive.click({ kind: 'base', ...ch.back }) } catch (e) {
         if (!drive.missed(e)) throw e
         return { undone, failed: `putting back ${ch.label}: ${e.message}` }

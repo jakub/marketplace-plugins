@@ -1258,10 +1258,12 @@ const innerChart = (caption, values) => `<figure>
 </figure>`
 // Each cell's markup, from next(), which numbers the containers and the switch on the page.
 // mark is a string unique on the page that sits at the cell's start, and rows the check rows the
-// cell needs, filled in once the page is joined. Three named cells join the generated ones: the
-// reviewer's page as written, a zoomable image in a pane inside S, and a bars chart in a pane
-// inside S that shares a scale with a chart in a pane outside it. narrow, given, is a style
-// attribute for the chart in S's <tbody>.
+// cell needs, filled in once the page is joined. Five named cells join the generated ones: the
+// reviewer's page as written, a zoomable image in a pane inside S, a bars chart in a pane inside
+// S that shares a scale with a chart in a pane outside it, and two put-back cells. In those, a
+// named group's open member sits in a switch's hidden pane and its other member, outside the
+// switch, holds a second switch or a zoomable image, so exposing the target closes a member that
+// no click can reach. narrow, given, is a style attribute for the chart in S's <tbody>.
 const innerMarkup = (cell, next, narrow = '') => {
   const k = next()
   const wrap = (list, x) => list.reduceRight((inner, c) => INNER_WRAP[c](inner, next()), x)
@@ -1288,12 +1290,28 @@ ${innerPane(k, 'b')}
     const outS = innerChart(`Inner chart ${k}, beside it.`, [['Parse', 50], ['Render', 95]])
     return { mark, html: `${mark}\n${innerKeys(k)}\n${wrap(['S'], innerPane(k, 'a', inS))}\n${innerPane(k, 'b', outS)}\n</div>` }
   }
+  if (cell.named === 'putbackSwitch' || cell.named === 'putbackZoom') {
+    const j = next()
+    const target = cell.named === 'putbackSwitch'
+      ? `<div data-base-switch>\n${innerKeys(j)}\n${innerPane(j, 'a')}\n${innerPane(j, 'b')}\n</div>`
+      : `<figure class="pb-figure" data-base-zoom><img src="nest.png" alt="Inner zoom ${j}" width="80" height="40"><figcaption>Inner zoom ${j}.</figcaption></figure>`
+    return { mark, html: `${mark}
+${innerKeys(k)}
+${innerPane(k, 'a')}
+<div data-base-when="v=b"><p>Switch ${k}, pane b.</p>
+<details name="o${k}" open><summary>Outer group ${k}, member 1</summary><p>Member 1 of outer group ${k}, open in the markup.</p></details>
+</div>
+</div>
+<details name="o${k}"><summary>Outer group ${k}, member 2</summary>
+${target}
+</details>` }
+  }
   const panes = `${innerPane(k, 'a')}\n${innerPane(k, 'b')}`
   const inner = cell.shared ? wrap(cell.keys, `${innerKeys(k)}\n${wrap(cell.panes.slice(cell.keys.length), panes)}`) : `${wrap(cell.keys, innerKeys(k))}\n${wrap(cell.panes, panes)}`
   return { mark, html: `${mark}\n${inner}\n</div>` }
 }
 // A shell page of the given cells, and each cell's rows:
-// its switch's two combinations and its arrow, both rows of every compare it holds, its zoom and
+// each switch's two combinations and its arrow, both rows of every compare it holds, each zoom and
 // its two chart rows. A row passes for the cell only if it passes in every view.
 function innerPage(cells, narrow = '') {
   let k = 0
@@ -1306,9 +1324,10 @@ function innerPage(cells, narrow = '') {
     if (at < 0 || body.indexOf(mark, at + 1) >= 0) throw new Error(`inner matrix: the mark of ${c.named ?? innerName(c)} is not unique`)
     const before = body.slice(0, at)
     const n = count(before, 'data-base-switch') + 1, cn = count(before, 'class="pb-compare"')
-    const rows = [`panes: switch ${n} v=a`, `panes: switch ${n} v=b`, `panes: switch ${n} v arrow`]
+    const rows = []
+    for (let j = 0; j < count(html, 'data-base-switch'); j++) rows.push(`panes: switch ${n + j} v=a`, `panes: switch ${n + j} v=b`, `panes: switch ${n + j} v arrow`)
     for (let j = 1; j <= count(html, 'class="pb-compare"'); j++) rows.push(`panes: compare ${cn + j} before`, `panes: compare ${cn + j} after`)
-    if (c.named === 'zoom') rows.push(`chrome: zoom ${count(before, 'data-base-zoom') + 1}`)
+    for (let j = 1; j <= count(html, 'data-base-zoom'); j++) rows.push(`chrome: zoom ${count(before, 'data-base-zoom') + j}`)
     if (c.named === 'chart') rows.push(...[...html.matchAll(/<figcaption>(Inner chart [^<]+)<\/figcaption>/g)].map((x) => `chart: ${x[1]} (grouped, shared)`))
     return { name: c.named ? INNER_NAMED[c.named] : innerName(c), rows }
   })
@@ -1318,6 +1337,8 @@ const INNER_NAMED = {
   reviewer: "the reviewer's page: keys in the box, both panes in a compare's before side",
   zoom: 'a zoomable image in a pane inside S, inside the switch',
   chart: 'a bars chart in a pane inside S, sharing a scale with one in a pane outside it',
+  putbackSwitch: "a switch in a named group's closed member, whose open member sits in another switch's hidden pane",
+  putbackZoom: "a zoomable image in a named group's closed member, whose open member sits in a switch's hidden pane",
 }
 const innerAll = () => [...innerCells(), ...Object.keys(INNER_NAMED).map((named) => ({ named }))]
 // --- end inner matrix
@@ -1896,7 +1917,7 @@ ${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed">
     const everyView = (name) => out.checks.some((c) => c.name === name && c.result === 'pass' && viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v)))
     const red = cells.filter((c) => !c.rows.every(everyView))
     const redWhy = (c) => c.rows.filter((r) => !everyView(r)).map((r) => { const x = out.checks.find((y) => y.name === r); return `${r}: ${x ? `${x.result} ${x.detail}` : 'no row'}` }).join('; ')
-    check(innerRun, out.result === 'pass' && out.undriven.length === 0 && cells.length === innerCells().length + 3 && red.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
+    check(innerRun, out.result === 'pass' && out.undriven.length === 0 && cells.length === innerAll().length && red.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
       `${cells.length - red.length} of ${cells.length} cells pass, ${out.result} ${JSON.stringify(out.reason)}, undriven ${JSON.stringify(out.undriven)}. ${red.slice(0, 6).map((c) => `${c.name}: ${redWhy(c)}`).join(' | ')} ${JSON.stringify({ before, after })}`)
     const narrowed = await runPage(innerPage([{ named: 'chart' }], ' style="grid-template-columns: minmax(0, 1fr) 12rem"').body)
     const share = /^Inner chart 1, beside it\.: row 1 col 1 track [\d.]+ px, and Inner chart 1, in the compare\. in its share group has [\d.]+ px$/
@@ -1904,6 +1925,43 @@ ${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed">
     check(innerShare, narrowed.result === 'fail' && kinds.join() === 'chart-geometry'
       && viewNames.every((v) => narrowed.matrix.some((c) => c.view === v && c.state === runMod.PANES && c.faults.some((f) => share.test(f.detail)))),
       `${narrowed.result}: ${[...new Set(narrowed.matrix.flatMap((c) => c.faults.map((f) => `${c.view}/${c.state} ${f.kind}: ${f.detail}`)))].slice(0, 8).join(' | ')}`)
+  }
+
+  // The two put-back cells, through a copy of the check whose restore() ends by reading each outer
+  // group: after every put-back its member 1 is open, as the markup wrote it, and its member 2 is
+  // closed, or the row that put it back fails with what it found.
+  const putbackName = "browser: a put-back leaves a named group's open member open and its target's member closed"
+  if (why) skip(putbackName, why)
+  else {
+    const putDir = join(base, 'putback-check')
+    mkdirSync(join(putDir, 'doc/check'), { recursive: true })
+    mkdirSync(join(putDir, 'show'))
+    for (const f of readdirSync(checkDir).filter((f) => f.endsWith('.mjs'))) cpSync(join(checkDir, f), join(putDir, 'doc/check', f))
+    cpSync(fileURLToPath(new URL('../../skills/show/tokens.css', import.meta.url)), join(putDir, 'show/tokens.css'))
+    const head = 'export async function restore(drive, changes) {\n'
+    const groups = function outerGroups() {
+      for (const d of document.querySelectorAll('details[name^="o"]')) {
+        const m = [...document.querySelectorAll('details')].filter((x) => x.getAttribute('name') === d.getAttribute('name'))
+        if (!m[0].open || m[1].open) return `group "${d.getAttribute('name')}" after a put-back: member 1 ${m[0].open ? 'open' : 'closed'}, member 2 ${m[1].open ? 'open' : 'closed'}`
+      }
+      return ''
+    }
+    const src = readFileSync(join(putDir, 'doc/check/parts.mjs'), 'utf8')
+    writeFileSync(join(putDir, 'doc/check/parts.mjs'), src.replace(head, `${head}  const r = await restoreAsBuilt(drive, changes)
+  const bad = r.failed ? '' : await drive.call(outerGroups)
+  return bad ? { ...r, failed: bad } : r
+}
+${groups.toString()}
+async function restoreAsBuilt(drive, changes) {
+`))
+    const mod = src.includes(head) ? await import(pathToFileURL(join(putDir, 'doc/check/run.mjs')).href) : null
+    const { body, cells } = innerPage([{ named: 'putbackSwitch' }, { named: 'putbackZoom' }])
+    const out = mod && await mod.runChecks({ buffer: basePage(' data-base-shell', body), dir: base, media: ['nest.png'], chromium, tmp: priv })
+    const viewNames = runMod.DOC_VIEWS.map((v) => v.name)
+    const rows = cells.flatMap((c) => c.rows)
+    const missed = out ? rows.filter((r) => !out.checks.some((c) => c.name === r && c.result === 'pass' && viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v)))) : rows
+    check(putbackName, !!out && out.result === 'pass' && out.undriven.length === 0 && rows.length === 10 && missed.length === 0,
+      out ? `${out.result} ${JSON.stringify(out.reason)}, undriven ${JSON.stringify(out.undriven)}, ${rows.length} rows, not passing in every view: ${missed.join(', ')}` : 'parts.mjs has no restore(drive, changes) to wrap')
   }
 
   // The base leaves the response alone (ruling 2). One question block runs on a shell page and on
