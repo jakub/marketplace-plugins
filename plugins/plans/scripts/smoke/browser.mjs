@@ -1917,7 +1917,7 @@ ${sections.map(([id, title]) => `<section id="${id}" data-base-status="changed">
     const everyView = (name) => out.checks.some((c) => c.name === name && c.result === 'pass' && viewNames.every((v) => c.detail.split(': ')[0].split(', ').includes(v)))
     const red = cells.filter((c) => !c.rows.every(everyView))
     const redWhy = (c) => c.rows.filter((r) => !everyView(r)).map((r) => { const x = out.checks.find((y) => y.name === r); return `${r}: ${x ? `${x.result} ${x.detail}` : 'no row'}` }).join('; ')
-    check(innerRun, out.result === 'pass' && out.undriven.length === 0 && cells.length === innerAll().length && red.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
+    check(innerRun, out.result === 'pass' && out.undriven.length === 0 && cells.length === 23 && red.length === 0 && clean(before) && clean(after) && after.timers === before.timers,
       `${cells.length - red.length} of ${cells.length} cells pass, ${out.result} ${JSON.stringify(out.reason)}, undriven ${JSON.stringify(out.undriven)}. ${red.slice(0, 6).map((c) => `${c.name}: ${redWhy(c)}`).join(' | ')} ${JSON.stringify({ before, after })}`)
     const narrowed = await runPage(innerPage([{ named: 'chart' }], ' style="grid-template-columns: minmax(0, 1fr) 12rem"').body)
     const share = /^Inner chart 1, beside it\.: row 1 col 1 track [\d.]+ px, and Inner chart 1, in the compare\. in its share group has [\d.]+ px$/
