@@ -58,7 +58,8 @@
 // has a box by then, since the containers outside it already show and none inside them holds it:
 // a details' summary is its own child; a compare's switch buttons are made by script in the
 // figure, outside both sides; and no pane, details or compare sits between a key button and its
-// switch's box, since the model refuses a switch with one there, whose keys go unclicked. A
+// switch's box, and a key holds no element but its buttons and inline text, so every button in it
+// is one the model counted, since the model refuses a switch otherwise, whose keys go unclicked. A
 // control without a box is not clicked: that container is the one that stayed hidden. After each
 // container it settles and reads the chain again, and the container must now show. ok false names
 // that container in hidden, as `<container> is hidden, and …` or `<container> stayed hidden after
@@ -166,6 +167,7 @@ export function model(source) {
   const NAME = /^[a-z][a-z0-9-]*$/
   const DEC = /^-?\d+(\.\d+)?$/
   const HOOKS = '[data-ask], [data-note], [data-ask-summary], [data-respond]'
+  const KEY_HOLDS = ['button', 'span', 'b', 'i', 'em', 'strong', 'code', 'kbd', 'small', 'abbr', 'sub', 'sup', 'br']
   // The names script makes (parts.md, CONTRACTS.md "Script-made names" and the as-built notes).
   // 0.2.0's own plans- names are never refused (ruling 6).
   const MADE_CLASS = ['plans-compare-switch', 'plans-track', 'plans-bar', 'plans-zero', 'plans-lane', 'plans-lane-name',
@@ -218,6 +220,11 @@ export function model(source) {
       }
       if (hold && hold.matches('[data-base-when]')) no(`key "${name}" sits in a pane`)
       else if (hold) no(`key "${name}" sits inside a ${hold.localName === 'details' ? 'details' : 'compare'} in its switch`)
+      // A key holds its buttons and inline text, and nothing else. The walk finds a key's button by
+      // its index among the live buttons in the key, and script adds buttons of its own in a
+      // compare and around a zoomable image, so any other element there could shift that index.
+      const odd = [...g.querySelectorAll('*')].find((el) => !KEY_HOLDS.includes(el.localName))
+      if (odd) no(`key "${name}" holds a ${odd.localName}: a key holds its buttons and inline text`)
       if (values.length < 2) no(`key "${name}" has ${values.length} buttons, not 2 or more`)
       if (values.some((v) => !NAME.test(v))) no(`key "${name}" has a button value that does not match [a-z][a-z0-9-]*`)
       if (new Set(values).size < values.length) no(`key "${name}" repeats a value`)
