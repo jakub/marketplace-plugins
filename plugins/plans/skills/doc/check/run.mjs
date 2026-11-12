@@ -3,17 +3,35 @@
 // Chromium through cdp.mjs. Node built-ins only.
 //
 //   runChecks({ buffer, inline, dir, media, skippedMedia, chromium, shots, tmp, deadlineMs })
-//     -> Promise<{ result, reason, matrix, checks, copy, undriven }>
+//     -> Promise<{ result, reason, matrix, checks, copy, undriven, shots }>
+//     matrix        one { view, state, ms, faults } per cell, ms the cell's wall time or null
 //     buffer        the final Buffer build.mjs will write
 //     media         the src values scan.mjs declared; skippedMedia the Inline absolute paths
 //     chromium      the executable findChromium found
-//     shots         a directory for `<w>-<scheme>-<state>.png`, or null
-//   It never throws: every failure of its own lands in an unknown result. checks holds one
-//   `browser` row, then one row per interaction step and copy case, named as below, each pass,
-//   fail or unknown across the views that ran it.
+//     shots         a directory for the screenshots below, or null. The result's `shots` lists
+//                   each file written there as { file, view, state, tile, y, height, scale }
 //
-// Views. Document mode: 390x844 with mobile emulation at dsf 2, and 1440x900 at dsf 1, each in
-// light and dark through Emulation.setEmulatedMedia. Inline mode: 360 (dsf 2) and 728 (dsf 1),
+// Screenshots. With a shots directory, each cell is captured after its probe, from scroll position
+// 0, by Page.captureScreenshot clips of at most floor(SHOT_MAX / dsf) CSS px tall, so no tile is
+// over SHOT_MAX device px, at y 0, then each tile's end, down to the page's scrollHeight. The first
+// tile is `<w>-<scheme>-<state>.png`, later ones `.2.png`, `.3.png` and so on, so a page that fits
+// in one tile gets the one file it always got. A clip at y 8192 on a 16,861 px page at 390 px and
+// dsf 2 returned the true content on the real viewer, 2026-11-10. In the result's list, file is
+// the name inside the directory, tile counts from 1, y and height are CSS px, and scale is the
+// view's dsf. A tile joins the list once its file is written. The list holds each view's last
+// attempt only, and a retry removes the files the attempt before it wrote. A cell whose listed
+// tiles do not cover 0 to its page height without a gap, because a capture or a write failed or
+// the run stopped, is unknown `tiles` (`<view> <state>: tiles cover 0-<y> of <h> px`), never a
+// pass. A fault outranks it, as every unknown.
+//   It never throws: every failure of its own lands in an unknown result. checks holds one
+//   `browser` row, then one row per step name, in the order first reported: the base states'
+//   rows, chart rows, and the interaction's steps and copy cases, named as below. Each row is
+//   fail if any view failed it, then unknown, else pass, across every view and every time a view
+//   reported it.
+//
+// Views. Document mode: 390x844 with mobile emulation at dsf 2 in light and dark, 1100x900 at
+// dsf 1 in light, and 1440x900 at dsf 1 in light and dark, the scheme set through
+// Emulation.setEmulatedMedia. Inline mode: 360 (dsf 2) and 728 (dsf 1),
 // both without mobile emulation, because T3 renders an Inline page in an iframe, which lays out at
 // its own width and ignores a viewport meta, where mobile emulation would lay a page without one
 // out 980 px wide. Each is at height 80 so the content height is read from scrollHeight rather
@@ -42,16 +60,88 @@
 // image and each copy that neither loaded nor failed, and the view records each one as unknown
 // `media-unsettled`, so bytes the check never read never pass.
 //
-// States. `initial`; `details-open`, with every native <details> opened and the page settled
-// again, where a named group, whose members close each other, is probed once per member and the
-// state ends with each group's first member open; and on a Document page with kit hooks in either of those states, `interaction`, probed
-// after the interaction script and the copy check below, with <details> still open. A hook that
-// first appears when <details> opens counts the same as one at load, so it needs a kit error or a
+// States, in this order. `initial`; `details-open`, with every native <details> opened and the
+// page settled again, where a named group, whose members close each other, is probed once per
+// member and the state ends with each group's first member open; `panes` and `chrome`, below; and
+// on a Document page with kit hooks in any earlier state, `interaction`, probed after the
+// interaction script and the copy check below, with <details> still open. A hook that first
+// appears when <details> opens counts the same as one at load, so it needs a kit error or a
 // response the script can drive. A kit page whose kit already logged an error gets the cell
-// without the script, since its response is off. `undriven` lists
-// every control outside the kit: a button, select, textarea, input, contenteditable or tabindex
-// that no fieldset[data-ask], textarea[data-note], data-respond or data-ask-summary holds. Kit
-// controls join it, marked `kit`, only when the script did not run.
+// without the script, since its response is off.
+//   `panes` runs, in both modes, on a page whose built bytes hold a tag with data-base-switch,
+// data-base-key or data-base-when, a <figure> with the class pb-compare, or a tag that holds two
+// base roles, so a key or a pane outside any switch, or a tag with two roles, gets the model that
+// reports it. `chrome` runs on a Document whose bytes hold a <body> with data-base-shell. Both are
+// read from the bytes with scan.mjs, never from the DOM the page's script made, so a base whose
+// script doesn't run can't skip its own check, and the required matrix cells follow the same
+// read. A tag inside an HTML <template> is inert and counts
+// for nothing. Each of the two runs in a page load of its own: navigate, settle, open every
+// <details> as details-open leaves them, settle, then one module function, parts.mjs's panes(drive)
+// or shell.mjs's chrome(drive), then every open <dialog> closed, scroll position 0, settle, the
+// probe and the capture. interaction runs on the details-open load, as it always has, unless panes
+// or chrome ran, when it gets a fresh load set up the same way. On a page whose bytes hold
+// body[data-base-shell], the interaction script calls shell.mjs's counts(drive, model) after the
+// initial response and after each step that moves a question between open, changed and kept, with a
+// copy of its own record as model.
+//   `undriven` lists every control outside the kit that the matrix did not drive: a button,
+// select, textarea, input, contenteditable or tabindex that no fieldset[data-ask],
+// textarea[data-note], data-respond or data-ask-summary holds. Kit controls join it, marked `kit`,
+// only when the script did not run. A base control never joins it. A control is a base control
+// only by the exact names the base's markup holds or its script makes, and only on a page whose
+// bytes require the state that drives it, which drops it (panes: `[data-base-switch]
+// [data-base-key] button` and `.plans-compare-switch button`; chrome: `button.plans-theme`,
+// `button.plans-zoom-open`, `dialog.plans-zoom button.plans-zoom-size` and
+// `button.plans-zoom-close`, `.plans-dock button.plans-dock-sections` and `dialog.plans-sheet
+// button.plans-sheet-close`). Every other control joins it whatever its class, so an old page's
+// own plans- control is listed as it always was, and a `.pb-table` scroller is always skipped. A
+// base control that its state can't drive fails that state's step, a part-drive.
+//
+// Drive. Each module function gets one drive, built once per state load:
+//   io                 { send(method, params), evaluate(expression), mouse(x, y) }: a raw command
+//                      on the page's session, an expression in the isolated world, and a press at
+//                      a viewport point with no aim
+//   view               { name, width, height, dsf, mobile, scheme, small }, scheme being the
+//                      emulated prefers-color-scheme
+//   inline             whether the build is Inline
+//   source             the built bytes, as a string
+//   state              'panes', 'chrome' or 'interaction'
+//   call(fn, ...args)  runs a self-contained in-page function in the isolated world, with JSON
+//                      arguments, and returns its JSON value, awaited. globalThis.plansCheck =
+//                      { source, model } is set there once per load first, model being
+//                      parts.mjs's, and an argument that is drive.source is passed as a reference
+//                      to plansCheck.source, so the bytes cross the pipe once per load.
+//   click(spec)        real input through aim(). A base spec is { kind: 'base', selector, index }:
+//                      a literal selector the module wrote and a document-order index, never a
+//                      string the page chose. A missing control, or a point that lands on another
+//                      element, presses nothing and throws a step failure.
+//   key(name, mods)    a keyDown and keyUp on whatever has focus. name is Tab, Enter, Escape,
+//                      Space, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp or
+//                      PageDown, and mods { shift, ctrl, alt, meta }.
+//   probe()            this view's probes for this mode, the Inline height budget included, then
+//                      chartFaults on a page whose bytes hold a chart, then the event stream. Each
+//                      fault joins the state's cell, and the call returns all of them, as
+//                      [{ kind, detail }]. It reads media state from the last settle.
+//   settle()           fonts, images and media copies, then two frames, as after a load.
+//   scrollHome()       scroll position 0.
+//   openDetails(k)     opens every <details>, member k of each named group, and returns the
+//                      largest group's size.
+//   closeDialogs()     closes every open <dialog> with the isolated world's own close(), and
+//                      returns how many it closed.
+//   missed(e)          whether an error is a step failure, from click() or a module's own. Catch
+//                      those, report the step failed, call closeDialogs() and go on. Rethrow the
+//                      rest: a protocol error, a deadline or a lost target ends the view through
+//                      the retry rule, and an error of the module's own is `checker-error`.
+// panes and chrome return { faults, steps }, and counts one row or null. A step is a check row
+// { name, result, detail }, result pass, fail or unknown: `panes: switch <n> <key>=<value> …`,
+// `panes: switch <n> <key> arrow`, `panes: compare <n> before|after`, `chrome: theme
+// light|dark|auto`, `chrome: zoom <n>`, `chrome: dock`, `chrome: sheet` or `interaction: base
+// counts`, n counting from 1. A failed step is also the fault part-drive and an unknown one the
+// unknown `drive`, each `<state> <target>: <detail>`, the target being the row's name after its
+// `<prefix>: `. A step failure that escapes the function is one part-drive, `<state> walk:
+// <message>`. Each returned fault joins the state's cell once, beside those probe() recorded.
+// chartFaults returns faults, and may add rows named `chart: <caption, or chart <n>> (<traits>)`,
+// told apart by their `name`. Those rows are not drive steps: their faults come from the oracle
+// itself.
 //
 // Interaction script (Document pages with kit hooks). It reads a static model once from the DOM:
 // the <title> text, the plans-build content, each fieldset[data-ask] with its id, its own legend
@@ -59,11 +149,12 @@
 // name and starting value. A label is the text of the input's native labels in document order,
 // joined by one space, without [data-hint] and [data-then] subtrees. From then on the check keeps
 // its own record of checked state and kept flags, built only from the actions it performs, and
-// never reads the kit's state. Every action is real CDP input: the target is scrolled to the
-// middle of the viewport, then mouseMoved, mousePressed and mouseReleased land at the center of
-// its rect (of a label's first text line, for a label click), with mouse events in mobile views
-// too. A click whose point hits another element fails the step. Tab is Input.dispatchKeyEvent,
-// and a note is Input.insertText per line with an Enter key between lines. The steps, with the
+// never reads the kit's state. Every action is real CDP input, from the one inputs() helper the
+// base states' drive.click and drive.key use too: the target is scrolled to the middle of the
+// viewport, then mouseMoved, mousePressed and mouseReleased land at the center of its rect (of a
+// label's first text line, for a label click), with mouse events in mobile views too. A click
+// whose point hits another element fails the step. Tab is Input.dispatchKeyEvent, and a note is
+// Input.insertText per line with an Enter key between lines. The steps, with the
 // last question in document order held back from 3 to 5 so step 6 finds it untouched:
 //   1. `initial response`
 //   2. per radio question, a click on its checked option's label, then Tab until focus has left
@@ -103,11 +194,19 @@
 // null on a page with no response region.
 //
 // Faults are stable names (SYNTH's table). From the event stream of each state: exception,
-// kit-error, console-csp, request-outside, load-failed and http-status. From the DOM probe:
-// media-decode, page-overflow, clipped, a-target, form and outbound-link (kit pages), srcset,
-// poster, css-url, svg-href, svg-viewbox, svg-label, svg-wide, svg-text-small (390 and 360
-// only), empty-title (Document only), media-undeclared, and in Inline mode inline-height,
-// inline-kit-hook and inline-frame. Chromium 155 prints no "Refused to" line for a CSP block, so
+// kit-error, part-error (a console line that starts with `plans-part: `, detailed by the rest of
+// the line and joined to a cell once; unlike kit-error it never stops the interaction script),
+// console-csp, request-outside, load-failed and http-status. From the DOM probe: media-decode,
+// page-overflow, clipped, a-target, form and outbound-link (kit pages), srcset, poster, css-url,
+// svg-href, svg-viewbox, svg-label, svg-wide, svg-text-small and chart-text-small (every Document
+// view, and 360 in Inline), empty-title (Document only), media-undeclared, and in Inline mode
+// inline-height, inline-kit-hook and inline-frame. The DOM probe also counts each kind of base part
+// in WRITTEN in the live page against the built bytes, read as baseNeeds reads them: more in the
+// page than in the bytes is part-error `markup: <n> <kind> in the page, <m> in the built bytes:
+// base markup is written, never made by script`, since every base state and the chart oracle are
+// read from the bytes, so a part only script makes has no check. From the base states: part-drive
+// (a failed drive step), and what parts.mjs and shell.mjs return, such as chart-geometry,
+// chart-overlap and base-state-budget. Chromium 155 prints no "Refused to" line for a CSP block, so
 // console-csp also reads Log.entryAdded with source `security` and loadingFailed with
 // blockedReason `csp`. css-url reads the declarations the CSSOM parsed, in document.styleSheets,
 // document.adoptedStyleSheets and every [style], and the text the CSSOM keeps raw: custom
@@ -129,6 +228,8 @@
 // drawn at another size, mirrored or not, is measured at the size that box holds it. Neither reads
 // the individual rotate property. Shadow roots are not walked by any probe. In Inline mode the
 // skipped absolute media paths raise no network or decode fault, since html_preview inlines them.
+// chart-text-small reads each element holding a text node with a box inside [data-base-chart],
+// outside SVG, at its computed font size times pxScale times visualViewport.scale.
 // An SVG that is not rendered (getScreenCTM null, or no client rects) is skipped by svg-wide and
 // svg-text-small, and SVG text size is font size times the CTM's vertical scale times
 // visualViewport.scale, so a page without a viewport meta that mobile emulation shrinks shows its
@@ -161,15 +262,20 @@
 // both reached holds the faults of both. The interaction steps and copy verdicts come from each
 // view's last attempt.
 // Aggregation: any fault gives fail, then any unknown gives unknown, else pass. A required matrix
-// cell that is missing is unknown `incomplete`, and each eager image or copy that settle left
-// unresolved is unknown `media-unsettled`, one per view, state and element.
+// cell that is missing is unknown `incomplete`, the required states being initial, details-open,
+// panes and chrome as the bytes require them, and interaction on a kit page. Each eager image or
+// copy that settle left unresolved is unknown `media-unsettled`, one per view, state and element,
+// and each unknown drive step is unknown `drive`.
 
-import { closeSync, constants, mkdirSync, openSync, writeSync } from 'node:fs'
+import { closeSync, constants, mkdirSync, openSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { COMMAND_MS, CdpError, launch } from './cdp.mjs'
 import { format } from './expect.mjs'
+import * as parts from './parts.mjs'
+import { attr, scan } from './scan.mjs'
 import { PROBE, serve } from './serve.mjs'
+import * as shell from './shell.mjs'
 
 export const BUILD_MS = 180000
 export const SETTLE_MS = 10000
@@ -177,6 +283,8 @@ export const SHOT_MAX = 16384
 export const TEXT_FLOOR = 11
 export const INLINE_HEIGHT = 2000
 export const STATES = ['initial', 'details-open']
+export const PANES = 'panes'
+export const CHROME = 'chrome'
 export const INTERACTION = 'interaction'
 export const HOSTILE = ['## Decisions', '1. x ✎', '`code`', '> quote', '', 'after blank']
 export const SPACES = ['   ', 'after spaces']
@@ -184,9 +292,11 @@ const STATUS_MS = 5000
 const STATUS_QUIET_MS = 250
 
 const view = (width, height, dsf, mobile, scheme, small) => ({ name: `${width}-${scheme}`, width, height, dsf, mobile, scheme, small })
+// Every Document view is small: a narrow grid cell at 1100 or 1440 is narrower than a phone column.
 export const DOC_VIEWS = [
   view(390, 844, 2, true, 'light', true), view(390, 844, 2, true, 'dark', true),
-  view(1440, 900, 1, false, 'light', false), view(1440, 900, 1, false, 'dark', false),
+  view(1100, 900, 1, false, 'light', true),
+  view(1440, 900, 1, false, 'light', true), view(1440, 900, 1, false, 'dark', true),
 ]
 export const INLINE_VIEWS = [
   view(360, 80, 2, false, 'light', true), view(360, 80, 2, false, 'dark', true),
@@ -576,6 +686,24 @@ function probe(cfg) {
       if (px < cfg.floor - 1e-3) add('svg-text-small', t, `renders at ${px.toFixed(1)} px, under ${cfg.floor} px`)
     }
   }
+  // Chart text, once per element that holds a text node with a box. SVG text inside a chart is
+  // svg-text-small's, so it is not read twice.
+  if (cfg.small) {
+    const seen = new Set()
+    for (const chart of document.querySelectorAll('[data-base-chart]')) {
+      const walker = document.createTreeWalker(chart, NodeFilter.SHOW_TEXT)
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const el = n.parentElement
+        if (!el || seen.has(el) || n.data.trim() === '' || el.namespaceURI === SVGNS) continue
+        const r = document.createRange()
+        r.selectNodeContents(n)
+        if (r.getClientRects().length === 0) continue
+        seen.add(el)
+        const px = parseFloat(getComputedStyle(el).fontSize) * pxScale(el) * scale
+        if (px < cfg.floor - 1e-3) add('chart-text-small', el, `renders at ${px.toFixed(1)} px, under ${cfg.floor} px`)
+      }
+    }
+  }
 
   if (!cfg.inline && document.title.trim() === '') add('empty-title', null, 'document.title is empty')
 
@@ -583,6 +711,14 @@ function probe(cfg) {
     const src = el.getAttribute('src')
     if (/^(data|blob):/i.test(src)) continue
     if (!cfg.declared.includes(src)) add('media-undeclared', el, `src="${src}" is not in the source the builder read`)
+  }
+
+  // A base part is written in the page: one its script made has no check, since every base state
+  // is read from the built bytes. querySelectorAll never reaches a <template>'s content, and the
+  // bytes' read skips it too.
+  for (const [kind, m] of Object.entries(cfg.written)) {
+    const n = document.querySelectorAll(kind).length
+    if (n > m) add('part-error', null, `markup: ${n} ${kind} in the page, ${m} in the built bytes: base markup is written, never made by script`)
   }
 
   const height = root.scrollHeight
@@ -600,22 +736,37 @@ function probe(cfg) {
 }
 
 // Every control the matrix does not drive. The kit's own controls are listed too, marked `kit`,
-// only when the interaction script did not drive them.
-function controls(driven) {
+// only when the interaction script did not drive them. A base control is never listed: it is one
+// of the exact names the base's markup holds or its script makes, below, on a page whose bytes
+// require the state that drives it (`base`: { panes, chrome }). Any other control is listed,
+// whatever its class, so an old page's own plans- control is listed as it always was. A .pb-table
+// scroller is always skipped.
+function controls(driven, base) {
   const KIT = 'fieldset[data-ask], [data-respond], [data-ask-summary], textarea[data-note]'
-  const out = []
+  const PANES = '[data-base-switch] [data-base-key] button, .plans-compare-switch button'
+  const CHROME = 'button.plans-theme, button.plans-zoom-open, dialog.plans-zoom button.plans-zoom-size, dialog.plans-zoom button.plans-zoom-close, .plans-dock button.plans-dock-sections, dialog.plans-sheet button.plans-sheet-close'
+  const list = []
   for (const el of document.querySelectorAll('button, select, textarea, input, [contenteditable], [tabindex]')) {
     if (!el.matches('button, select, textarea, input, [tabindex]') && el.getAttribute('contenteditable') === 'false') continue
     const kit = !!el.closest(KIT)
     if (kit && driven) continue
+    if (!kit && (el.matches('.pb-table') || (base.panes && el.matches(PANES)) || (base.chrome && el.matches(CHROME)))) continue
     let s = el.localName
     if (el.id) s += '#' + el.id
     for (const a of ['type', 'name', 'value', 'tabindex', 'contenteditable']) if (el.hasAttribute(a)) s += `[${a}="${el.getAttribute(a)}"]`
     const t = (el.localName === 'button' ? el.textContent : '').trim().replace(/\s+/g, ' ')
     if (t) s += ` "${t.slice(0, 40)}"`
-    out.push(kit ? `kit ${s}` : s)
+    list.push(kit ? `kit ${s}` : s)
   }
-  return out
+  return list
+}
+
+// Closes every open <dialog> through the isolated world's own close(), which page script can't
+// replace, and returns how many it closed.
+function closeDialogs() {
+  const open = [...document.querySelectorAll('dialog[open]')]
+  for (const d of open) d.close()
+  return open.length
 }
 
 // The static model, read once per view after the kit started. Raw text only: expect.mjs
@@ -658,7 +809,9 @@ function readState() {
 }
 
 // Finds one control, scrolls it to the middle of the viewport and returns the point a click
-// lands on, with whether elementFromPoint there is the control or inside it.
+// lands on, with whether elementFromPoint there is the control or inside it. A `base` spec names
+// its control by a literal selector the check wrote and a document-order index, never by a string
+// the page chose.
 function aim(spec) {
   const fss = document.querySelectorAll('fieldset[data-ask]')
   const input = () => fss[spec.q] && fss[spec.q].querySelectorAll('input')[spec.o]
@@ -669,6 +822,8 @@ function aim(spec) {
   else if (spec.kind === 'note') el = document.querySelectorAll('textarea[data-note]')[spec.n]
   else if (spec.kind === 'general') el = document.querySelector('[data-respond] .plans-ask-general')
   else if (spec.kind === 'copy') el = document.querySelector('[data-respond] .plans-ask-copy')
+  else if (spec.kind === 'base') el = document.querySelectorAll(spec.selector)[spec.index]
+  if (spec.kind === 'base' && !el) return { error: `the page has no ${spec.selector} at index ${spec.index}` }
   if (!el) return { error: `the page has no ${spec.kind} control for this step` }
   el.scrollIntoView({ block: 'center', inline: 'nearest' })
   let r = el.getBoundingClientRect()
@@ -749,6 +904,7 @@ function eventFaults(origin, skipped, refused) {
       case 'Runtime.consoleAPICalled': {
         const text = (p.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ')
         if (text.startsWith('plans-kit:')) add('kit-error', clip(text))
+        if (text.startsWith('plans-part: ')) add('part-error', clip(text.slice('plans-part: '.length)))
         if (text.startsWith('Refused to')) add('console-csp', clip(text))
         break
       }
@@ -794,7 +950,88 @@ function firstDiff(want, got) {
   return 'the strings differ'
 }
 
+// A step that failed where the page sits: a control that isn't there, a click whose point lands on
+// another element, or a response that differs. Every other error is the checker's own.
 class Mismatch extends Error {}
+
+// The keys real input can press: [key, code, virtual key code, text]. Text goes with a keyDown
+// only without Ctrl, Alt or Meta.
+const KEYS = {
+  Tab: ['Tab', 'Tab', 9], Enter: ['Enter', 'Enter', 13, '\r'], Escape: ['Escape', 'Escape', 27], Space: [' ', 'Space', 32, ' '],
+  ArrowLeft: ['ArrowLeft', 'ArrowLeft', 37], ArrowUp: ['ArrowUp', 'ArrowUp', 38], ArrowRight: ['ArrowRight', 'ArrowRight', 39],
+  ArrowDown: ['ArrowDown', 'ArrowDown', 40], Home: ['Home', 'Home', 36], End: ['End', 'End', 35], PageUp: ['PageUp', 'PageUp', 33],
+  PageDown: ['PageDown', 'PageDown', 34],
+}
+const MODIFIERS = { alt: 1, ctrl: 2, meta: 4, shift: 8 }
+
+// Real input on one page session, shared by the kit interaction and the base states, so both keep
+// one rule. A click aims at the center of its target, or of a label's first text line, through
+// aim(), and the element at that point must be the target or inside it: otherwise the click is a
+// Mismatch and nothing is pressed. mouseMoved, mousePressed and mouseReleased land there, with
+// mouse events in mobile views too. A key is an Input.dispatchKeyEvent keyDown and keyUp pair,
+// which goes to whatever has focus. io: { send, evaluate }.
+function inputs({ send, evaluate }) {
+  const mouse = async (x, y) => {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' })
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 })
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 })
+  }
+  // name, when given, opens the Mismatch message.
+  const click = async (spec, name) => {
+    const at = name ? `${name}: ` : ''
+    const a = await evaluate(call(aim, spec))
+    if (a.error) throw new Mismatch(`${at}${a.error}`)
+    if (!a.ok) throw new Mismatch(`${at}a click at the center of ${a.want} (${Math.round(a.x)}, ${Math.round(a.y)}) lands on ${a.hit}`)
+    await mouse(a.x, a.y)
+  }
+  // mods: { shift, ctrl, alt, meta }, each a boolean.
+  const key = async (name, mods = {}) => {
+    if (!Object.hasOwn(KEYS, name)) throw new Error(`no key named ${name}`)
+    const [k, code, vk, text] = KEYS[name]
+    const m = Object.entries(MODIFIERS).reduce((s, [n, bit]) => (mods[n] ? s | bit : s), 0)
+    const params = { key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, ...(m ? { modifiers: m } : {}) }
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', ...params, ...(text && !(m & 7) ? { text, unmodifiedText: text } : {}) })
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+  }
+  return { mouse, click, key }
+}
+
+// The kinds of base part the probe counts in the live page, by the selector it counts with.
+const WRITTEN = ['[data-base-chart]', '[data-base-switch]', 'figure.pb-compare', 'body[data-base-shell]', '[data-base-contents]']
+
+// The base roles of a start tag, given its class tokens: parts.mjs's model reads the same eleven
+// from the same bytes, and refuses a tag that holds two (parts.md: an element holds at most one).
+const ROLES = [(t) => attr(t, 'data-base-switch'), (t) => attr(t, 'data-base-key'), (t) => attr(t, 'data-base-when'), (t) => attr(t, 'data-base-chart'),
+  (t, c) => t.name === 'figure' && c.includes('pb-compare'), (t, c) => c.includes('pb-side'), (t, c) => c.includes('pb-table'), (t) => attr(t, 'data-base-zoom'),
+  (t) => attr(t, 'data-base-contents'), (t) => attr(t, 'data-base-shell'), (t) => t.name === 'details' || t.name === 'summary']
+
+// The base states a page requires, read from its built bytes with scan.mjs, never from what its
+// script made, so a base whose script doesn't run can't skip its own check. A tag inside an HTML
+// <template> is inert and counts for nothing. panes: a tag with data-base-switch, data-base-key or
+// data-base-when, a <figure> with the class token pb-compare, or a tag that holds two base roles,
+// whose model then reports it. chrome: a Document whose <body> start tag carries
+// data-base-shell (the parser joins a second <body> tag's attributes to the first). charts: a tag
+// with data-base-chart, which turns chartFaults on. written: how many of each WRITTEN kind the
+// bytes hold, body[data-base-shell] being 1 when any <body> start tag carries it.
+function baseNeeds(source, inline) {
+  const need = { panes: false, chrome: false, charts: false, written: Object.fromEntries(WRITTEN.map((k) => [k, 0])) }
+  for (const t of scan(source).tokens) {
+    if (t.type !== 'start' || t.template) continue
+    const n = need.written
+    const cls = (attr(t, 'class')?.value ?? '').split(/[\t\n\f\r ]+/)
+    if (attr(t, 'data-base-switch')) { need.panes = true; n['[data-base-switch]']++ }
+    if (attr(t, 'data-base-key') || attr(t, 'data-base-when')) need.panes = true
+    if (t.name === 'figure' && cls.includes('pb-compare')) { need.panes = true; n['figure.pb-compare']++ }
+    if (ROLES.filter((held) => held(t, cls)).length > 1) need.panes = true
+    if (attr(t, 'data-base-chart')) { need.charts = true; n['[data-base-chart]']++ }
+    if (attr(t, 'data-base-contents')) n['[data-base-contents]']++
+    if (t.name === 'body' && attr(t, 'data-base-shell')) {
+      n['body[data-base-shell]'] = 1
+      if (!inline) need.chrome = true
+    }
+  }
+  return need
+}
 
 // A /__plans-probe target in the view's browser context, for clipboard read-back. It holds no
 // page script, so the evaluations below run in a document nothing on the candidate can reach.
@@ -831,20 +1068,25 @@ async function clipboardProbe(browser, browserContextId, origin, stopped) {
   }
 }
 
-// Runs the interaction script and the copy check in one view. io: { send, evaluate, fault, browser,
-// browserContextId, origin, stopped }. Records steps in rec.steps, copy verdicts in rec.copies,
-// clipboard unknowns in rec.unknowns and each fault through io.fault the moment it is measured, and
-// returns whether it drove the kit.
+// Runs the interaction script and the copy check in one view. io: { send, evaluate, fault, input,
+// counts, browser, browserContextId, origin, stopped }, with input from inputs() and counts null or
+// an async (model) => Promise<void> that compares the base's question counts with a copy of the
+// script's own record. Counts runs after the initial response and after each step that moves a
+// question between open, changed and kept. Records steps in rec.steps, copy verdicts in
+// rec.copies, clipboard unknowns in rec.unknowns and each fault through io.fault the moment it is
+// measured, and returns whether it drove the kit.
 async function interact(io, rec, viewName) {
   const { send, evaluate, fault } = io
+  const { click, key } = io.input
   const s = await evaluate(call(readModel))
+  const step = (name, result, detail = '') => rec.steps.push({ name: `${INTERACTION}: ${name}`, result, detail, view: viewName })
   // runView skips this script when the kit logged an error, so a page that reaches here with the
   // kit's banner, or without a filled response region, has a kit that stopped and never said so.
   if (s.banner || !s.response) {
     const detail = s.banner
       ? 'initial response: the page shows the kit\'s error banner, but no kit error was logged'
       : 'initial response: the page has kit hooks, but no kit error was logged and the response region holds no response textarea'
-    rec.steps.push({ name: 'initial response', result: 'fail', detail, view: viewName })
+    step('initial response', 'fail', detail)
     fault('response-mismatch', detail)
     rec.copies.push('unknown')
     return false
@@ -855,24 +1097,8 @@ async function interact(io, rec, viewName) {
     notes: [...s.notes.map((n) => ({ name: n.name, text: n.text })), { name: 'General', text: '' }],
   }
   const general = model.notes[model.notes.length - 1]
-  const step = (name, result, detail = '') => rec.steps.push({ name, result, detail, view: viewName })
   let current = 'initial response'
 
-  const mouse = async (x, y) => {
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' })
-    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 })
-    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 })
-  }
-  const click = async (spec, name) => {
-    const a = await evaluate(call(aim, spec))
-    if (a.error) throw new Mismatch(`${name}: ${a.error}`)
-    if (!a.ok) throw new Mismatch(`${name}: a click at the center of ${a.want} (${Math.round(a.x)}, ${Math.round(a.y)}) lands on ${a.hit}`)
-    await mouse(a.x, a.y)
-  }
-  const key = async (k, code, vk, text) => {
-    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, ...(text ? { text, unmodifiedText: text } : {}) })
-    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk })
-  }
   const verify = async (name) => {
     const got = await evaluate(call(readState))
     for (const [qi, q] of model.questions.entries()) {
@@ -884,11 +1110,17 @@ async function interact(io, rec, viewName) {
     if (got.response === null) throw new Mismatch(`${name}: the page has no response textarea`)
     if (got.response !== want) throw new Mismatch(`${name}: the response differs from the independent formatter, ${firstDiff(want, got.response)}`)
   }
+  const changed = (q) => q.options.some((o) => o.checked !== o.defaultChecked)
+  // Each question's place in the record: kept, changed or open.
+  const places = () => model.questions.map((q) => (q.kept ? 'kept' : changed(q) ? 'changed' : 'open')).join(' ')
+  const counted = async () => { if (io.counts) await io.counts(structuredClone(model)) }
   const run = async (name, act) => {
     current = name
+    const before = places()
     await act()
     await verify(name)
     step(name, 'pass')
+    if (places() !== before) await counted()
   }
 
   const pickOption = (q, o) => async () => {
@@ -899,7 +1131,6 @@ async function interact(io, rec, viewName) {
     } else o.checked = !o.checked
     q.kept = false
   }
-  const changed = (q) => q.options.some((o) => o.checked !== o.defaultChecked)
   const keep = (q) => async () => {
     await click({ kind: 'keep', q: model.questions.indexOf(q) }, `the proposal button of ${q.id}`)
     for (const o of q.options) o.checked = o.defaultChecked
@@ -918,15 +1149,14 @@ async function interact(io, rec, viewName) {
   // A click into a textarea puts the caret under the pointer, so Ctrl+End moves it to the end.
   const focusEnd = async (spec, name) => {
     await click(spec, name)
-    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35, modifiers: 2 })
-    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'End', code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35, modifiers: 2 })
+    await key('End', { ctrl: true })
   }
   const typeLines = async (spec, note, lines, name) => {
     current = name
     await focusEnd(spec, name)
     for (const [i, line] of lines.entries()) {
       if (i > 0 || note.text !== '') {
-        await key('Enter', 'Enter', 13, '\r')
+        await key('Enter')
         note.text += '\n'
         await verify(`${name}, Enter`)
       }
@@ -942,6 +1172,7 @@ async function interact(io, rec, viewName) {
   try {
     await verify('initial response')
     step('initial response', 'pass')
+    await counted()
     for (const [qi, q] of model.questions.entries()) {
       if (q.type !== 'radio') continue
       const o = q.options.find((x) => x.defaultChecked)
@@ -952,7 +1183,7 @@ async function interact(io, rec, viewName) {
       let tabs = 0
       current = `Tab past ${q.id}`
       if (!(await evaluate(call(focusInside, qi)))) throw new Mismatch(`Tab past ${q.id}: the click on the checked label left focus outside the question`)
-      while (tabs < cap && (await evaluate(call(focusInside, qi)))) { await key('Tab', 'Tab', 9); tabs++ }
+      while (tabs < cap && (await evaluate(call(focusInside, qi)))) { await key('Tab'); tabs++ }
       if (await evaluate(call(focusInside, qi))) throw new Mismatch(`Tab past ${q.id}: focus is still inside the question after ${cap} Tab presses`)
       await verify(`Tab past ${q.id}`)
       step(`Tab past ${q.id}`, 'pass', `${tabs} Tab presses`)
@@ -1036,9 +1267,28 @@ async function interact(io, rec, viewName) {
 
 /* ---------------------------------------------------------------- shots */
 
+// A write that fails after the open removes its partial file, so only whole PNGs reach the
+// directory.
 function writeShot(path, bytes) {
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o644)
-  try { for (let off = 0; off < bytes.length;) off += writeSync(fd, bytes, off, bytes.length - off) } finally { closeSync(fd) }
+  try {
+    try { for (let off = 0; off < bytes.length;) off += writeSync(fd, bytes, off, bytes.length - off) } finally { closeSync(fd) }
+  } catch (e) {
+    try { unlinkSync(path) } catch {}
+    throw e
+  }
+}
+
+// The cells of one attempt whose tiles do not cover 0 to the page's height, as `tiles` unknowns.
+function tileGaps(rec) {
+  return rec.planned.flatMap((p) => {
+    let covered = 0
+    for (const t of rec.shots.filter((s) => s.view === p.view && s.state === p.state).sort((a, b) => a.y - b.y)) {
+      if (t.y > covered) break
+      covered = Math.max(covered, t.y + t.height)
+    }
+    return covered < p.height ? [{ kind: 'tiles', detail: `${p.view} ${p.state}: tiles cover 0-${covered} of ${p.height} px` }] : []
+  })
 }
 
 /* ---------------------------------------------------------------- one view */
@@ -1053,6 +1303,8 @@ function cellOf(rec, view, state) {
 // One view. rec: { cells, steps, copies, unknowns, state }, filled as the view runs, so a retry
 // starts from a fresh one. rec.state is the state being measured, whose cell a fault joins.
 async function runView(browser, ctx, v, rec) {
+  // A cell's ms runs from the end of the state before it, or from the view's start for the first.
+  let since = Date.now()
   const { browserContextId } = await browser.send('Target.createBrowserContext', { disposeOnDetach: true })
   try {
     if (!ctx.inline) await browser.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: ctx.origin, browserContextId })
@@ -1089,10 +1341,130 @@ async function runView(browser, ctx, v, rec) {
     }
     // A fault joins rec the moment it is measured. Events wait in `events` until the state's probe,
     // or until the view ends, whichever comes first.
-    const fault = (kind, detail) => cellOf(rec, v.name, rec.state).faults.push({ kind, detail })
+    // A part logs each fault once, but its line joins a cell once even if it comes again.
+    const fault = (kind, detail) => {
+      const cell = cellOf(rec, v.name, rec.state)
+      if (kind === 'part-error' && cell.faults.some((f) => f.kind === kind && f.detail === detail)) return
+      cell.faults.push({ kind, detail })
+    }
+    // A fault that a probe, a module or the controls read measured joins its state's cell once,
+    // however many of them report it. measured is reset as each state starts.
+    let measured = new Set()
+    const record = (f) => {
+      const key = f.kind + '\0' + f.detail
+      if (!measured.has(key)) { measured.add(key); fault(f.kind, f.detail) }
+    }
     const add = eventFaults(ctx.origin, ctx.skipped, ctx.refused)
-    let seen = 0
-    const drain = () => { for (; seen < events.length; seen++) add(events[seen], fault) }
+    let drained = 0
+    // Moves the events that arrived since the last drain into the state's cell, and returns the
+    // faults they made.
+    const drain = () => {
+      const out = []
+      for (; drained < events.length; drained++) {
+        add(events[drained], (kind, detail) => { out.push({ kind, detail }); measured.add(kind + '\0' + detail); fault(kind, detail) })
+      }
+      return out
+    }
+    const unknown = (kind, detail) => { if (!rec.unknowns.some((u) => u.kind === kind && u.detail === detail)) rec.unknowns.push({ kind, detail }) }
+    let settled = null
+    // Media the settle cap cut off was never read, so its state can't pass.
+    const unsettled = (state) => { for (const u of settled.unsettled) unknown('media-unsettled', `${v.name} ${state}: ${u} neither loaded nor failed within ${SETTLE_MS} ms`) }
+    // Counts page loads. Chromium 155 gave the isolated world the same execution context id on
+    // every load of a view, so the id can't tell one load from the next.
+    let loads = 0
+    // One page load: navigate, a fresh isolated world, and settle.
+    const load = async () => {
+      loads++
+      const loaded = waitFor('Page.loadEventFired')
+      // Awaited below; marked handled now so a navigation that throws leaves no stray rejection.
+      loaded.catch(() => {})
+      const nav = await send('Page.navigate', { url: ctx.url })
+      if (nav.errorText) throw new CdpError('protocol', `Page.navigate to the viewer double failed: ${nav.errorText}`)
+      await loaded
+      ;({ executionContextId: world } = await send('Page.createIsolatedWorld', { frameId: nav.frameId, worldName: 'plans-check' }))
+      settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+    }
+    // Module code runs in the isolated world, where globalThis.plansCheck = { source, model } is
+    // set once per page load before the first module call: the built bytes and parts.mjs's model.
+    // An argument that is the source itself is passed as a reference to it, so the bytes cross the
+    // pipe once per load however often a module passes drive.source.
+    let installed = 0
+    const inWorld = async (fn, args) => {
+      if (installed !== loads) {
+        await evaluate(`globalThis.plansCheck = { source: ${JSON.stringify(ctx.source)}, model: (${parts.model.toString()}) }, true`)
+        installed = loads
+      }
+      const arg = (a) => (a === ctx.source ? 'globalThis.plansCheck.source' : a === undefined ? 'undefined' : JSON.stringify(a))
+      return evaluate(`(${fn.toString()})(${args.map(arg).join(', ')})`)
+    }
+    // Check rows from a module, each joined to rec.steps under this view. With derive, a failed row
+    // is also the fault part-drive and an unknown row the unknown `drive`, each detailed
+    // `<state> <target>: <detail>`, the target being the row's name after its `<prefix>: `.
+    const take = (rows, derive) => {
+      for (const r of rows ?? []) {
+        const result = ['pass', 'fail', 'unknown'].includes(r.result) ? r.result : 'fail'
+        rec.steps.push({ name: r.name, result, detail: r.detail ?? '', view: v.name })
+        if (!derive || result === 'pass') continue
+        const at = r.name.indexOf(': ')
+        const what = `${rec.state} ${at === -1 ? r.name : r.name.slice(at + 2)}: ${r.detail ?? ''}`
+        if (result === 'fail') record({ kind: 'part-drive', detail: what })
+        else unknown('drive', `${v.name} ${what}`)
+      }
+    }
+    let kitPage = false
+    // The state's probe, then the chart oracle on a page whose bytes hold a chart, then the event
+    // stream. Each fault joins the state's cell, and each row chartFaults returns joins rec.steps.
+    // Returns the probe's result and the faults this call measured.
+    const measure = async () => {
+      const got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken, mediaBroken: settled.mediaBroken, written: ctx.written }))
+      // Hooks in any measured state make it a kit page. A hook that appears when <details> opens
+      // needs a kit error, or the response and interaction checks, as much as one at load.
+      if (got.kitPage) kitPage = true
+      const charts = ctx.charts ? await inWorld(parts.chartFaults, [ctx.source]) : []
+      const events = drain()
+      const faults = [...got.faults, ...charts.filter((x) => typeof x?.name !== 'string')]
+      take(charts.filter((x) => typeof x?.name === 'string'), false)
+      for (const f of faults) record(f)
+      return { got, faults: [...events, ...faults] }
+    }
+    const input = inputs({ send, evaluate })
+    // The drive a module gets, built once per state load. run.mjs's header says what each member
+    // does.
+    const driveFor = (state) => ({
+      io: { send, evaluate, mouse: input.mouse },
+      view: { ...v }, inline: ctx.inline, source: ctx.source, state,
+      call: (fn, ...args) => inWorld(fn, args),
+      click: (spec) => input.click(spec),
+      key: (name, mods) => input.key(name, mods),
+      probe: async () => (await measure()).faults,
+      settle: async () => { settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList)); unsettled(state) },
+      scrollHome: async () => { await evaluate(call(scrollHome)) },
+      openDetails: (k) => evaluate(call(openDetails, k)),
+      closeDialogs: () => evaluate(call(closeDialogs)),
+      missed: (e) => e instanceof Mismatch,
+    })
+    // One base state's module function, its rows taken as drive rows and its faults recorded. A
+    // step failure it lets escape is one part-drive for the state; any other error is the
+    // checker's own and ends the view.
+    const runModule = async (state, fn) => {
+      let r
+      try { r = await fn() } catch (e) {
+        if (!(e instanceof Mismatch)) throw e
+        record({ kind: 'part-drive', detail: `${state} walk: ${e.message}` })
+        return
+      }
+      take(r?.steps, true)
+      for (const f of r?.faults ?? []) record(f)
+    }
+    // The interaction's counts hook on a shell page: shell.mjs's row, if any, as a drive row.
+    const countsFor = (drive) => async (model) => {
+      let row
+      try { row = await shell.counts(drive, model) } catch (e) {
+        if (!(e instanceof Mismatch)) throw e
+        row = { name: `${INTERACTION}: base counts`, result: 'fail', detail: e.message }
+      }
+      if (row) take([row], true)
+    }
     try {
       for (const d of ['Runtime', 'Log', 'Network', 'Page', 'Inspector']) await send(`${d}.enable`)
       await send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dsf, mobile: v.mobile })
@@ -1106,61 +1478,81 @@ async function runView(browser, ctx, v, rec) {
       } else {
         await send('Emulation.setFocusEmulationEnabled', { enabled: true })
       }
-      const loaded = waitFor('Page.loadEventFired')
-      // Awaited below; marked handled now so a navigation that throws leaves no stray rejection.
-      loaded.catch(() => {})
-      const nav = await send('Page.navigate', { url: ctx.url })
-      if (nav.errorText) throw new CdpError('protocol', `Page.navigate to the viewer double failed: ${nav.errorText}`)
-      await loaded
-      ;({ executionContextId: world } = await send('Page.createIsolatedWorld', { frameId: nav.frameId, worldName: 'plans-check' }))
-      let settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+      await load()
 
-      let kitPage = false
       let driven = false
-      for (const state of [...STATES, INTERACTION]) {
+      // Set once a base state has driven the page, so interaction then starts from a fresh load.
+      let fresh = false
+      for (const state of [...STATES, ...(ctx.panes ? [PANES] : []), ...(ctx.chrome ? [CHROME] : []), INTERACTION]) {
         if (state === INTERACTION && (ctx.inline || !kitPage)) break
         rec.state = state
-        // details-open probes once per member of the largest named <details> group, last member
-        // first, so the state ends, is captured and is driven with each group's first member open.
-        const passes = state === 'details-open' ? await evaluate(call(openDetails, 0)) : 1
-        const measured = new Set()
-        let got
-        for (let k = passes - 1; k >= 0; k--) {
-          if (state === 'details-open') {
-            await evaluate(call(openDetails, k))
-            settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
-          }
-          if (state === INTERACTION) {
-            ctx.kitDoc = true
-            // A kit that already logged an error has turned its response off: nothing to drive.
-            const kitFailed = rec.cells.some((c) => c.view === v.name && c.faults.some((f) => f.kind === 'kit-error'))
-            if (!kitFailed) driven = await interact({ send, evaluate, fault, browser, browserContextId, origin: ctx.origin, stopped: ctx.stopped }, rec, v.name)
-            await evaluate(call(scrollHome))
-            settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
-          }
-          // Media the settle cap cut off was never read, so its state can't pass.
-          for (const u of settled.unsettled) rec.unknowns.push({ kind: 'media-unsettled', detail: `${v.name} ${state}: ${u} neither loaded nor failed within ${SETTLE_MS} ms` })
-          got = await evaluate(call(probe, { inline: ctx.inline, small: v.small, floor: TEXT_FLOOR, heightMax: INLINE_HEIGHT, declared: ctx.declared, skipped: ctx.skippedList, lazyBroken: settled.lazyBroken, mediaBroken: settled.mediaBroken }))
-          // Hooks in any measured state make it a kit page. A hook that appears when <details> opens
-          // needs a kit error, or the response and interaction checks, as much as one at load.
-          if (got.kitPage) kitPage = true
+        measured = new Set()
+        if (state === PANES || state === CHROME || (state === INTERACTION && fresh)) {
+          await load()
           drain()
-          // A fault every pass sees joins the cell once.
-          for (const f of got.faults) {
-            const key = f.kind + '\0' + f.detail
-            if (!measured.has(key)) { measured.add(key); fault(f.kind, f.detail) }
+          await evaluate(call(openDetails, 0))
+          settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+        }
+        let got
+        if (state === PANES || state === CHROME) {
+          fresh = true
+          const drive = driveFor(state)
+          await runModule(state, () => (state === PANES ? parts.panes(drive) : shell.chrome(drive)))
+          await evaluate(call(closeDialogs))
+          await evaluate(call(scrollHome))
+          settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+          unsettled(state)
+          ;({ got } = await measure())
+        } else {
+          // details-open probes once per member of the largest named <details> group, last member
+          // first, so the state ends, is captured and is driven with each group's first member open.
+          const passes = state === 'details-open' ? await evaluate(call(openDetails, 0)) : 1
+          for (let k = passes - 1; k >= 0; k--) {
+            if (state === 'details-open') {
+              await evaluate(call(openDetails, k))
+              settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+            }
+            if (state === INTERACTION) {
+              ctx.kitDoc = true
+              // A kit that already logged an error has turned its response off: nothing to drive.
+              const kitFailed = rec.cells.some((c) => c.view === v.name && c.faults.some((f) => f.kind === 'kit-error'))
+              if (!kitFailed) {
+                const counts = ctx.chrome ? countsFor(driveFor(INTERACTION)) : null
+                driven = await interact({ send, evaluate, fault, input, counts, browser, browserContextId, origin: ctx.origin, stopped: ctx.stopped }, rec, v.name)
+              }
+              await evaluate(call(scrollHome))
+              settled = await evaluate(call(settle, SETTLE_MS, ctx.skippedList))
+            }
+            unsettled(state)
+            ;({ got } = await measure())
           }
         }
         // The cell is in rec before its screenshot, so a capture or write that fails keeps it.
-        cellOf(rec, v.name, state)
+        const cell = cellOf(rec, v.name, state)
         if (ctx.shots) {
-          const w = Math.min(Math.ceil(got.width), Math.floor(SHOT_MAX / v.dsf))
-          const h = Math.min(Math.ceil(got.height), Math.floor(SHOT_MAX / v.dsf))
-          const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: w, height: h, scale: 1 } })
-          writeShot(join(ctx.shots, `${v.width}-${v.scheme}-${state}.png`), Buffer.from(data, 'base64'))
+          // Tiles by clip offset from scroll position 0, each at most SHOT_MAX device px tall. The
+          // plan joins rec before the first capture, so a tile that never lands leaves a gap that
+          // runChecks reads, and each tile joins rec.shots only once its file is written.
+          await evaluate(call(scrollHome))
+          const tile = Math.floor(SHOT_MAX / v.dsf)
+          const w = Math.min(Math.ceil(got.width), tile)
+          const h = Math.ceil(got.height)
+          rec.planned.push({ view: v.name, state, height: h })
+          let y = 0, n = 1
+          do {
+            const height = Math.min(tile, h - y)
+            const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y, width: w, height, scale: 1 } })
+            const file = `${v.name}-${state}${n === 1 ? '' : `.${n}`}.png`
+            writeShot(join(ctx.shots, file), Buffer.from(data, 'base64'))
+            rec.shots.push({ file, view: v.name, state, tile: n, y, height, scale: v.dsf })
+            y += height
+            n++
+          } while (y < h)
         }
+        cell.ms = Date.now() - since
+        since = Date.now()
       }
-      if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls, driven))
+      if (ctx.undriven === null) ctx.undriven = await evaluate(call(controls, driven, { panes: ctx.panes, chrome: ctx.chrome }))
     } catch (e) {
       // A lost target ends the view through the retry rule, whatever error it caused first.
       throw lost ?? e
@@ -1186,7 +1578,10 @@ const hang = (e) => e instanceof CdpError && Object.hasOwn(HANG, e.kind)
 // One view with the retry rule. Each attempt's record joins recs before it runs, so runChecks
 // sees every fault it measured even when the attempt, or the whole run, stops early. Returns
 // { flaky } or throws for an unknown.
-const freshRec = () => ({ cells: [], steps: [], copies: [], unknowns: [], state: STATES[0] })
+// rec.planned and rec.shots are the attempt's screenshot plan and the files it wrote. A retry first
+// removes the files the attempt before it wrote, so the directory and the manifest both hold one
+// attempt's set.
+const freshRec = () => ({ cells: [], steps: [], copies: [], unknowns: [], planned: [], shots: [], state: STATES[0] })
 async function viewWithRetry(browser, ctx, v, recs) {
   const attempt = () => { const r = freshRec(); recs.push(r); return r }
   try {
@@ -1195,6 +1590,7 @@ async function viewWithRetry(browser, ctx, v, recs) {
   } catch (e) {
     if (!hang(e)) throw e
     if (!(await browser.ping())) throw new CdpError('deadline', `${v.name}: ${e.message}, and the browser stopped answering`)
+    if (ctx.shots) for (const s of recs.at(-1).shots) { try { unlinkSync(join(ctx.shots, s.file)) } catch {} }
     const again = attempt()
     try {
       await runView(browser, ctx, v, again)
@@ -1209,19 +1605,21 @@ async function viewWithRetry(browser, ctx, v, recs) {
 }
 
 // The matrix from every attempt of every view: one cell per view and state, in the order first
-// reached, holding each distinct fault any attempt saw there.
+// reached, holding each distinct fault any attempt saw there, and the ms of the last attempt that
+// finished the state, or null when none did.
 function mergeCells(recsPerView) {
   const cells = new Map()
   for (const recs of recsPerView) {
     for (const rec of recs) {
       for (const c of rec.cells) {
         const key = `${c.view}/${c.state}`
-        if (!cells.has(key)) cells.set(key, { view: c.view, state: c.state, faults: new Map() })
+        if (!cells.has(key)) cells.set(key, { view: c.view, state: c.state, ms: null, faults: new Map() })
+        if (c.ms !== undefined) cells.get(key).ms = c.ms
         for (const f of c.faults) cells.get(key).faults.set(`${f.kind}\0${f.detail}`, f)
       }
     }
   }
-  return [...cells.values()].map((c) => ({ view: c.view, state: c.state, faults: [...c.faults.values()] }))
+  return [...cells.values()].map((c) => ({ view: c.view, state: c.state, ms: c.ms, faults: [...c.faults.values()] }))
 }
 
 const unknownOf = (e) => {
@@ -1231,7 +1629,7 @@ const unknownOf = (e) => {
 
 export async function runChecks({ buffer, inline = false, dir, media = [], skippedMedia = [], chromium, shots = null, tmp, deadlineMs = BUILD_MS }) {
   const views = inline ? INLINE_VIEWS : DOC_VIEWS
-  const out = { result: 'unknown', reason: null, matrix: [], checks: [], copy: null, undriven: [] }
+  const out = { result: 'unknown', reason: null, matrix: [], checks: [], copy: null, undriven: [], shots: [] }
   const unknowns = []
   let timer, stop
   // One { recs, flaky } per view, with every attempt's record, filled as the views run and read
@@ -1241,8 +1639,10 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
   // cleanup below reaches one that is still starting. stopped rejects when the run stops, which
   // ends every wait of the work that no CDP reply ends, and halted keeps it from starting more.
   let serving = null, launching = null, halted = false
+  // String(), unlike toString(), never throws, so a missing buffer still ends as an unknown below.
+  const source = String(buffer)
   const ctx = {
-    inline, shots, undriven: null, kitDoc: false,
+    inline, shots, undriven: null, kitDoc: false, source, ...baseNeeds(source, inline),
     declared: [...new Set(media.map((m) => (typeof m === 'string' ? m : m.src)))],
     skippedList: [...skippedMedia], skipped: new Set(skippedMedia),
     stopped: new Promise((_, reject) => { stop = reject }),
@@ -1289,10 +1689,12 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
   const last = runs.map((r) => r.recs.at(-1) ?? freshRec())
   const steps = last.flatMap((r) => r.steps)
   const copies = last.flatMap((r) => r.copies)
-  // Each view's own unknowns, then its flaky retry, in view order, and the run's own error last.
-  unknowns.unshift(...runs.flatMap((r, i) => [...last[i].unknowns, ...(r.flaky ? [{ kind: 'flaky', detail: r.flaky }] : [])]))
+  out.shots = last.flatMap((r) => r.shots)
+  // Each view's own unknowns and tile gaps, then its flaky retry, in view order, and the run's own
+  // error last.
+  unknowns.unshift(...runs.flatMap((r, i) => [...last[i].unknowns, ...tileGaps(last[i]), ...(r.flaky ? [{ kind: 'flaky', detail: r.flaky }] : [])]))
   const have = new Set(out.matrix.map((c) => `${c.view}/${c.state}`))
-  const required = ctx.kitDoc ? [...STATES, INTERACTION] : STATES
+  const required = [...STATES, ...(ctx.panes ? [PANES] : []), ...(ctx.chrome ? [CHROME] : []), ...(ctx.kitDoc ? [INTERACTION] : [])]
   const missing = views.flatMap((v) => required.map((s) => `${v.name}/${s}`)).filter((k) => !have.has(k))
   if (missing.length && !unknowns.length) unknowns.push({ kind: 'incomplete', detail: `matrix cells not checked: ${missing.join(', ')}` })
   const faults = out.matrix.flatMap((c) => c.faults)
@@ -1312,7 +1714,8 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
     detail: out.result === 'pass' ? `${cells} cells, no faults` : out.result === 'fail' ? `${faults.length} faults in ${cells} cells` : `${out.reason.kind}: ${out.reason.detail}`,
   })
   for (const u of unknowns.slice(out.result === 'unknown' ? 1 : 0)) out.checks.push({ name: 'browser', result: 'unknown', detail: `${u.kind}: ${u.detail}` })
-  // One row per step name across the views: fail if any view failed it, then unknown, else pass.
+  // One row per step name across the views and every time a view reported it: fail if any report
+  // failed, then unknown, else pass, with each view named once.
   const byName = new Map()
   for (const st of steps) {
     if (!byName.has(st.name)) byName.set(st.name, [])
@@ -1320,8 +1723,8 @@ export async function runChecks({ buffer, inline = false, dir, media = [], skipp
   }
   for (const [name, list] of byName) {
     const worst = list.find((x) => x.result === 'fail') ?? list.find((x) => x.result === 'unknown') ?? list[0]
-    const detail = worst.result === 'pass' ? `${list.map((x) => x.view).join(', ')}${worst.detail ? `: ${worst.detail}` : ''}` : `${worst.view}: ${worst.detail}`
-    out.checks.push({ name: `interaction: ${name}`, result: worst.result, detail })
+    const detail = worst.result === 'pass' ? `${[...new Set(list.map((x) => x.view))].join(', ')}${worst.detail ? `: ${worst.detail}` : ''}` : `${worst.view}: ${worst.detail}`
+    out.checks.push({ name, result: worst.result, detail })
   }
   if (copies.length) out.copy = copies.includes('unknown') ? 'unknown' : copies[0]
   return out

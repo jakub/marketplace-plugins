@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload agent, every part without the shell</title>
+<!-- plans:kit -->
+<style>
+  .shot { display: block; width: 100%; height: auto; color: var(--plans-ink); }
+  .shot .ln { fill: none; stroke: currentColor; stroke-width: 1; }
+  .shot .soft { fill: var(--plans-panel); stroke: var(--plans-rule); }
+  /* Wide enough at 1100 and 1440 for both sides to show, and the column's width at 390. */
+  .wide { width: min(46rem, calc(100vw - 2.25rem)); }
+</style>
+</head>
+<body>
+<main>
+<h1>Upload agent, every part without the shell</h1>
+<p>A synthetic page. Each part of the base sits on it once, with no shell and no questions.</p>
+
+<p>Status: <span class="pb-chip" data-base-status="supported">supported</span> <span class="pb-chip" data-base-status="partial">partial</span> <span class="pb-chip" data-base-status="unknown">unknown</span> <span class="pb-chip" data-base-status="refuted">refuted</span> <span class="pb-chip" data-base-status="proposed">proposed</span> <span class="pb-chip" data-base-status="changed">changed</span> <span class="pb-chip" data-base-status="unchanged">unchanged</span>.</p>
+
+<ul class="pb-tiles">
+  <li><b class="num">3</b> <span>files changed</span></li>
+  <li><b class="num">210 ms</b> <span>render, from 340</span></li>
+  <li><b class="num">0</b> <span>failed uploads</span></li>
+</ul>
+
+<aside class="pb-callout" data-base-kind="note"><b>Note.</b> Every number on this page is made up for the fixture.</aside>
+<aside class="pb-callout" data-base-kind="warning"><b>Warning.</b> The queue drops a job after five tries.</aside>
+<aside class="pb-callout" data-base-kind="decided"><b>Decided.</b> The worker frees its slot before the send.<sup class="pb-fn"><a href="#n1">1</a></sup></aside>
+
+<h2>Screens</h2>
+<figure class="pb-figure" data-base-frame="browser">
+  <span class="pb-address">agent.example.test/settings/uploads</span>
+  <svg class="shot" viewBox="0 0 640 200" role="img" aria-label="The upload settings with a retry field"><rect class="soft" x="20" y="20" width="600" height="36"/><rect class="ln" x="20" y="76" width="280" height="28"/><rect class="ln" x="20" y="124" width="280" height="28"/></svg>
+  <figcaption>Settings after the change, at <code>0a1b2c3</code>.</figcaption>
+</figure>
+<figure class="pb-figure" data-base-frame="phone">
+  <svg class="shot" viewBox="0 0 390 480" role="img" aria-label="The upload settings on a phone"><rect class="soft" x="16" y="16" width="358" height="44"/><rect class="ln" x="16" y="80" width="358" height="40"/></svg>
+  <figcaption>The same screen at 390 px.</figcaption>
+</figure>
+
+<h2>Before and after</h2>
+<figure class="pb-compare wide">
+  <div class="pb-side" data-base-side="before">
+    <h3>Before</h3>
+    <svg class="shot" viewBox="0 0 320 160" role="img" aria-label="The list with no retry column"><rect class="ln" x="8" y="8" width="304" height="144"/></svg>
+  </div>
+  <div class="pb-side" data-base-side="after">
+    <h3>After</h3>
+    <svg class="shot" viewBox="0 0 320 160" role="img" aria-label="The list with a retry column"><rect class="ln" x="8" y="8" width="304" height="144"/><rect class="soft" x="232" y="8" width="80" height="144"/></svg>
+  </div>
+  <figcaption>The upload list, before and after the retry column.</figcaption>
+</figure>
+
+<h2>Times by period</h2>
+<div data-base-switch>
+  <p data-base-key="period"><span>Period</span>
+    <button type="button" value="week" aria-pressed="true" disabled>Week</button>
+    <button type="button" value="month" disabled>Month</button>
+    <button type="button" value="quarter" disabled>Quarter</button>
+  </p>
+  <div data-base-when="period=week">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Phase</th><th>Before</th><th>After</th></tr></thead>
+        <tbody>
+          <tr><th>Parse</th><td><data value="120">120</data></td><td><data value="95">95</data></td></tr>
+          <tr data-base-status="changed"><th>Render</th><td><data value="340">340</data></td><td><data value="210">210</data></td></tr>
+          <tr><th>Upload</th><td><data value="80">80</data></td><td><data value="82">82</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Median phase time, last week.</figcaption>
+    </figure>
+  </div>
+  <div data-base-when="period=month">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Phase</th><th>Before</th><th>After</th></tr></thead>
+        <tbody>
+          <tr><th>Parse</th><td><data value="140">140</data></td><td><data value="100">100</data></td></tr>
+          <tr><th>Render</th><td><data value="380">380</data></td><td><data value="230">230</data></td></tr>
+          <tr><th>Upload</th><td><data value="95">95</data></td><td><data value="90">90</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Median phase time, last month.</figcaption>
+    </figure>
+  </div>
+  <div data-base-when="period=quarter">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Phase</th><th>Before</th><th>After</th></tr></thead>
+        <tbody>
+          <tr><th>Parse</th><td><data value="160">160</data></td><td><data value="110">110</data></td></tr>
+          <tr><th>Render</th><td><data value="420">420</data></td><td><data value="260">260</data></td></tr>
+          <tr><th>Upload</th><td><data value="105">105</data></td><td><data value="99">99</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Median phase time, last quarter. All three periods share one scale.</figcaption>
+    </figure>
+  </div>
+</div>
+
+<h2>Time per stage, by host and cache</h2>
+<div data-base-switch>
+  <p data-base-key="host"><span>Host</span>
+    <button type="button" value="alpha" aria-pressed="true" disabled>alpha</button>
+    <button type="button" value="beta" disabled>beta</button>
+  </p>
+  <p data-base-key="cache"><span>Cache</span>
+    <button type="button" value="cold" aria-pressed="true" disabled>Cold</button>
+    <button type="button" value="warm" disabled>Warm</button>
+  </p>
+  <div data-base-when="host=alpha cache=cold">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="s" data-base-stack>
+        <thead><tr><th>Job</th><th>Read</th><th>Write</th><th>Sync</th></tr></thead>
+        <tbody>
+          <tr><th>Nightly</th><td><data value="12">12 s</data></td><td><data value="30">30 s</data></td><td><data value="8">8 s</data></td></tr>
+          <tr><th>Hourly</th><td><data value="0">0 s</data></td><td><data value="22.5">22.5 s</data></td><td><data value="3">3 s</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Stacked stage time on alpha, cold cache.</figcaption>
+    </figure>
+  </div>
+  <div data-base-when="host=alpha cache=warm">
+    <figure>
+      <table data-base-chart="bars" data-base-unit="s" data-base-stack>
+        <thead><tr><th>Job</th><th>Read</th><th>Write</th><th>Sync</th></tr></thead>
+        <tbody>
+          <tr><th>Nightly</th><td><data value="4">4 s</data></td><td><data value="18">18 s</data></td><td><data value="6">6 s</data></td></tr>
+          <tr><th>Hourly</th><td><data value="1">1 s</data></td><td><data value="9">9 s</data></td><td><data value="2">2 s</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Stacked stage time on alpha, warm cache, on the cold chart's scale.</figcaption>
+    </figure>
+  </div>
+  <div data-base-when="host=beta">
+    <p>beta has no timings yet. Its agent ships next week.</p>
+    <figure class="pb-compare">
+      <div class="pb-side" data-base-side="before">
+        <h3>Before</h3>
+        <p>beta uploads one file at a time.</p>
+      </div>
+      <div class="pb-side" data-base-side="after">
+        <h3>After</h3>
+        <p>beta uploads four files at a time.</p>
+      </div>
+      <figcaption>The planned change on beta.</figcaption>
+    </figure>
+  </div>
+</div>
+
+<h2>Change in time</h2>
+<figure>
+  <table data-base-chart="bars" data-base-unit="ms">
+    <thead><tr><th>Phase</th><th>Change</th></tr></thead>
+    <tbody>
+      <tr><th>Parse</th><td><data value="-120">−120</data></td></tr>
+      <tr><th>Render</th><td><data value="45.5">+45.5</data></td></tr>
+      <tr data-base-status="changed"><th>Upload</th><td><data value="-300">−300</data></td></tr>
+    </tbody>
+  </table>
+  <figcaption>Change in median time per phase. A drop draws left of zero.</figcaption>
+</figure>
+<figure>
+  <table data-base-chart="bars">
+    <thead><tr><th>Queue</th><th>Failures</th></tr></thead>
+    <tbody>
+      <tr><th>mail</th><td><data value="0">0</data></td></tr>
+      <tr><th>sms</th><td><data value="0">0</data></td></tr>
+    </tbody>
+  </table>
+  <figcaption>Failed sends per queue this week, all zero.</figcaption>
+</figure>
+
+<h2>Plan</h2>
+<figure>
+  <ol data-base-chart="timeline">
+    <li data-base-lane="Design"><time datetime="2026-10-01">1 Oct</time> to <time datetime="2026-10-10">10 Oct</time> Draft three layouts</li>
+    <li data-base-lane="Design"><time datetime="2026-10-06">6 Oct</time> to <time datetime="2026-10-14">14 Oct</time> Review the drafts</li>
+    <li data-base-lane="Design"><time datetime="2026-10-20">20 Oct</time> Pick one</li>
+    <li data-base-lane="Build" data-base-status="changed"><time datetime="2026-10-15">15 Oct</time> to <time datetime="2026-10-28">28 Oct</time> Build the agent</li>
+    <li data-base-lane="Build"><time datetime="2026-10-30T12:00:00Z">30 Oct, 12:00 UTC</time> First nightly run</li>
+  </ol>
+  <figcaption>From the first draft to the first nightly run. The review overlaps the drafts, so it takes a second row.</figcaption>
+</figure>
+
+<h2>Files</h2>
+<div class="pb-table">
+  <table>
+    <caption>Files the change touches</caption>
+    <thead><tr><th>File</th><th>Added</th><th>Removed</th><th>Owner</th><th>Reviewed</th><th>Status</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td><code>agent/queue.go</code></td><td class="num">180</td><td class="num">12</td><td>agent team</td><td>2026-10-28</td><td><span class="pb-chip" data-base-status="changed">changed</span></td><td>The queue owns retries now</td></tr>
+      <tr><td><code>agent/worker.go</code></td><td class="num">40</td><td class="num">66</td><td>agent team</td><td>2026-10-28</td><td><span class="pb-chip" data-base-status="changed">changed</span></td><td>The worker frees its slot first</td></tr>
+      <tr><td><code>agent/upload_test.go</code></td><td class="num">95</td><td class="num">0</td><td>agent team</td><td>2026-10-29</td><td><span class="pb-chip" data-base-status="proposed">proposed</span></td><td>A retry case per error class</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>Steps</h2>
+<ol class="pb-steps">
+  <li><b>Claim the slot.</b> The worker takes one slot from the pool.</li>
+  <li><b>Send.</b> A failure returns the slot and queues a retry.</li>
+  <li><b>Prune.</b> The agent deletes expired snapshots after the upload.</li>
+</ol>
+
+<h2>Code</h2>
+<figure class="pb-code">
+  <figcaption><code>agent/queue.go</code> lines 40-44 at <code>0a1b2c3</code></figcaption>
+  <pre><code><span class="pb-dim">func (q *Queue) Fail(job Job) {</span>
+<span class="pb-del">  q.worker.Retry(job)</span>
+<span class="pb-add">  q.retry = append(q.retry, job)</span>
+<span class="pb-hl">  q.free(job.Slot)</span>
+<span class="pb-dim">}</span></code></pre>
+</figure>
+
+<ol class="pb-notes"><li id="n1">The order was measured on a test host, 2026-10-30.</li></ol>
+</main>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: part-error</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>A pane names a key its switch does not have</h1>
+<div data-base-switch>
+  <p data-base-key="host"><span>Host</span>
+    <button type="button" value="alpha" aria-pressed="true" disabled>alpha</button>
+    <button type="button" value="beta" disabled>beta</button>
+  </p>
+  <div data-base-when="size=small"><p>A pane for a key the switch never defines.</p></div>
+  <div data-base-when="host=beta"><p>The beta pane.</p></div>
+</div>
+</main>
+</body>
+</html>

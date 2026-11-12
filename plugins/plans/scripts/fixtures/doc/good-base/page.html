@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan pages on a phone</title>
+<!-- plans:kit -->
+<style>
+  /* The screenshots are whole pages. Each figure shows the first screen of one. */
+  .first-screen { aspect-ratio: 390 / 844; object-fit: cover; object-position: top; }
+  .last-screen { aspect-ratio: 390 / 844; object-fit: cover; object-position: bottom; }
+  .wide-screen { aspect-ratio: 1425 / 900; object-fit: cover; object-position: top; }
+  .sketch { display: block; width: 100%; height: auto; color: var(--plans-ink); }
+  .sketch .ln { fill: none; stroke: currentColor; stroke-width: 1; }
+  .sketch .soft { fill: var(--plans-panel); stroke: var(--plans-rule); }
+  .sketch .chg { fill: var(--plans-accent-surface); stroke: var(--plans-accent); }
+  .sketch text { font-family: var(--plans-sans); font-size: 15px; fill: currentColor; }
+  .sketch.narrow { max-width: 24rem; }
+  .claims { padding-left: 0; list-style: none; }
+  .claims > li { margin: 0 0 .5rem; }
+</style>
+</head>
+<body data-base-shell>
+<header class="pb-mast">
+  <h1>Plan pages on a phone</h1>
+  <p class="pb-lede">Plan pages move to one column on a phone and a 12-column grid on a wide screen.</p>
+  <dl class="title-block">
+    <div><dt>Kind</dt><dd>Plan</dd></div>
+    <div><dt>Date</dt><dd class="num">2026-11-11</dd></div>
+  </dl>
+</header>
+<div class="pb-brief">
+  <ul class="pb-tiles">
+    <li><b class="num">6,163 px</b> <span>phone height</span></li>
+    <li><b class="num">2/3</b> <span>empty at 1440</span></li>
+    <li><b class="num">40 KB</b> <span>kit budget</span></li>
+  </ul>
+  <nav data-base-contents aria-label="Sections"></nav>
+</div>
+<main>
+<p>This page is a synthetic fixture. Every number on it is made up. It asks five questions, and your response is at the end.</p>
+<nav data-ask-summary aria-label="Questions on this page"></nav>
+
+<section id="readers" data-base-status="supported">
+  <h2>What readers see</h2>
+  <div class="pb-row">
+    <div class="pb-span-5">
+      <p>A plan page today is one 66-character column. On a 1440 px screen that column leaves two thirds of the width empty.<sup class="pb-fn"><a href="#n1">1</a></sup></p>
+      <aside class="pb-callout" data-base-kind="note"><b>Note.</b> The screenshots are of a synthetic plan page, not a real one.</aside>
+    </div>
+    <figure class="pb-span-7 pb-figure" data-base-frame="browser" data-base-zoom>
+      <span class="pb-address">plans.example.test/prune</span>
+      <img class="wide-screen" src="wide-light.png" data-base-dpr="1" alt="A plan page at 1440 px, one narrow column on the left">
+      <figcaption>The plan page at 1440×900, light. Open it to see the whole page.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="phone" data-base-status="partial">
+  <h2>The phone today</h2>
+  <p>On a phone the same page is 6,163 px tall, and nothing on it says where you are.</p>
+  <div data-base-switch>
+    <p data-base-key="scheme"><span>Scheme</span>
+      <button type="button" value="light" aria-pressed="true" disabled>Light</button>
+      <button type="button" value="dark" disabled>Dark</button>
+    </p>
+    <div data-base-when="scheme=light">
+      <figure class="pb-figure" data-base-frame="phone" data-base-zoom>
+        <img class="first-screen" src="phone-light.png" width="390" data-base-dpr="2" alt="The plan page on a phone, light">
+        <figcaption>390×844 at pixel ratio 2, light.</figcaption>
+      </figure>
+    </div>
+    <div data-base-when="scheme=dark">
+      <figure class="pb-figure" data-base-frame="phone" data-base-zoom>
+        <img class="first-screen" src="phone-dark.png" width="390" alt="The plan page on a phone, dark">
+        <figcaption>390×844 at pixel ratio 2, dark.</figcaption>
+      </figure>
+    </div>
+  </div>
+  <fieldset data-ask="zoom">
+    <legend>Do screenshots open at actual size?</legend>
+    <p>A zoom adds one dialog to the page. Without it a reader on a phone sees a tall screenshot at a third of its size.</p>
+    <label><input type="radio" name="zoom" value="yes" checked> Yes, fitted first
+      <span data-hint>One press more for actual size.</span></label>
+    <label><input type="radio" name="zoom" value="no"> No
+      <span data-then>Then a reader opens the image file to read it.</span></label>
+  </fieldset>
+</section>
+
+<section id="layout" data-base-status="proposed">
+  <h2>Layout</h2>
+  <div class="pb-row">
+    <fieldset data-ask="layout" class="pb-span-5">
+      <legend>Which layout ships first?</legend>
+      <p>Rows need a span on each block. One column needs nothing, but leaves the wide screen as it is.</p>
+      <label><input type="radio" name="layout" value="rows" checked> Rows on a 12-column grid
+        <span data-hint>The claim beside its evidence.</span></label>
+      <label><input type="radio" name="layout" value="column"> One column at every width
+        <span data-then>Then the right two thirds stay empty.</span></label>
+    </fieldset>
+    <figure class="pb-span-7 pb-figure" data-base-frame="browser">
+      <span class="pb-address">plans.example.test/prune</span>
+      <svg class="sketch" viewBox="0 0 360 200" role="img" aria-label="A row: text on the left five columns, a figure on the right seven">
+        <rect class="soft" x="8" y="8" width="344" height="24"/>
+        <rect class="ln" x="8" y="48" width="132" height="12"/><rect class="ln" x="8" y="68" width="120" height="12"/><rect class="ln" x="8" y="88" width="128" height="12"/>
+        <rect class="chg" x="156" y="48" width="196" height="136"/>
+        <text x="164" y="72">figure, 7 of 12</text>
+        <text x="8" y="128">text, 5 of 12</text>
+      </svg>
+      <figcaption>A row at 1440 px: the claim, then its evidence.</figcaption>
+    </figure>
+  </div>
+  <aside class="pb-callout" data-base-kind="decided"><b>Decided.</b> No sticky sidebar. The dock at the bottom carries the sections.</aside>
+</section>
+
+<section id="load" data-base-status="changed">
+  <h2>Load time</h2>
+  <p>Pick a device and a cache. Every chart in this box shares one scale, so a bar keeps its length when you switch.</p>
+  <div data-base-switch>
+    <p data-base-key="device"><span>Device</span>
+      <button type="button" value="phone" aria-pressed="true" disabled>Phone</button>
+      <button type="button" value="desktop" disabled>Desktop</button>
+    </p>
+    <p data-base-key="cache"><span>Cache</span>
+      <button type="button" value="cold" aria-pressed="true" disabled>Cold</button>
+      <button type="button" value="warm" disabled>Warm</button>
+    </p>
+    <div data-base-when="device=phone cache=cold">
+      <figure>
+        <table data-base-chart="bars" data-base-unit="ms">
+          <thead><tr><th>Moment</th><th>Before</th><th>After</th></tr></thead>
+          <tbody>
+            <tr><th>First paint</th><td><data value="620">620</data></td><td><data value="540">540</data></td></tr>
+            <tr data-base-status="changed"><th>Contents</th><td><data value="1480">1,480</data></td><td><data value="610">610</data></td></tr>
+            <tr><th>Last image</th><td><data value="2100">2,100</data></td><td><data value="1950">1,950</data></td></tr>
+          </tbody>
+        </table>
+        <figcaption>Phone, cold cache, median of 20 synthetic runs.</figcaption>
+      </figure>
+    </div>
+    <div data-base-when="device=phone cache=warm">
+      <figure>
+        <table data-base-chart="bars" data-base-unit="ms">
+          <thead><tr><th>Moment</th><th>Before</th><th>After</th></tr></thead>
+          <tbody>
+            <tr><th>First paint</th><td><data value="310">310</data></td><td><data value="290">290</data></td></tr>
+            <tr><th>Contents</th><td><data value="900">900</data></td><td><data value="330">330</data></td></tr>
+            <tr><th>Last image</th><td><data value="1200">1,200</data></td><td><data value="1180">1,180</data></td></tr>
+          </tbody>
+        </table>
+        <figcaption>Phone, warm cache.</figcaption>
+      </figure>
+    </div>
+    <div data-base-when="device=desktop cache=cold">
+      <figure>
+        <table data-base-chart="bars" data-base-unit="ms">
+          <thead><tr><th>Moment</th><th>Before</th><th>After</th></tr></thead>
+          <tbody>
+            <tr><th>First paint</th><td><data value="240">240</data></td><td><data value="230">230</data></td></tr>
+            <tr><th>Contents</th><td><data value="700">700</data></td><td><data value="260">260</data></td></tr>
+            <tr><th>Last image</th><td><data value="980">980</data></td><td><data value="960">960</data></td></tr>
+          </tbody>
+        </table>
+        <figcaption>Desktop, cold cache.</figcaption>
+      </figure>
+    </div>
+    <div data-base-when="device=desktop cache=warm">
+      <figure>
+        <table data-base-chart="bars" data-base-unit="ms">
+          <thead><tr><th>Moment</th><th>Before</th><th>After</th></tr></thead>
+          <tbody>
+            <tr><th>First paint</th><td><data value="120">120</data></td><td><data value="118">118</data></td></tr>
+            <tr><th>Contents</th><td><data value="380">380</data></td><td><data value="140">140</data></td></tr>
+            <tr><th>Last image</th><td><data value="510">510</data></td><td><data value="505">505</data></td></tr>
+          </tbody>
+        </table>
+        <figcaption>Desktop, warm cache, on the phone's cold scale.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section id="weight" data-base-status="changed">
+  <h2>Page weight</h2>
+  <figure>
+    <table data-base-chart="bars" data-base-unit="KB" data-base-stack>
+      <thead><tr><th>Page</th><th>HTML</th><th>CSS</th><th>Script</th></tr></thead>
+      <tbody>
+        <tr><th>Plan</th><td><data value="38">38</data></td><td><data value="22">22</data></td><td><data value="48">48</data></td></tr>
+        <tr><th>Review</th><td><data value="21">21</data></td><td><data value="22">22</data></td><td><data value="48">48</data></td></tr>
+        <tr><th>Report</th><td><data value="12.5">12.5</data></td><td><data value="22">22</data></td><td><data value="0">0</data></td></tr>
+      </tbody>
+    </table>
+    <figcaption>Bytes per page by part, stacked. A report asks nothing, so its script is the base alone.</figcaption>
+  </figure>
+  <aside class="pb-callout" data-base-kind="warning"><b>Warning.</b> The kit sits close to its cap, so a new part cuts before it adds.</aside>
+  <fieldset data-ask="budget">
+    <legend>Which cap holds the base files?</legend>
+    <p>A lower cap keeps every page light. A higher one leaves room for a new part without a cut.</p>
+    <label><input type="radio" name="budget" value="40" checked> 40 KB
+      <span data-hint>About 300 bytes free today.</span></label>
+    <label><input type="radio" name="budget" value="60"> 60 KB
+      <span data-then>Then each page grows by up to 20 KB.</span></label>
+  </fieldset>
+</section>
+
+<section id="compare" data-base-status="changed">
+  <h2>Before and after</h2>
+  <div class="pb-row">
+  <figure class="pb-compare pb-span-12">
+    <div class="pb-side" data-base-side="before">
+      <h3>Before</h3>
+      <svg class="sketch" viewBox="0 0 360 160" role="img" aria-label="One narrow column with empty space to its right">
+        <rect class="ln" x="4" y="4" width="352" height="152"/>
+        <rect class="soft" x="16" y="16" width="112" height="128"/>
+      </svg>
+    </div>
+    <div class="pb-side" data-base-side="after">
+      <h3>After</h3>
+      <svg class="sketch" viewBox="0 0 360 160" role="img" aria-label="Text and a figure side by side across the width">
+        <rect class="ln" x="4" y="4" width="352" height="152"/>
+        <rect class="soft" x="16" y="16" width="128" height="128"/>
+        <rect class="chg" x="156" y="16" width="188" height="128"/>
+      </svg>
+    </div>
+    <figcaption>The prune plan at 1440 px, before and after the rows.</figcaption>
+  </figure>
+  </div>
+</section>
+
+<section id="claims" data-base-status="unknown">
+  <h2>Claims</h2>
+  <p>Each mark is the author's claim, not a check result.</p>
+  <ul class="claims">
+    <li><span class="pb-chip" data-base-status="supported">supported</span> A wide screen leaves two thirds empty.</li>
+    <li><span class="pb-chip" data-base-status="partial">partial</span> Readers lose their place on a phone.</li>
+    <li><span class="pb-chip" data-base-status="unknown">unknown</span> How often a reader opens the sheet.</li>
+    <li><span class="pb-chip" data-base-status="refuted">refuted</span> The grid slows the first paint.</li>
+    <li><span class="pb-chip" data-base-status="proposed">proposed</span> A cap of 40 KB on the base.</li>
+    <li><span class="pb-chip" data-base-status="changed">changed</span> The contents list fills itself.</li>
+    <li><span class="pb-chip" data-base-status="unchanged">unchanged</span> The question kit's response.</li>
+  </ul>
+</section>
+
+<section id="files" data-base-status="changed">
+  <h2>Files</h2>
+  <div class="pb-row">
+  <div class="pb-table pb-span-12">
+    <table>
+      <caption>Files the change touches</caption>
+      <thead><tr><th>File</th><th>Added</th><th>Removed</th><th>Owner</th><th>Reviewed</th><th>Status</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td><code>viewer/shell.css</code></td><td class="num">180</td><td class="num">0</td><td>viewer team</td><td>2026-11-10</td><td><span class="pb-chip" data-base-status="changed">changed</span></td><td>The rows and the dock</td></tr>
+        <tr><td><code>viewer/shell.js</code></td><td class="num">240</td><td class="num">0</td><td>viewer team</td><td>2026-11-10</td><td><span class="pb-chip" data-base-status="changed">changed</span></td><td>Contents, counts and zoom</td></tr>
+        <tr><td><code>viewer/look.css</code></td><td class="num">0</td><td class="num">0</td><td>viewer team</td><td>2026-11-09</td><td><span class="pb-chip" data-base-status="unchanged">unchanged</span></td><td>Old pages keep it</td></tr>
+      </tbody>
+    </table>
+  </div>
+  </div>
+  <figure class="pb-code">
+    <figcaption><code>viewer/shell.js</code> lines 12-16 at <code>0a1b2c3</code></figcaption>
+    <pre><code><span class="pb-dim">function tally(rows) {</span>
+<span class="pb-del">  for (const r of rows) r.count = r.asks.length</span>
+<span class="pb-add">  for (const r of rows) r.count = r.asks.filter(open).length</span>
+<span class="pb-hl">  write(rows.filter(changedSince))</span>
+<span class="pb-dim">}</span></code></pre>
+  </figure>
+  <p>The count reads the kit's own state on each question and never a checkbox.<sup class="pb-fn"><a href="#n2">2</a></sup></p>
+</section>
+
+<section id="rollout" data-base-status="proposed">
+  <h2>Rollout</h2>
+  <figure>
+    <ol data-base-chart="timeline">
+      <li data-base-lane="Kit"><time datetime="2026-11-03">3 Nov</time> to <time datetime="2026-11-10">10 Nov</time> Three bases</li>
+      <li data-base-lane="Kit" data-base-status="changed"><time datetime="2026-11-08">8 Nov</time> to <time datetime="2026-11-14">14 Nov</time> Parts and shell</li>
+      <li data-base-lane="Kit"><time datetime="2026-11-17">17 Nov</time> Premise runs</li>
+      <li data-base-lane="Pages"><time datetime="2026-11-18">18 Nov</time> to <time datetime="2026-11-28">28 Nov</time> Plan pages move</li>
+      <li data-base-lane="Pages"><time datetime="2026-12-01T09:00:00Z">1 Dec, 09:00 UTC</time> Old layout retired</li>
+    </ol>
+    <figcaption>From the three bases to the old layout's retirement. The parts overlap the bases, so they take a second row.</figcaption>
+  </figure>
+  <ol class="pb-steps">
+    <li><b>Build.</b> The builder inlines the base on every page.</li>
+    <li><b>Move.</b> New plan pages use the shell.</li>
+    <li><b>Retire.</b> Old pages keep their kit, since a published page never changes.</li>
+  </ol>
+  <fieldset data-ask="first-pages">
+    <legend>Which pages move first?</legend>
+    <p>Each kind that moves first tests the shell for the others.</p>
+    <label><input type="checkbox" name="first-pages" value="plans" checked> Plans
+      <span data-hint>The most questions per page.</span></label>
+    <label><input type="checkbox" name="first-pages" value="reviews"> Reviews</label>
+  </fieldset>
+  <fieldset data-ask="pace">
+    <legend>How fast do the pages move?</legend>
+    <p>Two weeks leaves room for one fix. One week has none.</p>
+    <label><input type="radio" name="pace" value="two-weeks" checked> Over two weeks</label>
+    <label><input type="radio" name="pace" value="one-week"> In one week
+      <span data-then>Then a fix waits for the next release.</span></label>
+  </fieldset>
+</section>
+
+<section id="regress" data-base-status="refuted">
+  <h2>Regressions</h2>
+  <div class="pb-row">
+    <figure class="pb-span-6">
+      <table data-base-chart="bars" data-base-unit="ms">
+        <thead><tr><th>Moment</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><th>First paint</th><td><data value="-80">−80</data></td></tr>
+          <tr data-base-status="changed"><th>Contents</th><td><data value="-870">−870</data></td></tr>
+          <tr><th>Theme switch</th><td><data value="12.5">+12.5</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Change in median time on a phone, cold cache. A drop draws left of zero.</figcaption>
+    </figure>
+    <figure class="pb-span-6">
+      <table data-base-chart="bars">
+        <thead><tr><th>View</th><th>Errors</th></tr></thead>
+        <tbody>
+          <tr><th>Phone</th><td><data value="0">0</data></td></tr>
+          <tr><th>Desktop</th><td><data value="0">0</data></td></tr>
+        </tbody>
+      </table>
+      <figcaption>Script errors per view in the synthetic runs, all zero.</figcaption>
+    </figure>
+  </div>
+  <div class="pb-row">
+    <figure class="pb-span-8 pb-figure" data-base-frame="browser" data-base-zoom>
+      <span class="pb-address">plans.example.test/prune</span>
+      <img class="wide-screen" src="wide-dark.png" alt="The plan page at 1440 px, dark">
+      <figcaption>The same page at 1440×900, dark.</figcaption>
+    </figure>
+    <figure class="pb-span-4 pb-figure" data-base-frame="phone">
+      <img class="last-screen" src="phone-dark.png" width="390" alt="The end of the plan page on a phone, dark">
+      <figcaption>The end of the phone page, dark.</figcaption>
+    </figure>
+  </div>
+  <div class="pb-row">
+  <figure class="pb-span-5 pb-figure" data-base-frame="phone">
+    <svg class="sketch" viewBox="0 0 360 240" role="img" aria-label="A phone screen with the dock along its bottom edge">
+      <rect class="ln" x="8" y="8" width="344" height="224"/>
+      <rect class="soft" x="24" y="24" width="312" height="24"/><rect class="soft" x="24" y="60" width="240" height="16"/>
+      <rect class="chg" x="8" y="184" width="344" height="48"/>
+      <text x="24" y="214">4/10 Load time</text>
+    </svg>
+    <figcaption>The dock, drawn: the section in view and the open count.</figcaption>
+  </figure>
+  <figure class="pb-span-7 pb-figure">
+    <svg class="sketch narrow" viewBox="0 0 360 120" role="img" aria-label="A contents row: number, title, chip and open count">
+      <rect class="ln" x="8" y="8" width="344" height="104"/>
+      <text x="24" y="48">3  Layout</text>
+      <rect class="soft" x="224" y="26" width="112" height="32"/>
+      <text x="236" y="48">proposed</text>
+      <text x="24" y="84">1 open</text>
+    </svg>
+    <figcaption>One contents row, drawn.</figcaption>
+  </figure>
+  </div>
+  <ol class="pb-notes">
+    <li id="n1">Measured on a synthetic plan page at 1440×900, 2026-11-10.</li>
+    <li id="n2">The kit writes a state on each question. The shell reads only that.</li>
+  </ol>
+</section>
+
+<section data-respond>
+  <h2>Your response</h2>
+</section>
+</main>
+</body>
+</html>

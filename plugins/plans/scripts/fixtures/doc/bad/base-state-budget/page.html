@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fault: base-state-budget</title>
+<!-- plans:kit -->
+</head>
+<body>
+<main>
+<h1>One switch with 25 combinations</h1>
+<div data-base-switch>
+  <p data-base-key="size"><span>Size</span>
+    <button type="button" value="xs" aria-pressed="true" disabled>XS</button>
+    <button type="button" value="s" disabled>S</button>
+    <button type="button" value="m" disabled>M</button>
+    <button type="button" value="l" disabled>L</button>
+    <button type="button" value="xl" disabled>XL</button>
+  </p>
+  <p data-base-key="load"><span>Load</span>
+    <button type="button" value="idle" aria-pressed="true" disabled>Idle</button>
+    <button type="button" value="low" disabled>Low</button>
+    <button type="button" value="mid" disabled>Mid</button>
+    <button type="button" value="high" disabled>High</button>
+    <button type="button" value="peak" disabled>Peak</button>
+  </p>
+  <div data-base-when="size=xs"><p>The extra-small host.</p></div>
+  <div data-base-when="size=s"><p>The small host.</p></div>
+  <div data-base-when="size=m"><p>The medium host.</p></div>
+  <div data-base-when="size=l"><p>The large host.</p></div>
+  <div data-base-when="size=xl"><p>The extra-large host.</p></div>
+  <div data-base-when="load=peak"><p>At peak load every size queues.</p></div>
+</div>
+</main>
+</body>
+</html>

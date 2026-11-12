@@ -1,6 +1,6 @@
 # The question kit
 
-Read this when a page asks the reader something. The kit turns native form controls that you already wrote into a question loop: it tracks which questions the reader answered, fills a summary and a response region, and builds one markdown response that the reader copies back to you. It never builds the page from data. A page without kit hooks gets the look and nothing else.
+Read this when a page asks the reader something. The kit turns native form controls that you already wrote into a question loop: it tracks which questions the reader answered, fills a summary and a response region, and builds one markdown response that the reader copies back to you. It never builds the page from data. A page without kit hooks gets no question loop, but it still gets the look and the base's parts, which `parts.md` covers.
 
 The kit checks every rule below in the live DOM when the page loads. A violation shows a banner at the top of the page, disables **Copy response**, empties the response, and logs `plans-kit: <what>` to the console. `build.mjs` fails on that log line, so a markup error never reaches a reader.
 
@@ -25,6 +25,7 @@ A question is a `<fieldset data-ask="<id>">` with a `<legend>` that holds text, 
 - Put `[data-hint]` and `[data-then]` inside the option's label. The kit always shows a hint. It shows a `data-then` only while its option is picked and the question differs from the proposal. The response leaves both out of the option's label.
 - Put every material cost, the proposal's costs included, in visible text before the choice. `data-then` is optional, and it is never the only place a cost appears.
 - `data-ask` goes only on a `fieldset`, and one `data-ask` fieldset never sits inside another. No input outside the fieldset shares its name.
+- A question may sit in a `.pb-row` cell beside the evidence it governs. It never sits in a switch pane, a compare side or a chart. Script hides panes and sides, and a hidden question can't be answered. The check fails a question in any of the three as `part-error`.
 
 A label that wraps its input:
 

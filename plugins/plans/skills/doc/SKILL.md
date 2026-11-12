@@ -5,7 +5,7 @@ description: Write a long HTML Document that explains one thing to a reader, suc
 
 # doc: write a Document
 
-A Document is one HTML page that explains something to a reader who needs more than a chat reply can hold, or who isn't in this thread at all. You write it as ordinary semantic HTML, and you decide its structure. There's no template and no fixed set of sections. `build.mjs` inlines a small kit into the page: the default look, the change marks for prose diffs and, when the page asks the reader something, a question loop that gives the reader one markdown response to paste back to you.
+A Document is one HTML page that explains something to a reader who needs more than a chat reply can hold, or who isn't in this thread at all. You write it as ordinary semantic HTML, and you decide its structure. There's no template and no fixed set of sections. `build.mjs` inlines a small kit into the page: the default look, the change marks for prose diffs, the base's parts and page shell and, when the page asks the reader something, a question loop that gives the reader one markdown response to paste back to you. The base gives you parts to build with, such as status chips, framed screenshots and charts. It never decides what the page says.
 
 `plans:show` decides whether a visual is a Document. Publication, retention, and where a URL may go follow the `Delivery policy` section of `plans:publish`. Read that section there. This skill does not repeat it.
 
@@ -19,10 +19,11 @@ node "${CLAUDE_SKILL_DIR}/build.mjs" [--inline] [--out FILE] [--shots DIR] [--js
 
 If `${CLAUDE_SKILL_DIR}` arrives unexpanded, as it does on Codex, resolve `build.mjs` relative to the directory of this SKILL.md. Never resolve it from the working directory, and never write a plugin cache version into the path. If `node` is missing, follow the Node fallback in `plans:show`.
 
-Three guides sit beside this file. Read each one when the page needs it:
+Four guides sit beside this file. Read each one when the page needs it:
 
 - `style.md`: the principles, the default technical-drawing look, the ban list, and snippets that use the kit's classes and `--plans-*` tokens.
 - `diagrams.md`: inline SVG figures in that look, with worked recipes.
+- `parts.md`: the base's parts and the phone-first shell, with the chart contracts. Read it before you write the first `pb-` class or `data-base-*` attribute.
 - `kit.md`: the markup contract for questions, notes and the response. Read it before you write the first `data-ask`.
 
 ## Build a Document
@@ -32,11 +33,16 @@ Three guides sit beside this file. Read each one when the page needs it:
 3. Write the page. Put exactly one `<!-- plans:kit -->` line in `<head>`, and give the page a non-empty `<title>`. The builder puts the kit at that line. Also put `<meta name="viewport" content="width=device-width, initial-scale=1">` in `<head>`: without it a phone lays the page out 980 px wide, so the builder refuses a Document that lacks it.
 4. To show a prose rewrite, save the old and new text as sibling markdown files and add an empty placeholder: `<div data-diff-before="before.md" data-diff-after="after.md"></div>`. The builder replaces it with static marks: struck cuts, underlined new words, a ¶ for a lost paragraph break, and a numbered margin note for each cut over 12 words. Set `data-diff-notes="20"` to move that threshold. The page ships no diff code, and it shows no full before and after texts unless you add them in your own `<details>`.
 5. Paste code excerpts from `git show <sha>:<path>`, with a caption that names the path, the lines and the full SHA. The builder reads nothing from git.
-6. Build with `--shots DIR --json`, using a directory beside the page for `DIR`. The builder checks the page in Chromium at 390×844 and 1440×900, in light and dark, with every `<details>` open, and after it drives every question.
-7. Open the screenshots and look at them. A page can pass every check and still read badly.
+6. Build with `--shots DIR --json`, using a directory beside the page for `DIR`. A relative `DIR` resolves against the working directory, not against the page, so run the build from the page's directory or give an absolute path. The builder checks the page in Chromium at 390×844 in light and dark, at 1100×900 in light, and at 1440×900 in light and dark. It checks each view as loaded, with every `<details>` open, after it drives the base's controls, and after it drives every question.
+7. Open the screenshots and look at them. A page can pass every check and still read badly. Each file is named `<width>-<scheme>-<state>.png`:
+   - `initial` is the page as loaded, and `details-open` is the page with every `<details>` open.
+   - `panes` is the page after the check has visited every switch combination and both sides of every compare. It shows every switch on its last combination and a narrow compare on its `after` side, and the probes ran on every step. Look at it for a pane or a chart that reads badly once revealed.
+   - `chrome` is a shell page after the check has driven the theme switch, every zoom, the dock and the sections sheet. The switch ends on dark, so this shot shows the page in forced dark at every view, the light views included, from the top of the page with every dialog closed. Look at it for page colours that ignore the switch.
+   - `interaction` is the page after the check has answered and restored every question.
+   - A page taller than 16,384 device px, which is 8,192 CSS px at 390 wide, comes as tiles: the first keeps the plain name, and the rest are `.2.png`, `.3.png` and so on, top to bottom. Look at every tile. `result.json` lists each one with its `y` and `height`.
 8. Publish the built file, `<stem>.built.html`, never the source.
 
-`--out FILE` names another file in INPUT's directory that ends in `.html`. `--inline` builds an Inline render for `plans:show` instead: `<stem>.inline.html` holds the change marks and the palette but no frame and no question kit, so a page with a kit hook exits 1. `plans:show` says when to use it.
+`--out FILE` names another file in INPUT's directory that ends in `.html`. `--inline` builds an Inline render for `plans:show` instead: `<stem>.inline.html` holds the palette, the change marks and the parts, but no frame, no shell and no question kit. So a page with a kit hook or shell markup (`data-base-shell`, `data-base-contents`, `pb-mast` or `pb-brief`) exits 1. `plans:show` says when to use it.
 
 The exit code says what happened:
 
@@ -45,7 +51,7 @@ The exit code says what happened:
 - 2: a usage error, printed with the usage line.
 - 3: the builder wrote the complete file and the static checks passed, but the browser result is unknown, and the reason is printed. Exit 3 is never a pass. Show a page built with exit 3 to the user only after the live render check in `plans:publish` passes. If that check is also unavailable, report the page as unchecked.
 
-With `--json`, the builder prints one result object on stdout. Its `undriven` list names the controls the check didn't drive, such as your own buttons. Check each of those yourself in the screenshots.
+With `--json`, the builder prints one result object on stdout. Its `undriven` list names the controls the check didn't drive, such as your own buttons. Check each of those yourself in the screenshots. The check drives every base control itself, so a base control never appears in that list. One it failed to drive is the fault `part-drive`.
 
 ## Write an explainer
 
@@ -72,6 +78,8 @@ These are the parts a useful explainer is made of. Use the ones the content need
 - an excerpt of code, a log or a config, with its source caption
 - a figure: topology, sequence, a structure before and after, or a size
 - a table of affected files, options or measurements, with numbers in tabular figures
+- a chart of numbers the reader compares, drawn from the values: a bars chart, or a timeline for dates
+- screenshots in a browser or phone frame, or a before and after pair of one view, each with the viewport and the revision in its caption
 - a list of what stays the same
 - an open-questions list that marks each unknown
 - a question with its proposal, placed beside the part it governs

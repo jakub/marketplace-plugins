@@ -1,6 +1,6 @@
 # Diagrams
 
-Draw a figure when the reader would otherwise build a picture in their head from prose: a topology, a sequence across components, a structure before and after a change, or a size that matters. Don't draw a list. A figure of five boxes in a row that says nothing a five-item list wouldn't say costs the reader more than the list.
+Draw a figure when the reader would otherwise build a picture in their head from prose: a topology, a sequence across components, a structure before and after a change, or a size that matters. Don't draw a list. A figure of five boxes in a row that says nothing a five-item list wouldn't say costs the reader more than the list. Numbers go in a chart part, which places them from their values, so a bar can't drift from the number it stands for. `parts.md` has the bars and timeline parts.
 
 Every figure is inline SVG in the page, in the same technical-drawing look as the text. The recipes below are worked defaults, not a grammar. Use as many elements as the figure needs, and change a recipe when the content asks for it.
 
@@ -12,7 +12,7 @@ Every figure is inline SVG in the page, in the same technical-drawing look as th
 - Set text at 11 CSS px or more as rendered at 390 px wide, and aim for 13 to 14 px.
 - Place every coordinate on an 8-unit grid. Route connectors orthogonally, and put labels outside shapes and beside lines, never across a stroke.
 - Use the accent only on the part that changed.
-- For narrow screens, draw a tall variant or a simpler figure.
+- For narrow boxes, draw a tall variant or a simpler figure. Under the shell, a narrow box is not only a phone: a grid cell at 1100 px can be narrower than a phone column.
 
 Never use any of these, because the viewer or the build check rejects them:
 
@@ -52,6 +52,8 @@ The rendered text size is the `font-size` times the rendered figure width, divid
 | 640 | 14 | 7.7 px, under the floor | | 13.6 px |
 
 So draw for the phone first, at a viewBox width of about 360, and keep the cap. A figure that needs more width than that gets two variants, as in the last recipe.
+
+Under the shell, a figure in a `.pb-row` cell gets the cell's width, not the column's. A `.pb-span-4` cell at 1100 px is about as narrow as a phone column, so work out the text size from the cell. The check holds figure text to the 11 px floor at every view, 1100 included.
 
 ## Route connectors on the grid
 
@@ -139,17 +141,18 @@ A dimension line marks a measured size. It has an extension line at each end of 
 
 The line from 94 to 220 crosses the tick at 128 without a break, because the two segments share that end. Scale the parts to the quantity, here 1 unit for 1 ms, so the drawing is true as well as labelled.
 
-## Draw a tall variant for narrow screens
+## Draw a tall variant for narrow boxes
 
-A process with four steps in a row needs a viewBox about 640 units wide, and its text falls under the floor on a phone. Draw the same steps twice: a wide figure for wide screens and a tall one below 600 px. Each variant has its own id prefix and its own `<title>`. The hidden one has `display: none`, so a screen reader reads only the one shown.
+A process with four steps in a row needs a viewBox about 640 units wide, and its text falls under the floor on a phone. Draw the same steps twice: a wide figure for wide boxes and a tall one when the figure's own box is under 600 px. Switch on the figure's width with a container query, not on the window's width with a media query. At 1100 px the window is wide, but a grid cell can still be narrow and need the tall variant. Each variant has its own id prefix and its own `<title>`. The hidden one has `display: none`, so a screen reader reads only the one shown.
 
 ```html
 <style>
+  .fig-pair { container-type: inline-size; }
   .fig.fig-wide { max-width: none; }
   .fig.fig-tall { display: none; }
-  @media (max-width: 600px) { .fig.fig-wide { display: none; } .fig.fig-tall { display: block; } }
+  @container (max-width: 600px) { .fig.fig-wide { display: none; } .fig.fig-tall { display: block; } }
 </style>
-<figure>
+<figure class="fig-pair">
   <svg class="fig fig-wide" viewBox="0 0 648 96" role="img" aria-labelledby="f4w-title">
     <title id="f4w-title">The source page goes through build.mjs and a Chromium check, and comes out as the built page.</title>
     <defs>
