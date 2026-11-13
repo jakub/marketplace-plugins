@@ -53,7 +53,7 @@ GOOD
 
 Never reject a finding about security, privacy, auth, billing, data retention, permissions, migrations, schemas, idempotency or concurrency yourself, whatever you call the rejection. Fix it or ask the user. The one exception is the user's own answer, recorded in the prep journal: quote it and link it, and only when its exclusion matches this finding's input class exactly, caller, access and trust assumptions included. A missing, ambiguous or changed-premise match goes to the user. An agent-written Risk line and a past dismissal of something similar settle nothing.
 
-BAD, on a permissions finding against the PR #27 shell guard:
+BAD, on a permissions finding against a seat's shell guard:
 
 > ❌ Fixed in 4f2e1aa: the guard now walks `case` arms, so `case x in x) git push;; esac` is denied. Regression test added.
 
@@ -73,16 +73,7 @@ A pass is clean when it covers the whole pinned diff and the reviewer lists what
 
 Reply and resolve with the two GraphQL mutations in `land`'s "Threads" section, and read `isResolved` back. `gh pr comment` does neither.
 
-Every comment or reply you post on the PR opens with this note, so a reader knows an agent wrote it:
-
-```md
-> [!NOTE]
-> 🤖 **<model> responding on behalf of <user>**
-
-The reply starts here.
-```
-
-Use the public name of the model that wrote it, as the harness reports it, and the user's GitHub login (`gh api user --jq .login`). If the harness names no model, name the harness. Never guess. Keep the attribution inside the callout and the reply outside it, with no signature or second attribution. The note goes on PR comments and review replies only, never on a PR description, a commit or an issue comment. Before you post, check the whole reply, quotes included, for secrets and private details.
+Every comment or reply you post on the PR opens with the charter's attribution note, so a reader knows an agent wrote it. Use the public name of the model that wrote it, as the harness reports it, and the user's GitHub login (`gh api user --jq .login`). If the harness names no model, name the harness. Never guess. Keep the attribution inside the callout and the reply outside it, with no signature or second attribution. Before you post, check the whole reply, quotes included, for secrets and private details.
 
 ## Rounds
 

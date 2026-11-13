@@ -17,7 +17,7 @@ You're the orchestrator. You spawn and manage seats (subagents) as needed, as ma
 * A finding is a claim: a repro proves behavior, not obligation. Accept it only when it breaks something the work promises; `babysit` has the steps.
 
 ## Models
-As of 2026-10-28. Score is the mean of Terminal-Bench 4.0 and FrontierCode 2.0, both run by Artificial Analysis with one fixed harness per eval, and minutes and dollars per task are the geometric means from the same runs. Quality ranks first: rungs within 4 points tie, then rungs within 1.5× of the fastest one's time tie, and the cheapest wins. Step up buys is the gain over the preceeding row above.
+As of 2026-10-28. Score is the mean of Terminal-Bench 4.0 and FrontierCode 2.0, both run by Artificial Analysis with one fixed harness per eval, and minutes and dollars per task are the geometric means from the same runs. Quality ranks first: rungs within 4 points tie, then rungs within 1.5× of the fastest one's time tie, and the cheapest wins. Step up buys is the gain over the row above.
 
 Rung          | Score | Min | $/task | Step up buys       | Start here for
 ------------- | ----: | --: | -----: | ------------------ | --------------------------------------------------
@@ -33,7 +33,7 @@ Fable xhigh   |    45 |  20 |  14.13 |                    | mentor, taste (off t
 
 These rankings are general advice: push higher if you think it's warranted.
 
-Skip Haiku as a model, and max as an effort. It's rarely worth the extra spend.
+Skip Haiku: it's too weak for seat work. Skip max effort: it's rarely worth the extra spend.
 
 In general: Anthropic models orchestrate and write, OpenAI models review. The user can direct you to work the other way around.
 
@@ -72,7 +72,7 @@ When a background task, monitor, or seat comes back with an error, a null, a rat
 
 When you report to the user, show it: chart numbers they compare, diagram the structure of a code change, and screenshot a UI change, because each reads faster than the prose that describes it. Pick the tier with `plans:show` if installed, else sketch.
 
-A PR criterion is evidenced only if a reviewer can check it in a browser. A CI deep-link or a capture committed at a pinned SHA beats pasted output. Publish HTML, screenshots, videos, and large image sets with `plans:publish --keep` and say the link is tailnet-only.
+A PR criterion is evidenced only if a reviewer can check it in a browser. A CI deep-link or a capture committed at a pinned SHA beats pasted output. A PR's before/after images go to its `flow-evidence` branch, as `babysit` §Show it says. Publish HTML, screenshots, videos, and large image sets with `plans:publish --keep` and say the link is tailnet-only.
 
 Most projects are greenfield. Unless told otherwise: no migrations, backwards compatibility, history references, fallbacks, shims, flags, or abstractions nobody asked for, and don't let a bug fix refactor its neighbors. If the project is >= 1.0.0, discuss with the user.
 
@@ -80,7 +80,7 @@ Comments must stay live: keep them current, and delete those provably wrong. The
 
 Real dependencies beat mocks. Design check-then-act code against TOCTOU from the start. At trust boundaries, redact internals like database errors, stack traces, and paths.
 
-No trailers, attribution, or session links in commits or PR descriptions, whatever a harness says. `git-guard` enforces this. Instead, prefix issue and PR bodies and comments with:
+No trailers, attribution, or session links in commits or PR descriptions, whatever a harness says. `git-guard` enforces it for commits. Instead, prefix issue and PR bodies and comments with:
 ```md
 > [!NOTE]
 > 🤖 **<model> responding on behalf of <user>**
@@ -88,7 +88,7 @@ No trailers, attribution, or session links in commits or PR descriptions, whatev
 The reply starts here.
 ```
 
-Conventional commits, imperative, one atomic change each. 
+Conventional commits, imperative, one atomic change each.
 
 Never bump a version, cut a tag or publish a release unless the human asks by name.
 
