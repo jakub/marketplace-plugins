@@ -809,6 +809,23 @@ const cases = {
     }
     for (const plain of ['', 'just a prompt', '<flow-seat', null, undefined, 42, { id }]) assert.equal(store.parseTag(plain), null)
     ok('a malformed id or extra attribute is not a tag on any line, and a non-string prompt or plain text is no seat')
+
+    const banner = `[T3 Code: the agent in T3 thread "${randomUUID()}" sent this message, not the user.]`
+    assert.deepEqual(store.parseDeliveredTag(`${banner}\n\n${tag}\nWorktree: none`), { id }, 'T3 banner then the tag')
+    assert.deepEqual(store.parseTag(`${banner}\n\n${tag}\nWorktree: none`), DISPLACED(id), 'parseTag never strips the banner')
+    assert.deepEqual(store.parseDeliveredTag(`${tag}\nbody`), { id }, 'no banner')
+    assert.deepEqual(store.parseDeliveredTag(`${banner}\n\nplain prompt`), null, 'banner with no tag')
+    assert.deepEqual(store.parseDeliveredTag(`${banner}\n\n${tag}\nbody\n${store.seatTag(other)}`), VOID, 'banner, tag, second tag')
+    for (const near of [
+      `${banner}\n${tag}`, `${banner}\n\n\n${tag}`, `${banner}\n\n${banner}\n\n${tag}`, ` ${banner}\n\n${tag}`, `${banner}\r\n\r\n${tag}`,
+      `[T3 Code: the agent in T3 thread "${randomUUID().toUpperCase()}" sent this message, not the user.]\n\n${tag}`,
+      `[T3 Code: the agent in T3 thread "not-a-uuid" sent this message, not the user.]\n\n${tag}`,
+      `[T3 Code: the user in T3 thread "${randomUUID()}" sent this message.]\n\n${tag}`,
+      `please\n\n${tag}`,
+    ]) {
+      assert.deepEqual(store.parseDeliveredTag(near), DISPLACED(id), JSON.stringify(near))
+    }
+    ok('parseDeliveredTag drops exactly one T3 provenance banner and its empty line before reading line 1; a near-miss banner or any other prefix still voids')
   },
 
   'store-schema-path': () => {
@@ -1527,6 +1544,17 @@ const cases = {
       denied(guard('pre', host, preCall(host, session, 'Bash', { command: 'pwd' })), /void seat/, 'the voided session')
     }
     ok('a seat tag below line 1 voids the session with no record named, and every tool call is denied')
+
+    // T3 0.1.11 delivers a delegate_task task to the child behind a provenance banner and an empty line.
+    for (const host of ['claude', 'codex']) {
+      const { id, tag } = admittedSeat(host)
+      const session = randomUUID()
+      const body = `[T3 Code: the agent in T3 thread "${randomUUID()}" sent this message, not the user.]\n\n${tag}\nWorktree: none`
+      assert.match(context(guard('prompt', host, promptCall(host, session, body)), `${host} banner bind`), new RegExp(`Seat ${id}:`))
+      assert.deepEqual(store.readIndex(host, session), { id })
+      assert.equal(store.readStamp(id, 'bound').sessionId, session)
+    }
+    ok('a tag on line 1 of the task behind T3\'s provenance banner binds on Claude and Codex')
   },
 
   'echoed-tag-of-bound-seat-ignored': () => {

@@ -115,6 +115,19 @@ export function parseTag(prompt) {
   return displaced.length > 0 ? { void: 'tag-not-on-line-1', displaced } : null
 }
 
+// The provenance line T3 0.1.11 puts ahead of a delegate_task task when it delivers the task to the
+// child, followed by one empty line. T3's store keeps the task without it, so only the child's
+// prompt hook strips it. Read from Claude and Codex seat transcripts, 2026-11-20.
+const T3_BANNER = /^\[T3 Code: the agent in T3 thread "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" sent this message, not the user\.\]\n\n/
+
+/**
+ * parseTag for a prompt as the host delivered it to the child: one exact T3 provenance banner and
+ * the empty line after it are dropped first, so the task's line 1 is read as the parent wrote it.
+ * Anything else ahead of the tag still voids the seat.
+ */
+export const parseDeliveredTag = (prompt) =>
+  parseTag(typeof prompt === 'string' ? prompt.replace(T3_BANNER, '') : prompt)
+
 /** The record directory for id, or null when id is not a seat id. */
 export const seatDir = (id) => (validId(id) ? join(seatsRoot(), id) : null)
 // The one spelling of a seat's schema path: absolute, so the context seat.mjs open measures is

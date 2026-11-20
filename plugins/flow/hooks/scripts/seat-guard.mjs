@@ -64,7 +64,7 @@ const loadPolicy = () => import('../../lib/seat-policy.mjs')
 async function prompt(input) {
   const text = input.prompt
   if (typeof text !== 'string') return
-  const tag = text.includes('<flow-seat ') ? store.parseTag(text) : null
+  const tag = text.includes('<flow-seat ') ? store.parseDeliveredTag(text) : null
   if (tag === null) return continued(input)
   if (tag.void && echoedElsewhere(tag.displaced, input.session_id)) return continued(input)
   const policy = await loadPolicy()
