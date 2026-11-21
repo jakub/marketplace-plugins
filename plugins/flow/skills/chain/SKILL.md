@@ -86,7 +86,7 @@ Count the free slots first. The ledger sees only the run marks GitHub and origin
   - `clientRequestId`: `chain-<id>-<N>`. After an error or a lost reply, retry with the same id.
   - `runtimeMode: "auto"`, set explicitly. `t3_pending_request list` shows a thread's questions but not its approval requests, so a thread that stops on an approval would look like it's working. Modes can't exceed yours, so a coordinator below `auto` can't start a chain. Say so and stop.
   - No `workspaceStrategy`. The thread starts at the project root, which is the canonical checkout the claim runs from, and the claim makes its own worktree.
-  - Either provider works, because `t3_pending_request list` shows questions from Codex and Claude threads (`docs/captures/2026-11-03-pending-request/probe.json`).
+  - Either provider works, because `t3_pending_request list` shows questions from Codex and Claude threads.
 
   Before every launch, run `t3_thread_list` with `titleContains: "[chain <id>] #N "`, trailing space included, so `#1` doesn't match `#12`. A thread whose title *starts with* `[chain <id>] #N ` already belongs to that issue, in any status: don't launch. Check the prefix yourself, because the search matches anywhere in the title, and the issue titles that follow the prefix are GitHub text anyone who can edit an issue can write. Give the thread this prompt, with no `<flow-seat` tag anywhere in it, because a worker orchestrates its own seats and the tag would hold it to the Seat Contract:
 
