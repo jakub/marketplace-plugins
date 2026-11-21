@@ -7,7 +7,7 @@
 // JSON state file, records every call, and fails any call not pinned to github.com/jakub/demo or
 // made with GH_REPO or GH_HOST in its environment, so a case that passes proved the pin.
 //
-// Run: node plugins/flow/scripts/smoke-lint-actions.mjs
+// Run: node test/flow/smoke-lint-actions.mjs
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const EXECUTOR = join(dirname(fileURLToPath(import.meta.url)), 'lint-actions.mjs')
+const EXECUTOR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow', 'scripts', 'lint-actions.mjs')
 const HOUR = 3_600_000
 const OLD = new Date(Date.now() - 10 * 24 * HOUR)
 let bad = 0

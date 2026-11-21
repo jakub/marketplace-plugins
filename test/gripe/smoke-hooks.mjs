@@ -8,9 +8,9 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { captureContext } from '../lib/context.mjs'
+import { captureContext } from '../../plugins/gripe/lib/context.mjs'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'gripe')
 const stateHome = mkdtempSync(join(tmpdir(), 'gripe-hooks-'))
 const env = { ...process.env, XDG_STATE_HOME: stateHome, GRIPE_HOME: ROOT }
 const script = (name) => join(ROOT, 'hooks', 'scripts', name)
@@ -69,7 +69,7 @@ try {
   // StopFailure is the observed lane: a templated row that never stores the last message.
   run('stop-failure.mjs', { session_id: 'claude-failed', error: 'rate limit', last_assistant_message: 'sk-SECRET' })
   process.env.XDG_STATE_HOME = stateHome
-  const store = await import('../lib/store.mjs')
+  const store = await import('../../plugins/gripe/lib/store.mjs')
   const db = store.openStore()
   const rows = db.prepare("SELECT elicitation, body FROM gripes WHERE session_id = 'claude-failed'").all()
   db.close()

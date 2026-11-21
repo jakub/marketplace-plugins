@@ -13,9 +13,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { main, resolveGripeBin } from '../bin/shim.mjs'
+import { main, resolveGripeBin } from '../../plugins/gripe/bin/shim.mjs'
 
-const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
+const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'gripe')
 const SHIM = join(PLUGIN, 'bin', 'shim.mjs')
 const TMP = mkdtempSync(join(tmpdir(), 'gripe-shim-'))
 

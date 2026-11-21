@@ -15,7 +15,7 @@
 // the last stdout line. With FLOW_MARKUP_PLAYWRIGHT set, an install that does not resolve or launch
 // is a failure, not a skip, because the caller asked for the render cases by name.
 //
-// Run: node plugins/flow/scripts/smoke-markup.mjs
+// Run: node test/flow/smoke-markup.mjs
 //      FLOW_MARKUP_PLAYWRIGHT=<dir|package.json> node plugins/flow/scripts/smoke-markup.mjs
 
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -26,8 +26,8 @@ import { fileURLToPath } from 'node:url'
 import { deflateSync } from 'node:zlib'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SCRIPT = join(HERE, 'markup.mjs')
-const ROOT = join(HERE, '..', '..', '..')
+const ROOT = join(HERE, '..', '..')
+const SCRIPT = join(ROOT, 'plugins', 'flow', 'scripts', 'markup.mjs')
 let bad = 0
 let checks = 0
 const check = (name, ok, detail = '') => {

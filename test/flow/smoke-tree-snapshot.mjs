@@ -3,7 +3,7 @@
 // interesting property is not that the digests exist but that each one moves for its own reason,
 // so this changes one thing at a time against a throwaway repository and asserts which digest
 // noticed. No network and no fake git: the guarantee is git's own.
-// Run: node plugins/flow/scripts/smoke-tree-snapshot.mjs
+// Run: node test/flow/smoke-tree-snapshot.mjs
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const SNAPSHOT = join(dirname(fileURLToPath(import.meta.url)), 'tree-snapshot.mjs')
+const SNAPSHOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow', 'scripts', 'tree-snapshot.mjs')
 const tmp = mkdtempSync(join(tmpdir(), 'flow-tree-snapshot-'))
 const repo = join(tmp, 'repo')
 

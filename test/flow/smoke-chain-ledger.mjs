@@ -11,7 +11,7 @@
 // case hands the ledger's body digest to issueClaim itself, so parity with the claim's own check
 // is a run and not a reading.
 //
-// Run: node plugins/flow/scripts/smoke-chain-ledger.mjs
+// Run: node test/flow/smoke-chain-ledger.mjs
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -20,8 +20,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { chainLedger, parseRequest } from './chain-ledger.mjs'
-import { bodyDigest, issueClaim } from './issue-claim.mjs'
+import { chainLedger, parseRequest } from '../../plugins/flow/scripts/chain-ledger.mjs'
+import { bodyDigest, issueClaim } from '../../plugins/flow/scripts/issue-claim.mjs'
 
 let bad = 0
 const check = (name, ok, detail = '') => {
@@ -29,7 +29,7 @@ const check = (name, ok, detail = '') => {
   console.log(`  ${ok ? 'ok' : 'FAIL'}: ${name}${ok || !detail ? '' : ` -> ${detail}`}`)
 }
 
-const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'chain-ledger.mjs')
+const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow', 'scripts', 'chain-ledger.mjs')
 /** How a footer word is quoted for sh: bare when it is plain, else single-quoted. */
 const quote = (word) => (/^[A-Za-z0-9_/.:,=@+-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`)
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-chain-ledger-')))

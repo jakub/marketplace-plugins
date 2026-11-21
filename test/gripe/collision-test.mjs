@@ -17,7 +17,7 @@ const WRITERS = 20
 const HOLD_MS = 60
 
 if (process.env.GRIPE_COLLISION_CHILD) {
-  const store = await import(join(HERE, '..', 'lib', 'store.mjs'))
+  const store = await import(join(HERE, '..', '..', 'plugins', 'gripe', 'lib', 'store.mjs'))
   const db = store.openStore()
   db.exec('BEGIN IMMEDIATE')
   const until = Date.now() + HOLD_MS
@@ -41,7 +41,7 @@ try {
   }
   const codes = await Promise.all(children)
   process.env.XDG_STATE_HOME = stateHome // stateDir() reads the env at open time
-  const check = (await import(join(HERE, '..', 'lib', 'store.mjs'))).openStore()
+  const check = (await import(join(HERE, '..', '..', 'plugins', 'gripe', 'lib', 'store.mjs'))).openStore()
   const n = check.prepare('SELECT COUNT(*) AS n FROM gripes').get().n
   check.close()
   console.log(`${n}/${WRITERS} rows landed (child exit codes: ${codes.join(',')})`)

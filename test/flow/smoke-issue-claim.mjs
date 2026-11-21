@@ -9,7 +9,7 @@
 // wrapper (the ambush) lands a rival tag between the preflight read and the push, which is the
 // race without the timing; the concurrent rounds are the race with it, several racers per round.
 //
-// Run: node plugins/flow/scripts/smoke-issue-claim.mjs
+// Run: node test/flow/smoke-issue-claim.mjs
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -17,10 +17,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { makeRedactor } from '../lib/redact.mjs'
-import { acquire, dropTag } from './issue-claim.mjs'
+import { makeRedactor } from '../../plugins/flow/lib/redact.mjs'
+import { acquire, dropTag } from '../../plugins/flow/scripts/issue-claim.mjs'
 
-const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'issue-claim.mjs')
+const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow', 'scripts', 'issue-claim.mjs')
 let bad = 0
 const check = (name, ok, detail = '') => {
   if (!ok) bad += 1

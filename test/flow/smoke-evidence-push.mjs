@@ -14,7 +14,7 @@
 // answers from a JSON state file and the bare repository, records every call, and fails any call
 // not pinned to github.com/jakub/demo or made with GH_REPO or GH_HOST in its environment.
 //
-// Run: node plugins/flow/scripts/smoke-evidence-push.mjs
+// Run: node test/flow/smoke-evidence-push.mjs
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const EXECUTOR = join(dirname(fileURLToPath(import.meta.url)), 'evidence-push.mjs')
+const EXECUTOR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow', 'scripts', 'evidence-push.mjs')
 let bad = 0
 let checks = 0
 const check = (name, ok, detail = '') => {

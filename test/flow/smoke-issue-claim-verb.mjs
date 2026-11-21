@@ -10,7 +10,7 @@
 // created the branch, and a pre-receive that writes the pushed ref and then refuses, which is a
 // lost push response.
 //
-// Run: node plugins/flow/scripts/smoke-issue-claim-verb.mjs
+// Run: node test/flow/smoke-issue-claim-verb.mjs
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -18,7 +18,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { issueClaim } from './issue-claim.mjs'
+import { issueClaim } from '../../plugins/flow/scripts/issue-claim.mjs'
 
 let bad = 0
 const check = (name, ok, detail = '') => {

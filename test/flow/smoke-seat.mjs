@@ -18,7 +18,7 @@
 // --case-prefix <p>
 // runs only the cases whose name starts with p, and no match is a failure rather than a vacuous
 // pass. fastpath-latency prints the measured p50 cost of the catch-all hook and asserts no bound.
-// Run: node plugins/flow/scripts/smoke-seat.mjs [--case-prefix <p>]
+// Run: node test/flow/smoke-seat.mjs [--case-prefix <p>]
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
+const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow')
 const STORE = join(PLUGIN, 'lib', 'seat-store.mjs')
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-smoke-seat-')))
 const state = join(tmp, 'state')

@@ -3,12 +3,12 @@
 // git-guard.mjs (the charter git rules) and no-backlog-guard.mjs. Deny
 // cases are the rules; allow cases are the false positives that would make a guard something
 // people route around. Every interactive case runs once in each host's PreToolUse envelope.
-// Run: node plugins/flow/scripts/smoke-git-guard.mjs
+// Run: node test/flow/smoke-git-guard.mjs
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow')
 const G = join(ROOT, 'hooks', 'scripts', 'git-guard.mjs')
 const NB = join(ROOT, 'hooks', 'scripts', 'no-backlog-guard.mjs')
 // Claude's Bash envelope, and Codex's as captured on CLI 0.149.1 (the PostToolUse fixture in

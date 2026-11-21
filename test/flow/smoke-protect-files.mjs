@@ -4,12 +4,12 @@
 // (Codex: the apply_patch envelope in tool_input.command, plus a file_path alias). Every path
 // runs through each route. Deny cases are the rules; allow cases are the false positives that
 // would make the guard something people route around.
-// Run: node plugins/flow/scripts/smoke-protect-files.mjs
+// Run: node test/flow/smoke-protect-files.mjs
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const HOOKS = join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'scripts')
+const HOOKS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow', 'hooks', 'scripts')
 const hook = (name, input) => {
   const out = execFileSync(process.execPath, [join(HOOKS, name)], {
     input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8',

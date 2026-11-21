@@ -2,7 +2,7 @@
 // Charter delivery, through the real hook script and the real hook registrations: the session
 // gets the whole charter under one hook's cap or a refusal with no tag, every seat gets the same
 // seat half, Claude skips Explore and fork, and a broken charter never fails a hook.
-// Run: node plugins/flow/scripts/smoke-charter.mjs
+// Run: node test/flow/smoke-charter.mjs
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -10,9 +10,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SEAT_MARKER, seatPayload } from '../lib/charter-payload.mjs'
+import { SEAT_MARKER, seatPayload } from '../../plugins/flow/lib/charter-payload.mjs'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow')
 const CAP = 9_500
 const charter = readFileSync(join(ROOT, 'charter', 'charter.md'), 'utf8')
 const scratch = mkdtempSync(join(tmpdir(), 'flow-smoke-charter-'))

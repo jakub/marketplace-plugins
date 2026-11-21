@@ -11,7 +11,7 @@
 // mode each answers the way a CLI that changed its protocol would, for the doctor to catch. Every
 // init frame the fake Claude opens lists the two plugins Claude Code 2.1.285 compiles in, as a live
 // turn listed them. No network, no model.
-// Run: node plugins/flow/scripts/smoke-delegate.mjs
+// Run: node test/flow/smoke-delegate.mjs
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
@@ -22,15 +22,15 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { seatPayload } from '../lib/charter-payload.mjs'
-import { transport as claudeTransport } from '../delegate/claude-control.mjs'
-import { transport as codexTransport } from '../delegate/codex-app-server.mjs'
-import * as jobs from '../delegate/jobs.mjs'
-import { checkAnswer, FINDINGS_SCHEMA, REVIEW_INSTRUCTION, reviewPrompt, schemaProblem, validate } from '../delegate/schema.mjs'
-import * as seatStore from '../lib/seat-store.mjs'
-import { RETENTION_MS } from '../lib/state-dir.mjs'
+import { seatPayload } from '../../plugins/flow/lib/charter-payload.mjs'
+import { transport as claudeTransport } from '../../plugins/flow/delegate/claude-control.mjs'
+import { transport as codexTransport } from '../../plugins/flow/delegate/codex-app-server.mjs'
+import * as jobs from '../../plugins/flow/delegate/jobs.mjs'
+import { checkAnswer, FINDINGS_SCHEMA, REVIEW_INSTRUCTION, reviewPrompt, schemaProblem, validate } from '../../plugins/flow/delegate/schema.mjs'
+import * as seatStore from '../../plugins/flow/lib/seat-store.mjs'
+import { RETENTION_MS } from '../../plugins/flow/lib/state-dir.mjs'
 
-const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
+const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow')
 const MAIN = join(PLUGIN, 'delegate', 'main.mjs')
 const SEAT = seatPayload(readFileSync(join(PLUGIN, 'charter', 'charter.md'), 'utf8'))
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-smoke-delegate-')))

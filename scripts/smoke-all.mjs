@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The one command to run before a push, and the repository's done bar: every
-// plugins/*/scripts/smoke-*.mjs, then gripe's collision test, then the manifest smoke, one at a
+// test/*/smoke-*.mjs, then gripe's collision test, then the manifest smoke, one at a
 // time, stopping at the first failure. There is no CI, so this is the whole of the check.
 //
 // Each script runs from the repository root under this node, with its output captured and shown
@@ -15,12 +15,12 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const smokes = readdirSync(join(ROOT, 'plugins')).sort().flatMap((plugin) => {
-  const dir = join('plugins', plugin, 'scripts')
+const smokes = readdirSync(join(ROOT, 'test')).sort().flatMap((plugin) => {
+  const dir = join('test', plugin)
   if (!existsSync(join(ROOT, dir))) return []
   return readdirSync(join(ROOT, dir)).filter((f) => /^smoke-.*\.mjs$/.test(f)).sort().map((f) => join(dir, f))
 })
-const scripts = [...smokes, 'plugins/gripe/scripts/collision-test.mjs', 'scripts/smoke-plugin-manifests.mjs']
+const scripts = [...smokes, 'test/gripe/collision-test.mjs', 'scripts/smoke-plugin-manifests.mjs']
 
 for (const script of scripts) {
   const started = Date.now()

@@ -3,14 +3,14 @@
 // and publish-guard-codex.mjs (Codex). Registry publication is the one rule they answer
 // differently: Claude asks, Codex denies, because Codex runs a command whose hook answered
 // `ask`. The merge tripwire is one decision, so every merge case runs through both.
-// Run: node plugins/flow/scripts/smoke-publish-guard.mjs
+// Run: node test/flow/smoke-publish-guard.mjs
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow')
 const EXECUTOR = join(ROOT, 'scripts', 'land-merge.mjs')
 const SHA = '0123456789abcdef0123456789abcdef01234567'
 

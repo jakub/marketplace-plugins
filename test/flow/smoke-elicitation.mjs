@@ -9,7 +9,7 @@
 // gripe first on PATH, absent and hanging variants) and state-* (a decline never writes the seat).
 // Every run's PATH holds only a scratch bin directory, so no real gripe is ever filed.
 // The temp directory comes from os.tmpdir(), so TMPDIR moves it.
-// Run: node plugins/flow/scripts/smoke-elicitation.mjs
+// Run: node test/flow/smoke-elicitation.mjs
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..')
+const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'flow')
 const GUARD = join(PLUGIN, 'hooks', 'scripts', 'elicitation-guard.mjs')
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'flow-smoke-elicitation-')))
 const state = join(tmp, 'state')

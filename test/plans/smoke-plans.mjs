@@ -8,14 +8,14 @@
 // separate tally: a skip is never a check and never a failure, and the final line reports the
 // count so a green run cannot hide work that did not run. A section that throws counts as one
 // failed check and the run goes on to the next section. The run exits 1 if any check failed, else 0.
-// Run: node plugins/plans/scripts/smoke-plans.mjs
+// Run: node test/plans/smoke-plans.mjs
 
 import { readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const ROOT = join(HERE, '..', '..', '..')
+const ROOT = join(HERE, '..', '..')
 
 let bad = 0, checks = 0, skipped = 0
 const check = (name, ok, detail = '') => {

@@ -1682,9 +1682,9 @@ ${sections.map(([id, title]) => `${above[id] ? `<p id="${above[id]}">Just above 
   const stubDir = join(base, 'stub-check')
   mkdirSync(join(stubDir, 'doc/check'), { recursive: true })
   mkdirSync(join(stubDir, 'show'))
-  const checkDir = fileURLToPath(new URL('../../skills/doc/check/', import.meta.url))
+  const checkDir = fileURLToPath(new URL('../../../plugins/plans/skills/doc/check/', import.meta.url))
   for (const f of readdirSync(checkDir).filter((f) => f.endsWith('.mjs'))) cpSync(join(checkDir, f), join(stubDir, 'doc/check', f))
-  cpSync(fileURLToPath(new URL('../../skills/show/tokens.css', import.meta.url)), join(stubDir, 'show/tokens.css'))
+  cpSync(fileURLToPath(new URL('../../../plugins/plans/skills/show/tokens.css', import.meta.url)), join(stubDir, 'show/tokens.css'))
   const partsSrc = readFileSync(join(stubDir, 'doc/check/parts.mjs'), 'utf8')
   const stubbedSrc = partsSrc.replace(/export async function expose\(drive, target\) \{\n[\s\S]*?\n\}\n/, 'export async function expose() { return { ok: true, changes: [] } }\n')
   writeFileSync(join(stubDir, 'doc/check/parts.mjs'), stubbedSrc)
@@ -2079,7 +2079,7 @@ ${sections.map(([id, title]) => `${above[id] ? `<p id="${above[id]}">Just above 
     mkdirSync(join(putDir, 'doc/check'), { recursive: true })
     mkdirSync(join(putDir, 'show'))
     for (const f of readdirSync(checkDir).filter((f) => f.endsWith('.mjs'))) cpSync(join(checkDir, f), join(putDir, 'doc/check', f))
-    cpSync(fileURLToPath(new URL('../../skills/show/tokens.css', import.meta.url)), join(putDir, 'show/tokens.css'))
+    cpSync(fileURLToPath(new URL('../../../plugins/plans/skills/show/tokens.css', import.meta.url)), join(putDir, 'show/tokens.css'))
     const head = 'export async function restore(drive, changes) {\n'
     const groups = function outerGroups() {
       for (const d of document.querySelectorAll('details[name^="o"]')) {
@@ -2369,7 +2369,7 @@ ${items.join('\n')}
   const responseName = "browser: base response matches the kit's apart from the build line"
   if (why) skip(responseName, why)
   else {
-    const { format } = await import(new URL('../../skills/doc/check/expect.mjs', import.meta.url).href)
+    const { format } = await import(new URL('../../../plugins/plans/skills/doc/check/expect.mjs', import.meta.url).href)
     const ask = `<fieldset data-ask="store">
 <legend>Where does the cache live?</legend>
 <p>Memory costs nothing to run. A store on disk survives a restart.</p>
@@ -2493,7 +2493,7 @@ function fixtureDirs(root, rel = '') {
 async function browserSection({ ROOT, check, skip }) {
   const DOC = join(ROOT, 'plugins/plans/skills/doc')
   const BUILD = join(DOC, 'build.mjs')
-  const FIX = join(ROOT, 'plugins/plans/scripts/fixtures/doc')
+  const FIX = join(ROOT, 'test/plans/fixtures/doc')
   const cdp = await import(pathToFileURL(join(DOC, 'check/cdp.mjs')).href)
   const serveMod = await import(pathToFileURL(join(DOC, 'check/serve.mjs')).href)
   const runMod = await import(pathToFileURL(join(DOC, 'check/run.mjs')).href)

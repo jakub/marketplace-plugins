@@ -13,15 +13,15 @@
 // real gh runner against a fake gh binary to prove that GH_REPO and GH_HOST never reach gh, and
 // two prove that a gh or git planted behind a relative PATH entry never runs.
 //
-// Run: node plugins/flow/scripts/smoke-land-merge.mjs
+// Run: node test/flow/smoke-land-merge.mjs
 
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 
-import { execCapture, ghRunner } from '../lib/gh-exec.mjs'
-import { landMerge } from './land-merge.mjs'
+import { execCapture, ghRunner } from '../../plugins/flow/lib/gh-exec.mjs'
+import { landMerge } from '../../plugins/flow/scripts/land-merge.mjs'
 
 let bad = 0
 const check = (name, ok, detail = '') => {
