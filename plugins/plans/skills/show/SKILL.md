@@ -69,9 +69,10 @@ Decisions that are already made and only recorded are not choices. Write them in
 
 Ask after the visual, so the reader sees what each option means before they pick. Put the recommendation first, and say in the option text what it costs.
 
-- **In T3 Code**, ask the way your provider asks, by the two bullets below. T3 shows `AskUserQuestion` as tappable options, and a reader can miss the reply text above them, so put what they need to choose inside the question and option text.
+- **In T3 Code**, ask the way your provider asks, by the bullets below. T3 shows `AskUserQuestion` and `ask_question` as tappable options, and a reader can miss the reply text above them, so put what they need to choose inside the question and option text.
 - **In Claude Code**, use `AskUserQuestion`: up to 4 questions per call, with 2 to 4 options each.
 - **In Codex**, write the questions as numbered options in the reply, then end the turn.
+- **In Antigravity**, use `ask_question`.
 
 Never ask through the page. An Inline render carries no question kit, and the reader's answer has to reach you in this thread.
 
@@ -93,8 +94,9 @@ Detect `html_render` and `html_preview` by presence in your tool list. Never ass
 
 - `mcp__t3-code__html_render` and `mcp__t3-code__html_preview` on Claude Code
 - `mcp__t3_code__html_render` and `mcp__t3_code__html_preview` on Codex
+- `mcp_t3-code_html_render` and `mcp_t3-code_html_preview` on Antigravity
 
-Look under both prefixes. A tool that the host lists as deferred is present. Load its schema before you call it.
+Look under all three prefixes. A tool that the host lists as deferred is present. Load its schema before you call it.
 
 ## Write an Inline render
 

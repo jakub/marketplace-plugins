@@ -29,6 +29,14 @@ for (const listed of marketplace.plugins) {
   const claude = readJson(join(pluginRoot, '.claude-plugin', 'plugin.json'))
   assert.equal(claude.version, listed.version, `${name} Claude version matches marketplace`)
   assert.equal(claude.description, listed.description, `${name} Claude description matches marketplace`)
+
+  const antigravityManifest = join(pluginRoot, '.antigravity-plugin', 'plugin.json')
+  if (existsSync(antigravityManifest)) {
+    const agy = readJson(antigravityManifest)
+    assert.equal(agy.name, name, `${name} Antigravity name matches marketplace`)
+    assert.equal(agy.version, listed.version, `${name} Antigravity version matches marketplace`)
+    assert.equal(agy.description, listed.description, `${name} Antigravity description matches marketplace`)
+  }
   if (name === 'flow') {
     // Both hosts run the same delegate/main.mjs: Claude by plugin-root path, Codex through the
     // bin/flow-delegate dispatcher on PATH, which resolves the cache copy named by --flow-version.

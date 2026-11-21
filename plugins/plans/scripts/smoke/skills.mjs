@@ -208,6 +208,7 @@ export default async function (t) {
   const askNeedles = ['Put the recommendation first', '**In T3 Code**, ask the way your provider asks',
     'put what they need to choose inside the question and option text', '**In Claude Code**, use `AskUserQuestion`',
     'up to 4 questions per call, with 2 to 4 options each', '**In Codex**', 'numbered options in the reply, then end the turn',
+    '**In Antigravity**, use `ask_question`',
     'Never ask through the page.']
   for (const needle of askNeedles) check(`skills: show question tool says ${needle}`, ask.includes(needle))
   check('skills: show question tool routes T3 first', ask.indexOf('**In T3 Code**') >= 0 && ask.indexOf('**In T3 Code**') < ask.indexOf('**In Claude Code**'))
@@ -219,12 +220,12 @@ export default async function (t) {
     noInteractionState !== show && budgetFailures(noInteractionState).some((n) => n.startsWith('Measure every interaction state')))
 
   for (const tool of ['html_render', 'html_preview']) {
-    for (const prefix of ['mcp__t3-code__', 'mcp__t3_code__']) {
+    for (const prefix of ['mcp__t3-code__', 'mcp__t3_code__', 'mcp_t3-code_']) {
       check(`skills: show names ${prefix}${tool}`, show.includes(`${prefix}${tool}`))
     }
   }
   check('skills: show detects render tools by presence',
-    show.includes('by presence') && show.includes('Never assume they exist.') && show.includes('Look under both prefixes.'))
+    show.includes('by presence') && show.includes('Never assume they exist.') && show.includes('Look under all three prefixes.'))
 
   check('skills: show builds Inline on tokens.css', show.includes('`tokens.css`'))
   const inline = section(show, '## Write an Inline render')

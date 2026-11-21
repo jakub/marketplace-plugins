@@ -32,6 +32,11 @@ const rootWith = (name, text) => {
   return join(scratch, name)
 }
 const seatOf = (stdout) => JSON.parse(stdout).hookSpecificOutput
+const agyMessageOf = (stdout) => {
+  const parsed = JSON.parse(stdout)
+  assert.equal(parsed.injectSteps?.length, 1, 'antigravity injects exactly one step')
+  return parsed.injectSteps[0]?.systemMessage?.systemMessage
+}
 
 try {
   assert.equal(charter.split('\n').filter((line) => line.trimEnd() === SEAT_MARKER).length, 1)
@@ -79,6 +84,13 @@ try {
     assert.ok(stdout.startsWith('<flow-charter>'), `the ${host} session payload does not open with the tag`)
     assert.ok(stdout.length <= CAP, `the ${host} session payload is ${stdout.length} characters, over ${CAP}`)
     ok(`a ${host} session gets the whole charter, ${stdout.length} characters, under ${CAP}`)
+  }
+  {
+    const text = agyMessageOf(inject(['session', 'antigravity']).stdout)
+    assert.equal(text, charter, 'the antigravity session payload is not the charter verbatim')
+    assert.ok(text.startsWith('<flow-charter>'), 'the antigravity session payload does not open with the tag')
+    assert.ok(text.length <= CAP, `the antigravity session payload is ${text.length} characters, over ${CAP}`)
+    ok(`an antigravity session gets the whole charter in injectSteps, ${text.length} characters, under ${CAP}`)
   }
 
   for (const [file, variable, host] of [['hooks.json', 'CLAUDE_PLUGIN_ROOT', 'claude'], ['codex.json', 'PLUGIN_ROOT', 'codex']]) {
@@ -152,25 +164,30 @@ try {
       assert.equal(answer.additionalContext, seat, `a ${host} seat did not get seatPayload() verbatim`)
     }
   }
+  for (const input of [JSON.stringify({ conversationId: 'conv-1', hookEventName: 'SessionStart' }), '{', '']) {
+    assert.equal(agyMessageOf(inject(['subagent', 'antigravity'], { input }).stdout), seat, 'an antigravity seat did not get seatPayload() verbatim')
+  }
   assert.ok(seat.startsWith('<flow-charter scope="seat">') && seat.endsWith('</flow-charter>\n') && !seat.includes('## Hosts'))
   // Read off the file here rather than through seatPayload(), so a helper that drops a section
   // cannot pass: everything below the marker, less the whole-file closing tag, arrives verbatim.
   const below = charter.slice(charter.indexOf(SEAT_MARKER) + SEAT_MARKER.length).trim().replace(/<\/flow-charter>$/, '').trim()
   assert.ok(below.includes('## Rules of Engagement') && below.includes('## Seat Contract'), 'the seat half lost a heading this smoke expects')
   assert.ok(seat.includes(`\n${below}\n</flow-charter>\n`), 'the seat payload is not the whole charter below the marker')
-  ok('a seat on either host gets seatPayload(), the whole half below the marker, even from an unreadable body')
+  ok('a seat on any host gets seatPayload(), the whole half below the marker, even from an unreadable body')
 
   for (const agent_type of ['Explore', 'fork']) {
     const input = JSON.stringify({ agent_type })
     assert.equal(inject(['subagent', 'claude'], { input }).stdout, '', `Claude handed ${agent_type} the seat half`)
     assert.equal(seatOf(inject(['subagent', 'codex'], { input }).stdout).additionalContext, seat, `Codex skipped ${agent_type}`)
+    assert.equal(agyMessageOf(inject(['subagent', 'antigravity'], { input }).stdout), seat, `Antigravity skipped ${agent_type}`)
   }
-  ok('Explore and fork are skipped on Claude and delivered on Codex')
+  ok('Explore and fork are skipped on Claude and delivered on Codex and Antigravity')
 
   const elsewhere = join(scratch, 'no-such-root')
   assert.equal(inject(['session', 'codex'], { env: { PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_ROOT: elsewhere } }).stdout, charter)
   assert.equal(inject(['session', 'claude'], { env: { CLAUDE_PLUGIN_ROOT: ROOT, PLUGIN_ROOT: elsewhere } }).stdout, charter)
-  ok('each host reads its own root variable first')
+  assert.equal(agyMessageOf(inject(['subagent', 'antigravity'], { env: { CLAUDE_PLUGIN_ROOT: elsewhere } }).stdout), seat)
+  ok('each host reads its own root variable first, and antigravity ignores CLAUDE_PLUGIN_ROOT')
 
   const oversize = rootWith('oversize', `${charter}\n${'x'.repeat(Math.max(1, 9_800 - charter.length + 1))}\n`)
   for (const host of ['claude', 'codex']) {
@@ -178,7 +195,12 @@ try {
     assert.match(stdout, /^<!-- flow charter refused: charter\/charter\.md is \d+ characters, over the 9800 /)
     assert.ok(!stdout.includes('<flow-charter'), `the ${host} refusal still carries a charter tag`)
   }
-  ok('a charter over 9,800 characters is refused with one comment and no tag, on both hosts')
+  {
+    const text = agyMessageOf(inject(['session', 'antigravity'], { env: { PLUGIN_ROOT: oversize } }).stdout)
+    assert.match(text, /^<!-- flow charter refused: charter\/charter\.md is \d+ characters, over the 9800 /)
+    assert.ok(!text.includes('<flow-charter'), 'the antigravity refusal still carries a charter tag')
+  }
+  ok('a charter over 9,800 characters is refused with one comment and no tag, on all hosts')
 
   const broken = rootWith('two-markers', charter.replace(SEAT_MARKER, `${SEAT_MARKER}\n${SEAT_MARKER}`))
   const run = inject(['subagent', 'claude'], { input: '{}', env: { CLAUDE_PLUGIN_ROOT: broken } })
