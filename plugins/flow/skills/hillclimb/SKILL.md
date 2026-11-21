@@ -25,7 +25,7 @@ Show the user the concrete setup, then wait for an explicit start like "run it".
 
 ## Run a batch
 
-1. Pick independent hypotheses from the code and the attempt log. Name the mechanism each one should improve. Start every candidate in a batch from the same accepted commit.
+1. Pick independent hypotheses from the code and the attempt log. Name the mechanism each one should improve. Start every candidate in a batch from the same accepted commit. Fan out competing candidates across the charter's parallel pool (`Sonnet 5.5 high` for tight-oracle ideas, `Fable 5.2 low` or `Opus 5.5 med` for deeper ones) so independent attempts run at once.
 2. Give each worker its own worktree, attempt ID, scope and allowed checks, with separate build outputs, test data and ports. Workers never run the reserved benchmark.
 3. Keep every candidate on a local attempt branch before you discard or integrate it, rejected and partial ones too. A SHA in a log doesn't keep a commit alive.
 4. Wait for the whole batch, then make sure every worker's builds, tests and services have actually stopped. A completion message, an error or a timeout doesn't prove the machine is idle. Sort out unknown process state before you measure, and only stop processes you own.
@@ -44,6 +44,6 @@ Bring a real architectural tradeoff to the user with its evidence, and keep work
 
 A plateau isn't the top. When batches keep coming back rejected, change approach before you call it: a different kind of change, a combination of near-misses, a reread of the code on the measured path, or something radical. Don't stop while cheap untried ideas remain.
 
-Stop at a confirmed target, or after the exploration minimum when what's left isn't worth it. If you missed the goal, say so. Compare the final branch with the original baseline, and run the charter's cross-family review on the final diff and on the evidence for the improvement.
+Stop at a confirmed target, or after the exploration minimum when what's left isn't worth it. If you missed the goal, say so. Compare the final branch with the original baseline, and run the charter's cross-family review (`Sol`/`Astra`, plus `Neon 4 high` in T3) on both the final diff and the benchmark evidence.
 
 Report the metric with units, the baseline and final values, each attempt's outcome, the correctness and review results, the evidence paths, and why you stopped. Keep the accepted branch, the attempt branches and the logs. Deliver a reviewed local branch unless the user authorized a push or a PR. Never merge.

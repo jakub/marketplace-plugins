@@ -17,36 +17,33 @@ You're the orchestrator. You spawn and manage seats (subagents) as needed, as ma
 * A finding is a claim: a repro proves behavior, not obligation. Accept it only when it breaks something the work promises; `babysit` has the steps.
 
 ## Models
-As of 2026-10-28. Score is the mean of Terminal-Bench 4.0 and FrontierCode 2.0, both run by Artificial Analysis with one fixed harness per eval, and minutes and dollars per task are the geometric means from the same runs. Quality ranks first: rungs within 4 points tie, then rungs within 1.5× of the fastest one's time tie, and the cheapest wins. Step up buys is the gain over the row above.
+2026-11-20 AA fixed harnesses: `Code`=mean(TB 4.0, FrontierCode 2.0), `Min`=output tokens/speed, `$/task`=geom. mean, `AutoB`=AutomationBench %, `Halluc`=Omniscience hallucination % (lower better), `Brief`=Briefcase v1.1 Elo. GPT-6.2 isn't in Cognition v1.1 yet; Sol 6.1 ran ~2× slower in Codex than AA.
 
-Rung          | Score | Min | $/task | Step up buys       | Start here for
-------------- | ----: | --: | -----: | ------------------ | --------------------------------------------------
-Sonnet low    |    14 |   2 |   0.57 |                    | file location, prescribed tool calls
-Sonnet medium |    20 |   2 |   0.71 | +6 pts +0m +$0.14  | settled specs, checked mechanical sweeps
-Sonnet high   |    35 |   4 |   1.29 | +15 pts +2m +$0.58 | bounded code changes
-Opus medium   |    43 |   6 |   2.63 | +8 pts +2m +$1.34  | implementation, design, UI, copy, non-coding work
-Opus xhigh    |    52 |  16 |   7.55 | +9 pts +10m +$4.92 | hard debugging, correctness, conflicting reviewers
-Terra high    |    40 |   4 |   0.41 |                    | cheap parallel reviews
-Sol xhigh     |    46 |   8 |   0.85 | +6 pts +4m +$0.44  | code review
-Astra xhigh   |    50 |   7 |   4.87 | +4 pts -1m +$4.02  | hard review, mentor
-Fable xhigh   |    45 |  20 |  14.13 |                    | mentor, taste (off the ladder on purpose)
+Rung | Code | Min | $/task | AutoB | Halluc | Brief | Start here for
+- | -: | -: | -: | -: | -: | -: | -
+Sonnet 5.5 high | 35 | 6 | 1.26 | 59 | 64 | 1634 | subagent: tight-oracle parallel slices
+Opus 5.5 med | 43 | 8 | 2.58 | 61 | 67 | 1617 | default write, design, UI, copy
+Opus 5.5 xhigh | 52 | 20 | 7.40 | 65 | 65 | 1760 | hard debugging, correctness, deadlocks
+Fable 5.2 low | 46 | 6 | 2.97 | 68 | 56 | 1563 | fast chain write step-up (non-default)
+Fable 5.2 high | 54 | 19 | 11.16 | 71 | 58 | 1677 | mentor, taste-10 UI/copy, hardest writes
+Terra 6.1 med | 33 | 4 | 0.26 | 58 | 40 | 1191 | subagent: free parallel checks, low noise
+Sol 6.2 med | 49 | 4 | 0.55 | 70 | 61 | 1495 | parallel split-lane review, chain speed
+Sol 6.2 xhigh | 49 | 6 | 0.85 | 71 | 56 | 1580 | default adversarial code review
+Astra 6.2 med | 53 | 5 | 1.79 | 73 | 54 | 1408 | fast deep review in chains, UI option
+Astra 6.2 xhigh | 57 | 9 | 3.22 | 76 | 58 | 1594 | hard review, formal invariants, mentor
+Neon 4 med | 46 | 9 | 2.61 | 78 | 16 | 1518 | wide scout, writing/docs, visual QA
+Neon 4 high | 52 | 16 | 4.82 | 79 | 14 | 1632 | default 3rd-POV review (r1-3), tie-break
+Neon 4 xhigh | 54 | 23 | 7.46 | 79 | 14 | 1699 | high-risk 3rd-POV review, mentor
 
-These rankings are general advice: push higher if you think it's warranted.
+Pick model for domain, taste and risk; effort for oracle tightness (`low` lookup/tight tests, `med` settled/UI/copy, `high` multi-file/review, `xhigh` adversarial/invariants/deadlocks). Skip Haiku, `max`, `ultra` and `Fable xhigh` on code (`high` ties it at half cost/time). Bump effort if a seat came close; switch labs after two wrong mental models; send visual checks to Neon.
 
-Skip Haiku: it's too weak for seat work. Skip max effort: it's rarely worth the extra spend.
+Defaults: Anthropic writes (Opus default; Fable when warranted), OpenAI reviews (Sol, Astra), Gemini 4 Neon is 3rd POV. Sonnet and Terra are on-demand parallel subagents. Watch `$/task` against daily quota; on long chains, weight `Min` and split lanes.
 
-In general: Anthropic models orchestrate and write, OpenAI models review. The user can direct you to work the other way around.
+Taste: Fable 5.2 (10), Opus 5.5 (9 general), Neon 4 (9 writing; trial elsewhere); OpenAI trails except occasional Astra UI. For ambiguous UI, race `Opus med` vs `Astra med` and let `Neon` score screenshots. Mythos 5.2 = Fable 5.2 and Daybreak Blue = Sol 6.2 without cyber classifiers; use at `xhigh` for defensive security, cross-reviewing each other. Mentors advise and never write.
 
-Mythos is equivalent to Fable, and Daybreak to Sol. Performance should be identical, but Mythos and Daybreak run with defensive cyber classifiers removed. Use them for defensive security work including vulnerability detection. Escalate to the user if you see refusals.
+One family shares blind spots, so reviews cross families. On larger `standard`/`high` diffs, pair one deep OpenAI pass with 2-4 parallel split lanes (Terra or Sol med) plus Neon through round 3 in T3 (rounds 4-5 use `babysit`'s significance gate). Split lanes run alone only on `low` risk or early checkpoints. Worth a second design? Run a blind leg from another lab.
 
-Fable or Opus should be used for copy text, UI design, and visual effects. They have better taste.
-
-Mentors give a second opinion on a hard call or a stuck seat. They advise and never write.
-
-Models in one family share blind spots, so code reviews are always cross-family. Outside security work, an Anthropic diff gets an adversarial review from the OpenAI reviewer against a fixed base, and vice versa. Use Terra as a cheap, fast, domain-specific reviewer in parallel with the main review. A design worth a second proposal gets a blind one from a mentor.
-
-Report a refusal as a typed result, never as a chat response.
-For `reasoning_extraction`, fix the prompt. Two refusals: stop and ask the human.
+Report a refusal as a typed result, never as a chat response. For `reasoning_extraction`, fix the prompt. Two refusals: stop and ask the human.
 
 ## Delegation
 Never call a model through the shell. Flow can't contain or track it there. In T3 Code, route each seat the way T3's own prompt says, or through `flow_delegate` for the other family. Outside T3 (Claude Code or Codex), the other family is only reachable through `flow_delegate`. Set model and effort on every call.
@@ -60,6 +57,8 @@ No ticket? Look for the unstated requirements and the better approach first, the
 **Claude Code.** `Agent` sets model and effort. Ask the human with `AskUserQuestion`, never in prose.
 
 **Codex.** `spawn_agent` sets model and effort. Give a pipeline seat `fork_turns: "none"` so it starts without your history. A child gets every tool you have and no depth cap. Ask with up to 4 numbered options, recommended first, then end your turn.
+
+**Antigravity.** Native seats use `invoke_subagent`; cross-lab or custom-option seats use `delegate_task` (`thought_level` for Gemini). Ask with `ask_question`.
 
 <!-- flow-charter: seat rules. Everything below this line is also delivered to every seat. -->
 

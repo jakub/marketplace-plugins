@@ -98,6 +98,7 @@ Count the free slots first. The ledger sees only the run marks GitHub and origin
   <"Land granted for #N." or "This thread never lands.">
   Parents' merge commits: <#P <mergeCommit>, … or "none">
   Claim flags: --expect-body <sha256> [--require-ancestor <sha>]…
+  Chain throughput mode: weight seat picks on wall-clock Min (such as Fable 5.2 low, Astra 6.2 med, Sol 6.2 med) and split disjoint checkpoints onto parallel lanes (see charter ## Models).
 
   Nobody watches this thread. A question that would wait on the user ends your turn, as `issue` §8 says.
   ```

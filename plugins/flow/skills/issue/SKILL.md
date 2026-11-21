@@ -6,24 +6,19 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(ls:*), Bash(rg:*), Bash(node:*), Re
 
 # issue
 
-If the user started this, they aren't watching. You own the issue from claim to a pushed, reviewed, evidenced PR, and then you hand it to `babysit`. You never merge and you never retire the worktree. That's `land`'s job. The one exception is a chain land grant for this issue in the session's starting prompt: `babysit` then hands the clean PR to `land`, and `land` still does the merge.
+If the user started this, they aren't watching. You own the issue from claim to a pushed, reviewed, evidenced PR, then hand it to `babysit`. You never merge and never retire the worktree (`land` owns both; a chain land grant lets `babysit` hand the clean PR to `land`). `reference.md`, next to this file, holds claim refusal/retry rules, early checkpoint review details and the 5-step suspension protocol.
 
-You're the orchestrator. File scans, command output and diffs live in seats, and decisions stay with you. Pick the seats, models, width and rounds per issue, and journal each choice. However you compose the run, the invariants in step 5 hold.
+You're the orchestrator. File scans, command output and diffs live in seats; decisions stay with you. Pick seats, models, parallelism and rounds per issue, and journal each choice.
 
 ## Who can start it
 
-Exactly one of these:
+- The issue number in the invocation (`/flow:issue 42`, "run issue #42", or naming it in words),
+- the user saying yes to a `prep` handoff,
+- a starting prompt from `chain` (naming the issue, land grant or none, and claim flags).
 
-- the issue number in the invocation (`/flow:issue 42` in Claude Code, "run issue #42" in Codex),
-- the user naming the issue in words,
-- the user saying yes to a prep hand-off,
-- a starting prompt that a `chain` launched or printed for this issue. It names the issue, the chain's land grant or none, and the claim flags.
+A handoff line mentioning this stage isn't an invocation. A non-positive integer aborts cleanly. If `#N` appears inside an unrelated request, ask which they mean.
 
-A hand-off line that mentions this stage is not an invocation. A number that isn't a positive integer aborts with usage and changes nothing. If a message mentions `#N` while it describes something else, ask which they mean.
-
-**Done** is an open PR, pushed, reviewed, evidenced and linked with `Closes #N`. Invoke the `babysit` skill with it right away, without asking.
-
-The PR body leads with the problem, then the fix, then one changelog line per commit. It carries a `## Risk` section (the tier, why, any tripwire that raised it, and the issue's `- intended case:` line, unchanged in meaning) and a `## Revert` section, both written from the diff that ships. Never narrow that line, because triage judges findings against it. Revert says what a rollback leaves behind, judged against the data stance in the repo's `AGENTS.md`. With no stance there, a change to persisted state isn't reversible, so say that.
+**Done** is an open PR, pushed, reviewed, evidenced and linked with `Closes #N`, handed directly to `babysit` without asking. The PR body leads with problem, fix, one changelog line per commit, `## Risk` (tier, why, tripwires, unchanged `- intended case:` line), and `## Revert` judged against the repo's data stance (with no stance, persisted-state changes aren't reversible).
 
 BAD
 
@@ -33,119 +28,78 @@ GOOD
 
 > ✅ `## Revert` Not clean. `git revert` restores the code, but WAL segments this build wrote keep the new layout, and trawl is forward-only. Back up the WAL directory before upgrading. To roll back, stop trawld, restore that backup, then start the old build.
 
-**Or** a clean escalation: `needs-info`, `needs-human` or `needs-rebase`, a comment saying what blocks, and a ping (step 8). An escalation or a suspension stops there, even after a checkpoint push.
+**Or** a clean escalation: `needs-info`, `needs-human` or `needs-rebase`, a comment saying what blocks, and a stop per `reference.md` §Suspending.
 
 ## 1. Preflight
 
-Before you change or spawn anything, call `delegation_doctor` and require:
+Before changing or spawning anything, verify cross-lab delegation is reachable:
 
-- `ok: true`, meaning the other family's CLI is installed and signed in;
-- the canonical repo root among its `roots`;
-- your write grant covering `<repo>/.flow-worktrees/`, where the claim puts the worktree.
+- **In T3 Code**, call `orchestrator_capabilities` and confirm the providers you need (`claudeAgent`, `codex`, and `antigravity` when using Neon) report `canRunCrossProviderChildTask: true`, plus write access to `<repo>/.flow-worktrees/`. Call `delegation_doctor` only if you need the `flow_delegate` fallback (Antigravity sessions don't load `flow_delegate`).
+- **Outside T3 Code (Claude Code or Codex)**, call `delegation_doctor` and require `ok: true`, the canonical repo root in `roots`, and write grant covering `<repo>/.flow-worktrees/`.
 
-If any check fails, stop this turn and write nothing: no label, no comment, no ping. Tell the user what to fix. Never mark a failed start `needs-human`, because that label makes the next claim refuse. Never fall back to writing the code yourself because you couldn't spawn a seat.
-
-Where roots come from: in Claude Code, the session's MCP roots plus `CLAUDE_PROJECT_DIR`. In Codex, the directory the session started in, which must be the repo's top level. Codex can leave `.git` read-only, so the claim, commits and pushes go through the normal approval prompt there. Never widen the grant to the repo's parent.
+If preflight fails, stop and write nothing (no label, comment or ping). Never mark a failed start `needs-human` (that blocks the next claim) and never write the code yourself because a seat couldn't start.
 
 ## 2. Claim
 
-Assigning the issue and re-reading it isn't a claim: two runs under one account both see a green re-read. The claim is a tag that origin creates, and `scripts/issue-claim.mjs` owns it. Its header is the protocol.
-
-Run it from the canonical checkout (the main working tree, not a linked worktree), and again only as the `unknown` bullet says:
+Assigning an issue isn't a claim: origin decides via a tag push owned by `scripts/issue-claim.mjs`. Run it from the canonical checkout:
 
 ```bash
 node <plugin-root>/scripts/issue-claim.mjs claim <N> [--kind feat|fix|chore] [--expect-body <sha256>] [--require-ancestor <sha>]...
 ```
 
-A chain-started run passes its starting prompt's `--expect-body` value and each `--require-ancestor` value unchanged. The claim checks them under its tag, before it creates a branch or a worktree.
-
-Pass `--kind` only if the label default is wrong: `bug` is fix, `documentation` without `enhancement` is chore, and anything else is feat. It prints one JSON line, and `result` is the whole answer:
-
-- **`claimed`**: go. Record `base`, `branch`, `worktree`, `head` and `acDigest`, the sha256 of the exact `## Acceptance Criteria` bytes. The run is judged against that snapshot. If the body moves mid-run, flag it and don't chase it. Post the pre-flight comment.
-- **`refused`**: nothing was left behind, and `reason` says why. `not-ready` goes back through prep. `blocked` goes to the blocking label, which only the user clears. `live-run` means another run owns it, and `found` says where. `body-moved` (the body changed since the chain's user confirmed it) and `missing-ancestor` (a parent's merge commit isn't in the base) go back to the chain's user. Fix anything else it names, or report it.
-- **`held`**: another run holds the claim tag. Stop.
-- **`unknown`**: something broke, or a cleanup couldn't be confirmed. When `retained` is empty, the claim left nothing behind, so run it again in the foreground up to 3 times, waiting 5 s, 15 s and 45 s before each. Any other `unknown`, or one still there after the third retry: report `reason`, `retained` and `cleanup` verbatim and stop. Don't read it as another run owning the issue, and never delete a tag this run didn't create. A stale tag goes to the user with the branch and PR state it guards.
+Pass any `--expect-body` and `--require-ancestor` flags from a `chain` prompt unchanged. On `claimed`, record `base`, `branch`, `worktree`, `head` and `acDigest` (judge the run against that AC snapshot) and post the pre-flight journal comment. For `refused`, `held` or `unknown` (including the 5 s / 15 s / 45 s retry rule), follow `reference.md` §Claim outcomes and retries.
 
 ## 3. Journal
 
 Three kinds of issue comment, and no others:
 
-1. **Pre-flight**, before work starts: the base SHA, the AC digest, the risk tier, the seats with their models, efforts and why, and the CI mapping invariant 3 asks for.
-2. **Events**, as they happen: a tripwire fired, the run widened or narrowed, a fork guessed, a seat re-run on a stronger model, the fix-round total, the breaker tripped, a stale answer rejected. Each review round adds one triage line per finding: the reviewed head, the finding's title and location, its basis, its disposition, the obligation or exclusion, the reason, and an evidence link. Several lines can share one comment.
-3. **Final**: a verdict per criterion, and coverage: which seats actually looked at the diff versus the ones you planned, by name.
+1. **Pre-flight**, before work starts: base SHA, AC digest, risk tier, seats with models/efforts/why, and the CI suite mapping (inv.3).
+2. **Events**, as they happen: tripwires, scope/model changes, guessed forks, fix-round totals, breaker trips, stale answers, and one triage line per review finding (reviewed head, title/location, basis, disposition, obligation/exclusion, reason, evidence link).
+3. **Final**: verdict per criterion, and planned vs. actual reviewer coverage.
 
-When you recover from anything, re-read live state. A journal line never authorizes a later action on its own.
+On any recovery, re-read live state; a journal line never authorizes a later action alone.
 
 ## 4. Design pass
 
-Every `standard` or `high` run gets one, even when prep or an ADR settled the spec. A `low` run skips it, because prep's dialectic already shaped the change, but a `low` run with more than one checkpoint still writes the checkpoint plan below. A chain dependent, a run whose starting prompt names parents' merge commits, always gets one, even at `low`. Both legs work on its claimed base and check the spec against each parent's merged diff. A conflict between the spec and a parent's merged change is `needs-info`. Start the native leg, then the other-family leg, so both land in the same turn:
+Every `standard`, `high`, or chain-dependent run (even at `low`) gets one. A standalone `low` run skips it (still writing a checkpoint plan if >1 checkpoint). On chain dependents, both legs check the spec against every parent's merged diff; a conflict is `needs-info`. Start the native leg (smallest change, max reuse) and the other-family blind leg (own shape, unstated gaps) together, then synthesize out loud instead of averaging.
 
-- The native leg frames the smallest change with the most reuse, grounded in the real code seams.
-- The other-family leg is blind. It proposes its own shape and explicitly calls out what the issue left unsaid or poorly defined.
+The checkpoint plan lists each checkpoint's id, owned files (inv.6), parents (premise checkpoints first), and difficulty (what could break, never file count). Match each checkpoint's domain to the charter roster instead of defaulting every slice to `Opus`: send tight-oracle slices and test fixtures to `Sonnet 5.5 high`, docs/writing checkpoints to `Neon 4 med` in T3, and defensive security/auth boundaries to `Mythos 5.2 xhigh` (cross-reviewed by `Daybreak Blue xhigh`). Split independent checkpoints onto parallel write lanes by default, and on chain runs weight picks on wall-clock `Min` for throughput.
 
-Synthesize them yourself, and resolve each disagreement out loud instead of averaging. Say where each new thing lives and why, which layer enforces each invariant, and the checkpoint plan.
-
-The checkpoint plan lists each checkpoint's id, the files it owns (invariant 6), its parents, premise checkpoints included, and its difficulty. Difficulty is about what could break, never file count, and it picks each write seat's rung. Add a shared or exclusive constraint only where it affects scheduling, such as a fixed port or one test database. Schedule the checkpoints from the plan:
-
-- A checkpoint starts once every parent's commits passed invariant 8's git check and the parents' named checks are green on those commits. It doesn't wait for unrelated checkpoints. A dependent waits for evidence on its parent's current state, and never inherits a green from an earlier one.
+- A checkpoint starts once every parent's commits passed inv.8's git check and its named checks are green on those commits.
 - Done means committed and verified on the run branch, never merged.
-- A premise checkpoint runs at its first eligible point, because a failed premise changes what its dependents build against.
-- When a parent changes or a premise fails, pause or steer its dependents with the verified state (step 6), and recheck each one before it counts as done. A steer is how the change reaches a dependent, not proof the dependent absorbed it.
-- A failed premise whose decision is the user's goes to step 8.
-
-Open design questions found mid-run means prep missed something. A small shape question is a fork (step 8), journaled as a prep-gap event. A genuinely open design is `needs-info`, back through prep.
+- When a parent changes or a premise fails, pause or steer dependents with verified state (§6) and recheck each before counting it done. A failed premise whose decision is the user's goes to §8.
+- Small mid-run shape question: fork (§8), journaled as `prep-gap`. Genuinely open design: `needs-info`, back through `prep`.
 
 ## 5. Invariants
 
-1. **Review crosses families per diff.** A PR with native-written and delegated-written work needs a reviewer from each family.
-2. **Someone tries to break it.** Tell at least one review seat to refute the change, not summarize it. Brief the first review as `babysit` §Rounds says, on every route. A reviewer's failing test is evidence, not a way past triage, and a Fixed finding's test follows `babysit` §Triage. If the fixer thinks the test encodes the wrong requirement, it says so instead of satisfying it.
-3. **Unknown is not a pass.** CI is green only on a head you checked is in sync (the local SHA equals the PR's `headRefOid`) and that you actually saw. Never infer it from an exit code. A `failed`, `cancelled` or `unknown` review job is a missing seat, not a clean review.
-   - Before a push, run the tests the checkpoints named and every command the repo's `AGENTS.md` or `CLAUDE.md` requires. Leave any other suite that a CI job runs to that job, because CI runs it on the same head and a local copy of that run adds no evidence.
-   - Record once, in the pre-flight journal, which CI job runs each remaining suite: the job, its command, and the matrix or environment that selects the suite. Reuse that mapping until the run changes the workflow files or the test commands.
-   - On every synced head, read that job's actual result. A job that was skipped, path-filtered or unreadable on that head is no evidence, so run its suite locally on that head and journal the result before you count the head validated. `land` reads a skipped check as a pass, so nothing later catches it.
-   - A suite no CI job runs stays local. With no CI, everything stays local, and `land` still refuses `ci-unknown`.
-4. **Every criterion has evidence a stranger can re-run.** Each gets a verdict and a pointer in the PR's evidence ledger, reproducible from the merged repo alone with a committed test, script or artifact. Journal prose is narrative. An expiring URL is evidence with a TTL.
-5. **Stop on evidence, not exhaustion.** The issue's `## Risk` tier sets the bar, and no section means `standard`. `low` and `standard` converge on one clean adversarial pass from the family that didn't write the fix. `high` needs two clean passes in a row from different seats, and a security seat is one of the reviewers. Triage every finding as `babysit` §Triage says, and count a pass as clean only by its definition there. The final pass sweeps the whole diff file by file and lists what it read and skipped, and a file no reviewer named since the last fix round is a gap. A `flow_delegate` review returns no such list, so continue that job and ask for one before the pass counts. Count fix rounds against the breaker in `babysit` §Rounds, exactly 3 on `low` and 5 otherwise, which says what a round is and what to do when it trips. Journal the running total after every fix round, because `babysit` continues the count instead of resetting it.
-   - On a `standard` or `high` run with more than one checkpoint, you may get an early cross-family review of a verified checkpoint, so a defect surfaces before its dependents build on it. Review its real commit range: an ancestor base and a head that contains the checkpoint's commits, any interleaved commits included, with no filtered tree. Writers keep going only when the reviewer reads a checkout flow's executor pins and closes, which is T3's `seat open --access review`. On any other route, review at a quiet boundary or skip the early pass, because invariant 8's snapshot would move under live writers. The reviewer returns coverage for every file in the range. An early pass is never a clean pass and never final coverage, because it doesn't read the head that ships. Triage its findings as `babysit` §Triage says, and count its fix batches against the same breaker, with no carve-out. A range with both families' work follows invariant 1.
-6. **One file, one writer.** No two seats hold the same file at once, and each stages only its own paths, because the index is shared. Notes, logs, captures and anything else the run won't commit go in the worktree's `.flow-scratch/`, which the claim git-ignores. Never put them in /tmp or the workspace root, because `land` retires scratch with the worktree. Say so in each seat's task.
-   - A `flow_delegate` writer can edit but not commit, so tell it that. When it returns, verify it (invariant 8), stage its files by path, and commit them. Name the seat in the journal, never in the commit.
-   - A T3 writer commits its own paths with `git -C <wt> commit -- <paths>`, and invariant 8 checks those commits.
-7. **Refusals get routed.** The charter's refusal rule binds every judgment and security seat. A null counts as a refusal, so the retry crosses families, and a second null is reported, never swallowed. A security seat that refused, died or errored goes in the final journal as an unavailable security review.
-8. **Seat reports are claims.** Before you act on "done" or "blocked", run `git -C <wt> log` and `git -C <wt> status` and compare. Nudge a seat that stopped mid-task with the state you verified. Re-run a seat that fabricates twice on a stronger model, and journal it. Snapshot the tree with `node <plugin-root>/scripts/tree-snapshot.mjs <wt>` before each review seat spawns and when it returns. Any difference means the review doesn't cover what ships: stop, name the path, and find what wrote it. For a T3 review seat, `seat open` and `seat close` do this for you: open pins a detached worktree at the head, and close checks it unmoved and clean, snapshots the canonical checkout, and compares the review's coverage with the pinned diff.
+1. **Review crosses families per diff.** Every written file is reviewed by at least one lab that didn't write it, so multi-lab PRs (such as `Opus` code plus `Neon` docs) cross-review each lab's files without requiring redundant full-diff sweeps from every lab.
+2. **Someone tries to break it.** Brief every review per `babysit` §Rounds to refute, not summarize. Failing reviewer tests still go through triage; if a fixer believes a test encodes the wrong requirement, it says so instead of satisfying it.
+3. **Unknown is not a pass.** CI is green only on a synced head (`local SHA == PR headRefOid`) that you read directly. Before pushing, run checkpoint tests and repo `AGENTS.md`/`CLAUDE.md` commands; leave remaining suites to CI only when pre-flight mapped the exact job and matrix, and run any skipped/path-filtered/unreadable CI job locally before counting the head validated. With no CI, run everything locally (`land` still refuses `ci-unknown`).
+4. **Every criterion has reproducible evidence.** Each gets a verdict and a pointer in the PR evidence ledger runnable from the merged repo alone (test, script or committed artifact).
+5. **Stop on evidence, not exhaustion.** Risk tier defaults to `standard`. `low` and `standard` converge on one clean cross-family adversarial pass; in T3 Code when `antigravity` is enabled, pair rounds 1 to 3 with `Gemini 4 Neon` in parallel as third POV (and narrow split lanes per `babysit` §Rounds). `high` needs two clean passes in a row from different seats, a security seat among them (`Neon` counts as an independent lab alongside a seated reviewer). The final pass must list every file read and skipped (continue `flow_delegate` jobs that omit it). Count fix rounds against `babysit` §Rounds' breaker (3 on `low`, 5 otherwise) and rounds 4 to 5 significance gate, journaling the running total after every batch. For optional early checkpoint review on multi-checkpoint runs, see `reference.md` §Early checkpoint review.
+6. **One file, one writer.** Disjoint file ownership per concurrent writer; stage paths explicitly. Uncommitted scratch goes in `<wt>/.flow-scratch/` (git-ignored, retired by `land`), never `/tmp`. `flow_delegate` writers edit without committing (you verify, stage by path and commit); T3 writers commit with `git -C <wt> commit -- <paths>`.
+7. **Refusals get routed.** Follow the charter's refusal rule on every judgment and security seat. A null counts as a refusal (retry crosses families; second null stops and reports). Record an unavailable security seat in the final journal.
+8. **Seat reports are claims.** Verify every "done" or "blocked" with `git -C <wt> log` and `git -C <wt> status`. Nudge stalled seats with verified state; re-run a seat that fabricates twice on a stronger model or switch lab. Snapshot the tree with `tree-snapshot.mjs <wt>` before and after unseated reviews (including Antigravity); T3 `seat open --access review` / `seat close` pins and checks the detached review worktree automatically.
 
 ## 6. Seats
 
-- **In T3 Code**, every seat is a T3 seat through `delegate_task` (see the `delegate` skill's `## T3 seats`). Wait, steer and close as its §3–§5 say, stop a seat with `task_cancel`, and act on the `seat close` verdict. Preflight's doctor still runs, because `flow_delegate` is the cross-family fallback, and the native seats below are the same-family one.
-- **In Claude Code**, `flow:implementer` writes and `flow:reader` scouts, proposes and reviews. Run a long or parallel `flow_delegate` call through `flow:bridge`. `SendMessage` reaches a running seat with state you verified, `TaskOutput` reads its stream, and `TaskStop` ends it.
-- **In Codex**, use native spawns, one checkpoint each. You can't reach a running seat, so verify a parent with git before its dependents start (step 4), and `followup_task` a finished seat with verified state.
+- **In T3 Code**, run Claude and Codex seats through `seat.mjs` + `delegate_task`, and Gemini 4 Neon through unseated `delegate_task` (`delegate` §T3 seats and §5). Act on `seat close` verdicts, never `summary`. `flow_delegate` is the cross-family fallback; native tools are the same-family fallback.
+- **In Claude Code**, `flow:implementer` writes and `flow:reader` scouts/reviews; long or parallel `flow_delegate` calls go through `flow:bridge`. Use `SendMessage`, `TaskOutput`, `TaskStop`.
+- **In Codex**, use native spawns (one checkpoint each); verify parents in git before dependents start, and `followup_task` finished seats with verified state.
 
 ## 7. Tripwires
 
-Size isn't fixed at launch. Each of these raises the tier one step and forces a rethink of seats and rounds, journaled as an event:
+Each raises the tier one step, forces a seat/round rethink, and gets journaled as an event (nothing ever lowers the tier mid-run):
 
-- the diff touches a trust boundary the issue never mentioned: auth, input parsing, shell, SQL or template construction, secrets;
-- the diff grows past about twice the planned file count;
-- fix rounds churn on one area, with each fix spawning findings where it lands. Re-triage the churning findings against the intended case first, and raise the tier only if intended-case defects survive;
-- the two families' reviewers disagree hard on the same code.
-
-A trust boundary makes the run `high` outright. Nothing lowers the tier mid-run, because a run that talks itself into less review is exactly what the tier guards against.
+- diff touches an unmentioned trust boundary (auth, parsing, shell/SQL/template construction, secrets) -> **`high` outright**;
+- diff grows past ~2× planned file count;
+- fix rounds churn on one area after re-triaging against the intended case;
+- two families' reviewers disagree hard on the same code -> in T3 Code with `antigravity` enabled, ask `Gemini 4 Neon` cold as third-lab tie-breaker before escalating to the user.
 
 ## 8. Forks and escalation
 
-A fork is the user's only when it's genuinely theirs to pick: two designs both defensible on the merits, a contested finding whose dismissal changes the risk posture, or a scope question the issue can't settle.
+Only genuinely user-owned decisions escalate: two defensible designs, a contested finding changing risk posture, or a scope question the issue can't settle.
 
-**Optional forks.** A remedy that expands the approved responsibility, the supported behavior or the trust posture is never one. It goes to the user before anyone writes it, because guessing it grows the work. Otherwise, if you can ask and get the answer in the same turn, ask, with the consequence on each option. If they dismiss it, decide and journal. If asking would end the turn, don't ask. Decide, journal a `fork guessed` event naming the rejected option and why, and keep going.
-
-**Trust-model forks** set the posture of a trust boundary: who can reach what, what an unattended tool reads or publishes, where authority ends. Always ask these, on every host, because reviewers will ratify a coherent guessed posture instead of contesting it. When asking ends the turn, take the conservative posture (confine, refuse, least reach), journal it, and stop as "Suspending" says, with the `needs-human` label.
-
-**Suspending.** When a `needs-info`, `needs-human`, trust-fork or breaker stop ends the run, the question to the user is your last act, so nothing the run still owes waits behind an answer that may never come. In this order:
-
-1. **Settle every running seat.** Let a seat that's about to commit finish, cancel the rest, and wait until each cancelled seat has stopped, because a seat still running after its cancel can commit behind the check and step 2 would push it. In Codex you can't reach a running seat (§6), so wait for each one to finish instead. Then close every seat and check it against git (invariant 8). Cancelling a task doesn't close its seat.
-2. **Finish the mutations:** commit, push, journal, label, comment and ping. Finish only what the run was already allowed to do. This step never authorizes a new push or more implementation. One exception: when the question is whether something may be pushed at all, such as possible secret material, commit locally and do everything else except the push. Every other trust fork keeps the push, because pushing this run's own feature branch settles nothing about who can reach what.
-3. **Remove watchers and scheduled wakes,** as `babysit` §Waiting says.
-4. **Read the anchors** that exist, right before you ask: the AC digest, the head SHA and the issue's `updatedAt`. A stage with no issue yet, such as a free-text prep, has fewer.
-5. **Ask** through the session's question tool, with 2 to 4 options, the recommended one first, and the reason inside the question. With no question tool, the question is the run's final response.
-
-An answer that arrives after the anchors moved is stale. Journal `stale-answer-rejected`, keep `needs-human`, re-read, and ask again against the new state. `needs-human` clears only after that re-check.
-
-**Escalate early.** A blocking question the issue, code and docs can't settle is `needs-info` the moment you find it, not after you guessed an implementation. Every escalation is a label, a comment saying what blocks, then a best-effort ping: `PushNotification` in Claude Code, `notify-send` in Codex (silent over SSH). A stop that "Suspending" covers then ends with the question, in its order. Nothing tests whether the user is present. The label and the comment stay the record, and an unanswered question leaves the run stopped. Preflight stops (step 1) and optional forks keep their own paths.
+- **Optional forks.** Remedies that expand approved responsibility, supported behavior or trust posture are never optional: ask first. Otherwise ask if you can get an answer in-turn; if asking ends the turn, decide, journal `fork guessed` (naming the rejected option and why), and continue.
+- **Trust-model forks** (who can reach what, unattended read/publish authority, security posture) always go to the user, because reviewers ratify a coherent guess instead of contesting it. If asking ends the turn, take the conservative posture, journal it, label `needs-human`, and suspend.
+- **Escalate early.** Blocking missing info becomes `needs-info` the moment you find it, not after guessing. Any `needs-info`, `needs-human`, trust-fork or breaker stop follows `reference.md` §Suspending in order.

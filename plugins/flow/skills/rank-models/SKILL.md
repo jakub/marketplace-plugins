@@ -1,84 +1,88 @@
 ---
 name: rank-models
-description: Re-rank the charter's Models section (the Claude ladder, the reviewer, the mentors and the starting rows) from benchmark data, with one fixed procedure. Use when a new model ships, when the user asks to re-rank or retarget models, or when the as-of date is more than a quarter old.
+description: Re-rank the charter's Models section (the 3-lab roster, subagent pool, mentors and starting rows) from benchmark data, with one fixed procedure. Use when a new model ships, when the user asks to re-rank or retarget models, or when the as-of date is more than a quarter old.
 ---
 
 # Rank models
 
-The charter's `## Models` section comes from this procedure and nothing else, so two runs on the same data give the same ladder. Do the steps in order. The numbers only live in the charter.
+The charter's `## Models` section comes from this procedure and nothing else, so two runs on the same data give the same table. Do the steps in order. The numbers live only in the charter.
 
-The user wants the best output first, then the fastest, and only then the cheapest. A cheap rung that passes isn't the same quality as a strong one that passes, so the ladder ranks quality, speed and cost in that order and never trades quality for price.
+The user wants strong output first, fast turnaround on long chains, and cost visibility so one session doesn't burn a daily subscription quota. Code quality alone misses tool discipline, hallucination rates and writing judgment, so the table tracks four 100%-coverage axes per rung alongside minutes and dollars per task.
 
-One family does the work and the other reviews. As of 2026-10-28, Claude works and OpenAI reviews. Each family has a mentor the user picks, which advises and never writes.
+As of 2026-11-20, three labs form the roster: Anthropic orchestrates and writes (`Opus` default, `Fable` non-default, `Sonnet` subagent pool), OpenAI reviews (`Sol`, `Astra`, `Terra` subagent pool), and Google (`Gemini 4 Neon`) is the default third POV. Fireworks open-weights stay off unless the user asks to add them. Each lab can supply a mentor, which advises and never writes.
 
 ## 1. Candidates
 
-List every model each family can run, new releases included, and find each one's release page on Artificial Analysis (`artificialanalysis.ai/models/<release>`). Every work-family model is a ladder candidate. Every other-family model is a reviewer candidate. Max effort stays off by the user's choice. On 2026-10-28 no max rung won its tie group, although Sonnet, Terra and Haiku max scored 4 to 7 points over xhigh on AA. A max rung lives on the bare release page, not a `-max` slug, and that page's first score record belongs to another model, so read the max model's own record when you check it.
+List every model each included lab can run, new releases included, and find each one's release page on Artificial Analysis (`artificialanalysis.ai/models/<release>`). Separate candidates into the **primary roster** (`Opus`, `Fable`, `Sol`, `Astra`, `Neon`) and the **subagent pool** (`Sonnet`, `Terra`), which the orchestrator spawns cheaply in parallel. `Haiku`, `max` and `ultra` stay off by the user's choice. On 2026-11-20 `Astra max` scored lower than `Astra xhigh` at nearly twice the time and cost, and `Fable high` tied `Fable xhigh` at half the time and cost. A model's highest effort (`max` for Claude/OpenAI, `xhigh` for Gemini 4) lives on the bare release slug, not a `-max` or `-xhigh` slug.
 
 Ask the user for what no benchmark publishes:
 
-- which family does the work;
-- which models their plans run, and on which host;
-- a taste score from 0 to 10 for each new model. Show its rank and 95% interval on arena.ai's Code Arena WebDev board and on Design Arena first. The score stays theirs;
-- any plan quota that makes a model expensive in practice.
+- which labs hold the default write, review and third-POV roles, and which models belong in the primary roster vs. the subagent pool;
+- which models their plans run, on which host, and any plan quota that makes one model abundant or scarce (as of 2026-11-20, `Opus 5.5` is plan-abundant on the $200 sub, so it stays default over `Fable 5.2` even where `Fable` beats it on AA);
+- a taste score from 0 to 10 for each new model, split by domain if relevant. Show its rank on arena.ai's Code Arena WebDev board and Design Arena first. The score stays theirs (as of 2026-11-20: `Fable 5.2` 10, `Opus 5.5` 9 general, `Neon 4` 9 writing and trial elsewhere; OpenAI weaker aside from occasional `Astra` UI design).
 
-A model with no public score, price or time is unmeasured and stays off the ladder. It keeps a row only if the user keeps it for something benchmarks don't measure, like having no refusal classifiers.
+A model with no public score, price or time is unmeasured and stays off the table. It keeps a mapping line only when the user keeps it for something benchmarks don't measure, like having no cyber classifiers.
 
 ## 2. Sources
 
-- **Terminal-Bench 4.0** (`terminalbench-4-0`) and **FrontierCode 2.0** (`frontiercode-2-0`), both run by Artificial Analysis, as of 2026-10-28. Each eval runs every model on one fixed harness, Terminal-Bench on mini-swe-agent (66 tasks) and FrontierCode on stirrup (132 tasks), three repeats each, and each record carries score, cost per task and time per task from the same run. The ladder ranks on these two.
-- **FrontierCode v1.1**, Cognition's own run at `cognition.com/data/frontiercode-leaderboard/data.json`: the `v1_1` key's `main` subset, with `new_score`, `cost` and `duration_min`. It runs each model in its vendor's own agent, so it's the only source with times from a harness close to ours. `duration_min` is missing for some models. It cross-checks the ladder and never sets a rung.
+- **Artificial Analysis** (`artificialanalysis.ai/models/<slug>`), four 100%-coverage evals as of 2026-11-20:
+  - **Code:** `mean(Terminal-Bench 4.0, FrontierCode 2.0)` (`terminalBench40`, `frontierCode20`), mini-swe-agent (66 tasks) and stirrup (132 tasks), three repeats each.
+  - **AutoB:** `AutomationBench` (`automationBenchPartialScore`, 657 multi-step tool tasks) for agent/tool discipline.
+  - **Halluc:** `Omniscience` hallucination rate (`omniscienceHallucinationRate`, lower is better) for groundedness in scouting and review.
+  - **Brief:** `AA-Briefcase v1.1` Elo (`briefcaseBreakdown.overall.elo`) for prose, specs and non-coding judgment.
+- **Slopalytics** (`slopalytics.com`), which mirrors AA's per-model code token count (`code.tokens`), output speed (`speed`) and arithmetic mean code cost (`code.cost`). Note its `Code only` score weights FrontierCode ~60% and Terminal-Bench ~40%, so it reads 1 to 2 points below the charter's 50/50 mean. Never use its `Code only` score directly; use AA's `terminalBench40` and `frontierCode20`.
+- **FrontierCode v1.1**, Cognition's vendor-harness run at `cognition.com/data/frontiercode-leaderboard/data.json` (`v1_1.data.<model>.<effort>.main`: `new_score`, `cost`, `duration_min`). It cross-checks real latency and never sets a rung. Flag models missing from Cognition (`GPT-6.2`, `Fable 5.2` and `Gemini 4 Neon` were absent on 2026-11-20) and any step whose direction disagrees: `Sol 6.1` took 5 to 8 minutes on AA and 14 to 17 in Codex.
 
-Record each eval's version and task count, from its evaluation page and the data file's `subsets` field. Use the newest version of each and say which. AA's harnesses are neither host's, and its times can disagree with the vendor-agent times: on 2026-10-28, Sol 6.1 took 5–8 minutes on AA and 14–17 on FrontierCode v1.1. Flag every pick whose step disagrees in direction between the two sources.
-
-`slopalytics.com` plots the same data. Its **Code only** toggle is this ladder's composite (the two AA evals, weighted equally), and its headline number is the overall Intelligence Index, which mixes in knowledge and QA evals. Its copy lagged AA by 1–2 points on 2026-10-28. Use it to see the shape, never for a number.
-
-As of 2026-09-27, Sonar's leaderboard, SWE-rebench, Vals.ai, Epoch AI, METR, Scale's SWE-Bench Pro and Martian's Code Review Bench were checked and left out, because none covers every candidate at every effort with a cost and a time per task from the same run. Check them again.
-
-A rung needs a positive score, a positive cost and a positive time on both AA evals. Never fill a gap from another source, a vendor's card or an older eval version.
+Record each eval's version and task count, using the newest version of each. A rung needs positive `Code`, `Min` and `$/task` plus all three secondary AA metrics. Never fill a gap from another source, a vendor card or an older eval version.
 
 ## 3. Extract the numbers
 
-No extractor ships with this skill. Write a throwaway Node script in a temp directory outside the repo. Artificial Analysis has no public API: each variant page embeds the model in its React Server Components payload, as `self.__next_f.push([1,"…"])` chunks. Decode each chunk as a JSON string literal and concatenate them before you search. The release page lists the effort variants as `<release>-<effort>` slugs.
+No extractor ships with this skill. Write a throwaway Node script in a temp directory outside the repo.
 
-Read each eval from its score record, `{"slug":"frontiercode-2-0","score":…,"outputTokensPerTask":…,"costPerTask":…,"timePerTask":…}`, the first one on the variant's page with a `score`. **Never use `weightedCostPerTask`** from the page's `evaluations` list. It's a fraction of the real cost per task and makes every number wrong. As a sanity check, on 2026-10-28 Opus 5.5 medium read 52.5 and 33.1, $2.63 and 6.1 minutes.
+On Artificial Analysis (as of 2026-11-20), each variant page embeds its own model JSON object inside `self.__next_f.push([1,"…"])` chunks. Decode each chunk as a JSON string literal, concatenate them, and find the balanced JSON object containing `"slug":"<slug>"`, `"terminalBench40"` and `"intelligenceIndexCostPerTask"`. Read:
 
-For every candidate, record both scores, costs and times, then show the user the raw table before you apply any rule.
+- `terminalBench40 * 100` and `frontierCode20 * 100` for `Code`;
+- `automationBenchPartialScore * 100` for `AutoB`;
+- `omniscienceHallucinationRate * 100` for `Halluc`;
+- `briefcaseBreakdown.overall.elo` for `Brief`;
+- `intelligenceIndexCostPerTask.evaluations`: multiply `weightedCostPerTask` by 8 (the Intelligence Index equal-eighth weight) for `terminalbench-4-0` and `frontiercode-2-0` to get exact per-eval task cost. Verify `(tb4Cost + fc2Cost) / 2` matches Slopalytics' `code.cost` to the cent; never use raw `weightedCostPerTask` without the ×8 unweighting.
+- `Min`: AA no longer embeds separate per-eval `timePerTask` in RSC. Compute `code.tokens / speed / 60` from Slopalytics (the same output-tokens-over-speed formula AA's own chart bundle uses). Sanity check on 2026-11-20: `Opus 5.5 medium` reads TB4 `52.5`, FC2 `33.1`, Code `42.8`, geom. `$2.58` (arith. `$2.64`), `7.7` min, AutoB `61%`, Halluc `67%`, Brief `1617`.
 
-## 4. Build the ladder
+Show the user the raw table and Pareto chart (via `plans:show`) before applying overrides.
 
-1. A rung's score is the mean of its two scores. Its cost and its time are the geometric means of its two costs and two times per task.
-2. **Two tie bands**, both policy tolerances and never proof that two rungs differ: scores within 4 points tie, and times within 1.5× tie.
-3. A rung leaves if another rung in its family scores at least as high and is either more than 1.5× faster, or within 1.5× and no more expensive.
-4. Group from the top down. The strongest remaining rung opens a group, and every rung within 4 points below it joins. Of the group's rungs within 1.5× of its fastest time, the cheapest stays. Repeat with what's left.
-5. A model with no rung left leaves the ladder, and each row that named it moves to the rung that replaced it.
+## 4. Build the per-lab Pareto roster
 
-Ask the user about each change to a current row: a rung the rules removed, and a rung the rules brought back that the user struck before. A rung they keep against the rules is an override, and the charter says so in one clause. As of 2026-10-28, Haiku stays off by their choice, although Haiku low won the bottom group, and Sonnet low holds the bottom row.
+1. `Code` is the arithmetic mean of TB4 and FC2. `$/task` is the geometric mean of TB4 and FC2 task cost. `Min` is `code.tokens / speed / 60`.
+2. **Two tie bands**, both policy tolerances: scores within 4 points tie, and times within 1.5× tie.
+3. Run Pareto elimination **inside each lab** so one lab never crowds out cross-lab diversity: a rung leaves if another rung in its lab scores at least as high and is either more than 1.5× faster, or within 1.5× and no more expensive.
+4. Group top-down within each lab (4-point band; among rungs within 1.5× of the group's fastest time, the cheapest wins). Also check the **time-first frontier** (fastest wins in the tie band) to identify chain-throughput picks such as `Fable 5.2 low`, `Sol 6.2 med` and `Astra 6.2 med`.
+5. Keep 1 representative row per subagent-pool model (`Sonnet`, `Terra`) and 2 to 3 anchor rungs per primary model so the charter stays compact while the effort dial handles intermediate steps.
 
-## 5. Reviewer, extras, mentors and security seats
+Ask the user about each change to a current row, any plan-quota override (such as keeping `Opus 5.5 med` as default over `Fable 5.2 low`), and any taste or secondary-axis override.
 
-Apply rules 3 and 4 to the other family and show the user what's left. They pick the reviewer and a stronger rung for hard reviews. **Review runs one column right of its pick**, because a review exists to catch wrong answers, and that's the charter's rule for moving right. As of 2026-10-28, the picks are Sol 6.1 high and Astra high, so Sol 6.1 xhigh reviews and Astra xhigh takes the hard reviews.
+## 5. Roles, mentors and security seats
 
-The user picks the extras, a rung of the other family run twice beside the reviewer. Show them the reviewer family's rungs that finish before the reviewer: the extras add no wall time, and their cost is the triage of their findings, which the orchestrator verifies. As of 2026-10-28, they're two Terra 6.1 high.
+Confirm with the user:
 
-The user picks the mentors, one per family at xhigh. Benchmarks don't. As of 2026-10-28, they're Fable 5.1 and Astra, and the orchestrator picks one per question. Fable sits off the ladder on purpose: no benchmark here measures taste.
-
-The user also picks the security seats, and nothing measures them. As of 2026-10-28, they're Mythos 5.1 and Daybreak at xhigh. Mythos does vulnerability and defensive security work, Daybreak takes over after a refusal, and each reviews the other's diffs. Neither has a public score, so the user maps each to a measured model, and the charter states the mapping instead of a table row: Mythos 5.1 is Fable 5.1 without its cyber classifiers, and Daybreak is the current Sol, Sol 6.1, without its classifiers. These are the only gaps ever filled from another model.
+- **Default write, review and 3rd-POV anchors:** as of 2026-11-20, `Opus 5.5 med/xhigh` writes (`Fable 5.2 low/high` for chain speed or taste-10 step-ups), `Sol 6.2 xhigh` and `Astra 6.2 xhigh` review (`Astra 6.2 med` and `Sol 6.2 med` for chain speed and split lanes), and `Neon 4 med/high/xhigh` handles wide scouting, writing/visual QA, and 3rd-POV parallel review in rounds 1 to 3.
+- **Subagent pool:** `Sonnet 5.5 high` (tight-oracle parallel writes) and `Terra 6.1 med` (low-noise parallel narrow checks).
+- **Mentors:** one per lab (`Fable 5.2 high`, `Astra 6.2 xhigh`, `Neon 4 xhigh`), advising only.
+- **Security seats:** unmeasured classifier-free models stay off the table and live in one mapping line. As of 2026-11-20, `Mythos 5.2` equals `Fable 5.2` and `Daybreak Blue` equals `Sol 6.2` without cyber classifiers, both at `xhigh`, reviewing each other. These are the only gaps ever filled from another model.
 
 ## 6. Start here for
 
-Give each row the task classes that start there. The lowest row takes file location and prescribed tool calls. Settled specs and bounded changes take the next rows up. Substantial implementation, design, UI, copy and non-coding work start at the lowest rung of the taste-10 model. Hard debugging and correctness calls take the top row. Show the user every row that changes and why, and ask before you change a taste or security row.
+Give each row the task class that starts there, keeping descriptions short so the table fits the charter cap. Subagent rows start with `subagent:`. Primary rows distinguish default work, chain-throughput picks, taste/writing strengths, and hard review or mentor roles. Show every changed row and ask before changing a taste, quota or security call.
 
 ## 7. Rewrite the charter
 
-Generate the table with a script from the extracted numbers, never by hand, so the rounding and the steps agree. Then edit `## Models` in `plugins/flow/charter/charter.md`:
+Generate the table with a script from the extracted numbers, never by hand, so rounding agrees. Then edit `## Models` in `plugins/flow/charter/charter.md`:
 
-- **The table**: columns `Rung | Score | Min | $/task | Step up buys | Start here for`, padded so the raw file reads aligned. No outer pipes, text left-aligned, numbers right-aligned (`---: |`), and no trailing spaces. A bare row names each family and its role, like `Claude, does the work` and `OpenAI, reviews`. The work ladder comes first, then the extras, the reviewer, the hard reviewer and the mentors. Score and minutes are whole numbers, and $/task has two decimals. Step up buys is the row's score, minutes and dollars minus the row above's displayed values, like `+8 pts +2m +$1.34`, and it stays blank on a family's first row, the extras and the mentors.
-- **The sentence above the table**: the as-of date, the price basis, both evals with their versions and harness, the ranking rule in one clause, and every disagreement the cross-check found.
-- **The lines below it**: what stays off and why (max effort, each override), the review column rule, the taste scores, and the classifiers that can refuse.
+- **The table**: columns `Rung | Code | Min | $/task | AutoB | Halluc | Brief | Start here for`, padded so raw markdown aligns, no outer pipes, text left-aligned, numbers right-aligned (`---: |`), and no trailing spaces. Order Anthropic, then OpenAI, then Google. Whole numbers for `Code`, `Min`, `AutoB`, `Halluc` and `Brief`; two decimals for `$/task`.
+- **The sentence above the table**: as-of date, the four AA axes and cost/time basis, and Cognition cross-check caveats.
+- **The paragraphs below it**: model-vs-effort triage and mid-flight movement rules, defaults/subagent-pool/chain-throughput guidance, taste scores and security mappings, cross-family and 3rd-POV review rules, and refusal handling.
 
-Check every "ties", "beats" and "faster" against the new numbers. Then search `plugins/flow` for each model you removed or added: `skills/delegate/SKILL.md` and `delegate/server.mjs` show example ids, and `agents/bridge.md` fixes the transport model, which changes only when the user asks.
+Check every claim against the new numbers, and search `plugins/flow` for any stale model IDs or examples.
 
 ## 8. Verify and report
 
-Run `node plugins/flow/scripts/smoke-charter.mjs`. It fails when the charter passes 9,500 characters, and a longer table is the usual cause. A rankings change needs no version bump. Report the old and new tables side by side, each row that changed and why, each override, each cross-check disagreement, and each source you couldn't verify or candidate you left unmeasured.
+Run `node plugins/flow/scripts/smoke-charter.mjs` (and `node scripts/smoke-all.mjs` before pushing). `smoke-charter.mjs` fails over 9,500 characters. A rankings change needs no version bump. Report the old and new tables, each row change and override, cross-check caveats, and any unverified source.

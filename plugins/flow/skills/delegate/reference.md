@@ -4,7 +4,7 @@ The details behind `SKILL.md`. Nothing here is needed for a normal call. Read th
 
 ## Models, efforts and roots
 
-Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`, `fable`) or a full id such as `claude-opus-5-5`, never a charter display name. Codex takes its own ids, such as `gpt-6-sol` or `gpt-6-luna`. `effort` is `low`, `medium`, `high`, `xhigh` or `max`. The doctor's `transport.catalog` lists the models and efforts the provider takes. The server accepts only the five efforts above, even when the catalog lists another.
+Set `model` and `effort` on every call. Claude takes an alias (`sonnet`, `opus`, `fable`) or a full id such as `claude-opus-5-5`, never a charter display name. Codex takes its own ids, such as `gpt-6.2-sol`, `gpt-6.2-astra` or `gpt-6.1-terra`. `effort` is `low`, `medium`, `high`, `xhigh` or `max`. The doctor's `transport.catalog` lists the models and efforts the provider takes. The server accepts only the five efforts above, even when the catalog lists another.
 
 The server checks both against the provider's own model catalog before the prompt goes out. If the catalog lists the model but not the effort, the job fails `BAD_MODEL` and costs no turn. On Claude Code 2.1.284, for example, `haiku` takes no effort level, so it fails at every effort. An id the catalog does not list still runs, and the envelope says `catalog: "absent"`.
 
@@ -120,7 +120,9 @@ Every `delegate_task` call in a flow session names `runtimeMode`, with or withou
 
 On Claude Code the T3 tools are `mcp__t3-code__<tool>`, and on Codex they are `mcp__t3_code__<tool>`.
 
-`delegate_task` takes only a model that `orchestrator_capabilities` advertises, with only the options it advertises. To add one T3 does not list, such as `claude-mythos-5-1`, append it to `providerInstances.<instance>.config.customModels` in `~/.t3/userdata/settings.json`, which T3 reloads on change. A flow seat needs the object form, `{slug, name, capabilities: {optionDescriptors: [...]}}`, with an `effort` select that lists the effort you will pass. A bare slug is valid but advertises no options, so `delegate_task` refuses any effort for it. Never write `capabilities: null`: T3 rejects the entry and disables the whole provider instance until the file is fixed.
+An Antigravity child (`providerInstanceId: "antigravity"`, `model: "gemini-4-neon"`, option `thought_level`) is not a `seat.mjs` seat: `seat.mjs open` accepts `--provider claude|codex` only, and Antigravity receives the seat charter through `inject-charter.mjs` without seat-guard PreToolUse/Stop hooks. Pass `runtimeMode: "auto"` so the parent's admission hook allows `delegate_task`, snapshot the tree with `tree-snapshot.mjs` before and after, and pair it with a seated cross-family reviewer on `high` risk.
+
+`delegate_task` takes only a model that `orchestrator_capabilities` advertises, with only the options it advertises. To add one T3 does not list, such as `claude-mythos-5-2`, append it to `providerInstances.<instance>.config.customModels` in `~/.t3/userdata/settings.json`, which T3 reloads on change. A flow seat needs the object form, `{slug, name, capabilities: {optionDescriptors: [...]}}`, with an `effort` select that lists the effort you will pass. A bare slug is valid but advertises no options, so `delegate_task` refuses any effort for it. Never write `capabilities: null`: T3 rejects the entry and disables the whole provider instance until the file is fixed.
 
 ## seat.mjs open, in full
 
