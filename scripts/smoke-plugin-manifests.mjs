@@ -8,12 +8,26 @@
 // nothing else - the marketplace manifest carries no catalog version, because no software reads one.
 
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const MAX_PLUGIN_FILE_BYTES = 512 * 1024
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'))
+
+function walk(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      out.push({ path: full, name: entry.name, isDir: true })
+      walk(full, out)
+    } else if (entry.isFile()) {
+      out.push({ path: full, name: entry.name, isDir: false })
+    }
+  }
+  return out
+}
 const marketplace = readJson(join(ROOT, '.claude-plugin', 'marketplace.json'))
 // The hook events Codex CLI 0.159.0 recognizes, read from its binary on 2026-09-30.
 const CODEX_EVENTS = new Set([
@@ -26,6 +40,18 @@ assert.ok(marketplace.plugins.length > 0, 'marketplace lists plugins')
 for (const listed of marketplace.plugins) {
   const { name } = listed
   const pluginRoot = join(ROOT, 'plugins', name)
+  // Keep plugin caches lean: tests and fixtures belong under top-level test/, and no blob over
+  // 512 KB should ship inside a plugin without raising this explicit cap.
+  for (const entry of walk(pluginRoot)) {
+    const rel = relative(ROOT, entry.path)
+    if (entry.isDir) {
+      assert.notEqual(entry.name, 'fixtures', `${rel}: fixtures belong under test/, not plugins/`)
+      continue
+    }
+    assert.ok(!/^smoke-.*\.mjs$/.test(entry.name) && entry.name !== 'collision-test.mjs', `${rel}: smoke tests belong under test/, not plugins/`)
+    const size = statSync(entry.path).size
+    assert.ok(size <= MAX_PLUGIN_FILE_BYTES, `${rel} is ${size} bytes, over the ${MAX_PLUGIN_FILE_BYTES}-byte plugin file cap`)
+  }
   const claude = readJson(join(pluginRoot, '.claude-plugin', 'plugin.json'))
   assert.equal(claude.version, listed.version, `${name} Claude version matches marketplace`)
   assert.equal(claude.description, listed.description, `${name} Claude description matches marketplace`)

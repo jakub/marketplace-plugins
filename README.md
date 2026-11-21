@@ -23,7 +23,7 @@ codex plugin add flow@jakub
 
 ## flow
 
-**flow** is my attempt at an agentic development framework: a charter, four stage skills, a set of hooks, four small executors, and a bridge to the other model family. (i.e. Claude can transparently call Codex models, and vice versa.)
+**flow** is my attempt at an agentic development framework: a charter, four stage skills, a set of hooks, small executors, and a bridge to the other model family. (i.e. Claude can transparently call Codex models, and vice versa.)
 
 It's by no means perfect, but generally produces code I can live with.
 
@@ -73,7 +73,7 @@ Two supporting skills sit outside the pipeline:
 | `plugins/flow/skills/chain/` | `chain`, which runs several issues through the stages: independent ones at once, and each dependent after its parents land. |
 | `plugins/flow/agents/` | `implementer` (writes, cannot spawn), `reader` (reads and runs commands, no edit tools), and `bridge` (makes one delegate call on a fixed cheap model). The orchestrator picks the model for the first two at spawn. |
 | `plugins/flow/delegate/`, `plugins/flow/bin/flow-delegate` | The delegate MCP server, and the dispatcher Codex starts it through. |
-| `plugins/flow/scripts/` | The executors (`issue-claim`, `land-merge`, `lint-actions`, `seat`), `tree-snapshot`, the dispatcher installer, and the smokes. |
+| `plugins/flow/scripts/` | The executors (`issue-claim`, `land-merge`, `lint-actions`, `seat`, `evidence-push`), `chain-ledger`, `markup`, `tree-snapshot`, and the dispatcher installer. |
 | `plugins/flow/hooks/` | Charter injection, plus the no-backlog, git, publication and merge, and protected-file guards, with an adapter per host where the hosts differ. |
 | `plugins/flow/skills/flow/` | The `flow` skill's `setup`, `drift`, `labels` and `charter` subcommands, the label contract, and the repository templates. |
 | `plugins/flow/skills/delegate/` | The operating manual for the five delegate tools. |
