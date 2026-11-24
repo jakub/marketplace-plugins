@@ -9,7 +9,7 @@ The charter's `## Models` section comes from this procedure and nothing else, so
 
 The user wants strong output first, fast turnaround on long chains, and cost visibility so one session doesn't burn a daily subscription quota. Code quality alone misses tool discipline, hallucination rates and writing judgment, so the table tracks four 100%-coverage axes per rung alongside minutes and dollars per task.
 
-As of 2026-11-20, three labs form the roster: Anthropic orchestrates and writes (`Opus` default, `Fable` non-default, `Sonnet` subagent pool), OpenAI reviews (`Sol`, `Astra`, `Terra` subagent pool), and Google (`Gemini 4 Neon`) is the default third POV. Fireworks open-weights stay off unless the user asks to add them. Each lab can supply a mentor, which advises and never writes.
+As of 2026-11-20, three labs form the roster: Anthropic orchestrates and writes code (`Opus` default, `Fable` non-default, `Sonnet` subagent pool), OpenAI reviews (`Sol`, `Astra`, `Terra` subagent pool), and Google (`Gemini 4 Neon`) owns technical writing and docs by default (`Fable` fallback outside T3) and serves as the default third POV. Fireworks open-weights stay off unless the user asks to add them. Each lab can supply a mentor, which advises and never writes.
 
 ## 1. Candidates
 
@@ -19,7 +19,7 @@ Ask the user for what no benchmark publishes:
 
 - which labs hold the default write, review and third-POV roles, and which models belong in the primary roster vs. the subagent pool;
 - which models their plans run, on which host, and any plan quota that makes one model abundant or scarce (as of 2026-11-20, `Opus 5.5` is plan-abundant on the $200 sub, so it stays default over `Fable 5.2` even where `Fable` beats it on AA);
-- a taste score from 0 to 10 for each new model, split by domain if relevant. Show its rank on arena.ai's Code Arena WebDev board and Design Arena first. The score stays theirs (as of 2026-11-20: `Fable 5.2` 10, `Opus 5.5` 9 general, `Neon 4` 9 writing and trial elsewhere; OpenAI weaker aside from occasional `Astra` UI design).
+- a taste score from 0 to 10 for each new model, split by domain if relevant. Show its rank on arena.ai's Code Arena WebDev board and Design Arena first. The score stays theirs (as of 2026-11-20: `Fable 5.2` 10, `Neon 4` 10 writing/docs and trial elsewhere, `Opus 5.5` 9 general; OpenAI weaker aside from occasional `Astra` UI design).
 
 A model with no public score, price or time is unmeasured and stays off the table. It keeps a mapping line only when the user keeps it for something benchmarks don't measure, like having no cyber classifiers.
 
@@ -64,7 +64,7 @@ Ask the user about each change to a current row, any plan-quota override (such a
 
 Confirm with the user:
 
-- **Default write, review and 3rd-POV anchors:** as of 2026-11-20, `Opus 5.5 med/xhigh` writes (`Fable 5.2 low/high` for chain speed or taste-10 step-ups), `Sol 6.2 xhigh` and `Astra 6.2 xhigh` review (`Astra 6.2 med` and `Sol 6.2 med` for chain speed and split lanes), and `Neon 4 med/high/xhigh` handles wide scouting, writing/visual QA, and 3rd-POV parallel review in rounds 1 to 3.
+- **Default write, review and 3rd-POV anchors:** as of 2026-11-20, `Opus 5.5 med/xhigh` writes code (`Fable 5.2 low/high` for chain speed or taste-10 step-ups), `Sol 6.2 xhigh` and `Astra 6.2 xhigh` review (`Astra 6.2 med` and `Sol 6.2 med` for chain speed and split lanes), and `Neon 4 med/high/xhigh` owns default technical writing/docs, wide scouting, visual QA, 3-way dialectics and design passes, and 3rd-POV parallel review in rounds 1 to 3.
 - **Subagent pool:** `Sonnet 5.5 high` (tight-oracle parallel writes) and `Terra 6.1 med` (low-noise parallel narrow checks).
 - **Mentors:** one per lab (`Fable 5.2 high`, `Astra 6.2 xhigh`, `Neon 4 xhigh`), advising only.
 - **Security seats:** unmeasured classifier-free models stay off the table and live in one mapping line. As of 2026-11-20, `Mythos 5.2` equals `Fable 5.2` and `Daybreak Blue` equals `Sol 6.2` without cyber classifiers, both at `xhigh`, reviewing each other. These are the only gaps ever filled from another model.
