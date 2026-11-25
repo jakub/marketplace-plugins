@@ -60,6 +60,15 @@
         "name": "jakub"
       },
       "source": "./plugins/ambition"
+    },
+    {
+      "name": "council",
+      "description": "Three-lab review council: one high-effort delegate each from three model providers, scored rounds until all three are satisfied. Vendored from Theo Browne's tstack (MIT).",
+      "version": "0.1.0",
+      "author": {
+        "name": "jakub"
+      },
+      "source": "./plugins/council"
     }
   ]
 }

@@ -1,0 +1,8 @@
+{
+  "name": "council",
+  "version": "0.1.0",
+  "description": "Three-lab review council: one high-effort delegate each from three model providers, scored rounds until all three are satisfied. Vendored from Theo Browne's tstack (MIT).",
+  "author": {
+    "name": "jakub"
+  }
+}
